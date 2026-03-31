@@ -26,9 +26,9 @@ import org.apache.doris.cloud.qe.ComputeGroupException;
 import org.apache.doris.cloud.system.CloudSystemInfoService;
 import org.apache.doris.common.Config;
 import org.apache.doris.common.DdlException;
-import org.apache.doris.common.Pair;
 import org.apache.doris.common.util.DebugPointUtil;
 import org.apache.doris.persist.gson.GsonPostProcessable;
+import org.apache.doris.persist.gson.GsonPreProcessable;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.system.Backend;
 
@@ -44,21 +44,24 @@ import org.apache.logging.log4j.Logger;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
-public class CloudReplica extends Replica implements GsonPostProcessable {
+public class CloudReplica extends Replica implements GsonPostProcessable, GsonPreProcessable {
     private static final Logger LOG = LogManager.getLogger(CloudReplica.class);
 
     // a replica is mapped to one BE in a cluster, use primaryClusterToBackend instead of primaryClusterToBackends
     @Deprecated
     @SerializedName(value = "bes")
     private ConcurrentHashMap<String, List<Long>> primaryClusterToBackends = null;
+    // Serialize-only: populated by gsonPreProcess() before checkpoint, nulled after gsonPostProcess().
+    // TODO: can be removed once downgrade to pre-optimization version is no longer needed.
     @SerializedName(value = "be")
-    private ConcurrentHashMap<String, Long> primaryClusterToBackend = new ConcurrentHashMap<>();
+    private HashMap<String, Long> primaryClusterToBackend = null;
     @SerializedName(value = "dbId")
     private long dbId = -1;
     @SerializedName(value = "tableId")
@@ -93,12 +96,6 @@ public class CloudReplica extends Replica implements GsonPostProcessable {
 
     private static final Random rand = new Random();
 
-    private Map<String, List<Long>> memClusterToBackends = null;
-
-    // clusterId, secondaryBe, changeTimestamp
-    private Map<String, Pair<Long, Long>> secondaryClusterToBackends
-            = new ConcurrentHashMap<String, Pair<Long, Long>>();
-
     public CloudReplica() {
     }
 
@@ -117,6 +114,10 @@ public class CloudReplica extends Replica implements GsonPostProcessable {
         this.partitionId = partitionId;
         this.indexId = indexId;
         this.idx = idx;
+    }
+
+    private CloudTabletInvertedIndex getCloudInvertedIndex() {
+        return (CloudTabletInvertedIndex) Env.getCurrentInvertedIndex();
     }
 
     private boolean isColocated() {
@@ -226,7 +227,7 @@ public class CloudReplica extends Replica implements GsonPostProcessable {
             }
         }
 
-        return primaryClusterToBackend.getOrDefault(clusterId, -1L);
+        return getCloudInvertedIndex().getPrimaryBeId(clusterId, getId());
     }
 
     private String getCurrentClusterId() throws ComputeGroupException {
@@ -327,17 +328,13 @@ public class CloudReplica extends Replica implements GsonPostProcessable {
             int indexRand = rand.nextInt(Config.cloud_replica_num);
             int coldReadRand = rand.nextInt(100);
             boolean allowColdRead = coldReadRand < Config.cloud_cold_read_percent;
-            initMemClusterToBackends();
-            boolean replicaEnough = memClusterToBackends.get(clusterId) != null
-                    && memClusterToBackends.get(clusterId).size() > indexRand;
 
             long backendId = -1;
-            if (replicaEnough) {
-                backendId = memClusterToBackends.get(clusterId).get(indexRand);
-            }
-
-            if (!replicaEnough && !allowColdRead && primaryClusterToBackend.containsKey(clusterId)) {
-                backendId = primaryClusterToBackend.get(clusterId);
+            if (!allowColdRead) {
+                long primaryBe = getCloudInvertedIndex().getPrimaryBeId(clusterId, getId());
+                if (primaryBe != -1L) {
+                    backendId = primaryBe;
+                }
             }
 
             if (backendId > 0) {
@@ -413,17 +410,17 @@ public class CloudReplica extends Replica implements GsonPostProcessable {
     }
 
     public Backend getSecondaryBackend(String clusterId) {
-        Pair<Long, Long> secondBeAndChangeTimestamp = secondaryClusterToBackends.get(clusterId);
-        if (secondBeAndChangeTimestamp == null) {
+        CloudTabletInvertedIndex idx = getCloudInvertedIndex();
+        long beId = idx.getSecondaryBeId(clusterId, getId());
+        if (beId == -1L) {
             return null;
         }
-        long beId = secondBeAndChangeTimestamp.key();
-        long changeTimestamp = secondBeAndChangeTimestamp.value();
+        long changeTimestamp = idx.getSecondaryTimestamp(clusterId, getId());
         if (LOG.isDebugEnabled()) {
             LOG.debug("in secondaryClusterToBackends clusterId {}, beId {}, changeTimestamp {}, replica info {}",
                     clusterId, beId, changeTimestamp, this);
         }
-        return Env.getCurrentSystemInfo().getBackend(secondBeAndChangeTimestamp.first);
+        return Env.getCurrentSystemInfo().getBackend(beId);
     }
 
     public long hashReplicaToBe(String clusterId, boolean isBackGround) throws ComputeGroupException {
@@ -487,17 +484,6 @@ public class CloudReplica extends Replica implements GsonPostProcessable {
         return (hashValue % beNum + beNum) % beNum;
     }
 
-    private void initMemClusterToBackends() {
-        // the enable_cloud_multi_replica is not used now
-        if (memClusterToBackends == null) {
-            synchronized (this) {
-                if (memClusterToBackends == null) {
-                    memClusterToBackends = new ConcurrentHashMap<>();
-                }
-            }
-        }
-    }
-
     private List<Long> hashReplicaToBes(String clusterId, boolean isBackGround, int replicaNum)
             throws ComputeGroupException {
         // TODO(luwei) list should be sorted
@@ -557,11 +543,8 @@ public class CloudReplica extends Replica implements GsonPostProcessable {
             LOG.info("picked beId {}, replicaId {}, partId {}, beNum {}, replicaIdx {}, picked Index {}, hashVal {}",
                     pickedBeId, getId(), partitionId, availableBes.size(), idx, index,
                     hashCode == null ? -1 : hashCode.asLong());
-            // save to memClusterToBackends map
             bes.add(pickedBeId);
         }
-
-        memClusterToBackends.put(clusterId, bes);
 
         return bes;
     }
@@ -595,8 +578,9 @@ public class CloudReplica extends Replica implements GsonPostProcessable {
     }
 
     public void updateClusterToPrimaryBe(String cluster, long beId) {
-        primaryClusterToBackend.put(cluster, beId);
-        secondaryClusterToBackends.remove(cluster);
+        CloudTabletInvertedIndex idx = getCloudInvertedIndex();
+        idx.setPrimaryBeId(cluster, getId(), beId);
+        idx.removeSecondaryBe(cluster, getId());
     }
 
     /**
@@ -610,37 +594,38 @@ public class CloudReplica extends Replica implements GsonPostProcessable {
             LOG.debug("add to secondary clusterId {}, beId {}, changeTimestamp {}, replica info {}",
                     cluster, beId, changeTimestamp, this);
         }
-        secondaryClusterToBackends.put(cluster, Pair.of(beId, changeTimestamp));
+        getCloudInvertedIndex().setSecondaryBe(cluster, getId(), beId, changeTimestamp);
     }
 
     public void clearClusterToBe(String cluster) {
-        primaryClusterToBackend.remove(cluster);
-        secondaryClusterToBackends.remove(cluster);
+        CloudTabletInvertedIndex idx = getCloudInvertedIndex();
+        idx.removePrimaryBeId(cluster, getId());
+        idx.removeSecondaryBe(cluster, getId());
     }
 
     // ATTN: This func is only used by redundant tablet report clean in bes.
     // Only the master node will do the diff logic,
     // so just only need to clean up secondaryClusterToBackends on the master node.
     public void checkAndClearSecondaryClusterToBe(String clusterId, long expireTimestamp) {
-        Pair<Long, Long> secondBeAndChangeTimestamp = secondaryClusterToBackends.get(clusterId);
-        if (secondBeAndChangeTimestamp == null) {
+        CloudTabletInvertedIndex idx = getCloudInvertedIndex();
+        long beId = idx.getSecondaryBeId(clusterId, getId());
+        if (beId == -1L) {
             return;
         }
-        long beId = secondBeAndChangeTimestamp.key();
-        long changeTimestamp = secondBeAndChangeTimestamp.value();
+        long changeTimestamp = idx.getSecondaryTimestamp(clusterId, getId());
 
         if (changeTimestamp < expireTimestamp) {
             LOG.debug("remove clusterId {} secondary beId {} changeTimestamp {} expireTimestamp {} replica info {}",
                     clusterId, beId, changeTimestamp, expireTimestamp, this);
-            secondaryClusterToBackends.remove(clusterId);
+            idx.removeSecondaryBe(clusterId, getId());
             return;
         }
     }
 
     public List<Backend> getAllPrimaryBes() {
         List<Backend> result = new ArrayList<Backend>();
-        primaryClusterToBackend.forEach((clusterId, beId) -> {
-            if (beId != -1) {
+        getCloudInvertedIndex().getAllPrimaryClusterBeIds(getId()).forEach((clusterId, beId) -> {
+            if (beId != -1L) {
                 Backend backend = Env.getCurrentSystemInfo().getBackend(beId);
                 result.add(backend);
             }
@@ -669,12 +654,26 @@ public class CloudReplica extends Replica implements GsonPostProcessable {
     }
 
     @Override
+    public void gsonPreProcess() throws IOException {
+        CloudTabletInvertedIndex idx = getCloudInvertedIndex();
+        if (idx == null) {
+            return;
+        }
+        Map<String, Long> snapshot = idx.getAllPrimaryClusterBeIds(getId());
+        this.primaryClusterToBackend = snapshot.isEmpty() ? null : new HashMap<>(snapshot);
+    }
+
+    @Override
     public void gsonPostProcess() throws IOException {
         if (LOG.isDebugEnabled()) {
             LOG.debug("convert CloudReplica: {}, primaryClusterToBackends: {}, primaryClusterToBackend: {}",
                     this.getId(), this.primaryClusterToBackends, this.primaryClusterToBackend);
         }
+        // Legacy "bes" format migration
         if (primaryClusterToBackends != null) {
+            if (primaryClusterToBackend == null) {
+                primaryClusterToBackend = new HashMap<>();
+            }
             for (Map.Entry<String, List<Long>> entry : primaryClusterToBackends.entrySet()) {
                 String clusterId = entry.getKey();
                 List<Long> beIds = entry.getValue();
@@ -683,6 +682,16 @@ public class CloudReplica extends Replica implements GsonPostProcessable {
                 }
             }
             this.primaryClusterToBackends = null;
+        }
+        // Populate central index from deserialized primaryClusterToBackend, then null it out
+        if (primaryClusterToBackend != null) {
+            CloudTabletInvertedIndex idx = getCloudInvertedIndex();
+            if (idx != null) {
+                for (Map.Entry<String, Long> entry : primaryClusterToBackend.entrySet()) {
+                    idx.setPrimaryBeId(entry.getKey(), getId(), entry.getValue());
+                }
+            }
+            this.primaryClusterToBackend = null;
         }
     }
 }
