@@ -53,24 +53,32 @@ void url_encode(const std::string_view& in, std::string* out) {
 // http://www.boost.org/doc/libs/1_40_0/doc/html/boost_asio/
 //   example/http/server3/request_handler.cpp
 // See http://www.boost.org/LICENSE_1_0.txt for license for this method.
+//
+// Malformed percent-encodings (e.g. '%' at end of string, or '%XX' where X is
+// not a hex digit) are passed through as literal characters instead of
+// aborting decoding. This matches the lenient behavior of ClickHouse's
+// decodeURLComponent and Snowflake's URL_DECODE, and prevents the SQL
+// `url_decode` function from failing whole queries on dirty input.
 bool url_decode(const std::string& in, std::string* out) {
     out->clear();
     out->reserve(in.size());
 
+    auto hex_value = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+
     for (size_t i = 0; i < in.size(); ++i) {
         if (in[i] == '%') {
-            if (i + 3 <= in.size()) {
-                int value = 0;
-                std::istringstream is(in.substr(i + 1, 2));
-
-                if (is >> std::hex >> value) {
-                    (*out) += static_cast<char>(value);
-                    i += 2;
-                } else {
-                    return false;
-                }
+            int hi = (i + 1 < in.size()) ? hex_value(in[i + 1]) : -1;
+            int lo = (i + 2 < in.size()) ? hex_value(in[i + 2]) : -1;
+            if (hi >= 0 && lo >= 0) {
+                (*out) += static_cast<char>((hi << 4) | lo);
+                i += 2;
             } else {
-                return false;
+                (*out) += in[i];
             }
         } else if (in[i] == '+') {
             (*out) += ' ';

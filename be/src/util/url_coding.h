@@ -28,8 +28,10 @@ namespace doris {
 // characters with %<hex value in ascii>).
 void url_encode(const std::string_view& in, std::string* out);
 
-// Utility method to decode a string that was URL-encoded. Returns
-// true unless the string could not be correctly decoded.
+// Utility method to decode a string that was URL-encoded. Malformed
+// percent-encoded sequences (e.g. a trailing '%' or '%XX' with non-hex
+// digits) are passed through as literal characters. Always returns true;
+// the bool return is kept for backwards compatibility.
 bool url_decode(const std::string& in, std::string* out);
 
 void base64_encode(const std::string& in, std::string* out);

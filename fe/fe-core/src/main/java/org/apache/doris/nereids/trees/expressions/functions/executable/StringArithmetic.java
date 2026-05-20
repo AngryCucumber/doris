@@ -44,12 +44,12 @@ import org.apache.doris.nereids.types.ArrayType;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 
+import java.io.ByteArrayOutputStream;
 import java.io.UnsupportedEncodingException;
 import java.math.BigInteger;
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -965,11 +965,47 @@ public class StringArithmetic {
      */
     @ExecFunction(name = "url_decode")
     public static Expression urlDecode(StringLikeLiteral first) {
-        try {
-            return castStringLikeLiteral(first, URLDecoder.decode(first.getValue(), StandardCharsets.UTF_8.name()));
-        } catch (UnsupportedEncodingException e) {
-            throw new RuntimeException(e);
+        return castStringLikeLiteral(first, urlDecodeLenient(first.getValue()));
+    }
+
+    // Byte-level URL decoder that mirrors the BE `url_decode` implementation:
+    // malformed percent-encoded sequences (e.g. trailing '%' or '%XX' with non-hex
+    // digits) are passed through as literal characters instead of throwing, so
+    // constant folding does not fail queries that the BE would happily evaluate.
+    private static String urlDecodeLenient(String input) {
+        byte[] in = input.getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream out = new ByteArrayOutputStream(in.length);
+        for (int i = 0; i < in.length; i++) {
+            byte b = in[i];
+            if (b == '%') {
+                int hi = (i + 1 < in.length) ? hexDigit(in[i + 1]) : -1;
+                int lo = (i + 2 < in.length) ? hexDigit(in[i + 2]) : -1;
+                if (hi >= 0 && lo >= 0) {
+                    out.write((hi << 4) | lo);
+                    i += 2;
+                } else {
+                    out.write(b);
+                }
+            } else if (b == '+') {
+                out.write(' ');
+            } else {
+                out.write(b);
+            }
         }
+        return new String(out.toByteArray(), StandardCharsets.UTF_8);
+    }
+
+    private static int hexDigit(byte b) {
+        if (b >= '0' && b <= '9') {
+            return b - '0';
+        }
+        if (b >= 'a' && b <= 'f') {
+            return b - 'a' + 10;
+        }
+        if (b >= 'A' && b <= 'F') {
+            return b - 'A' + 10;
+        }
+        return -1;
     }
 
     /**

@@ -44,4 +44,36 @@ suite("test_url_decode") {
     order_qt_const_nullable "select url_decode('') from test_url_decode" // choose one case to test const multi-rows
     order_qt_const_not_nullable "select url_decode('%2Fhome%2Fdoris%2Fdirectory%2F')"
     order_qt_const_nullable_no_null "select url_decode('%2Fhome%2Fdoris%2Fdirectory%2F')"
+
+    // Malformed percent-encoded sequences should be passed through as literals
+    // instead of failing the whole query (previously crashed with "Decode url failed").
+    order_qt_malformed_trailing_percent "select url_decode('abc%')"
+    order_qt_malformed_single_char_after_percent "select url_decode('abc%A')"
+    order_qt_malformed_non_hex "select url_decode('abc%ZZ')"
+    order_qt_malformed_non_hex_low "select url_decode('abc%2G')"
+    order_qt_malformed_non_hex_high "select url_decode('abc%G2')"
+    order_qt_malformed_mixed "select url_decode('%2Fpath%2Gbad%2Fend%')"
+    order_qt_malformed_only_percent "select url_decode('%')"
+
+    sql " drop table if exists test_url_decode_malformed "
+    sql """
+        create table test_url_decode_malformed (
+            k0 int,
+            a string not null,
+            b string null
+        )
+        DISTRIBUTED BY HASH(k0)
+        PROPERTIES
+        (
+            "replication_num" = "1"
+        );
+    """
+    sql """ insert into test_url_decode_malformed values
+        (1, 'abc%', 'abc%'),
+        (2, '%G1', '%G1'),
+        (3, '%2Fok%ZZbad', '%2Fok%ZZbad'),
+        (4, '%', null);
+    """
+    order_qt_malformed_table_not_nullable "select url_decode(a) from test_url_decode_malformed"
+    order_qt_malformed_table_nullable "select url_decode(b) from test_url_decode_malformed"
 }
