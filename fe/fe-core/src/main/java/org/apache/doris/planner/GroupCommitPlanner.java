@@ -79,6 +79,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
 // Used to generate a plan fragment for a group commit
@@ -161,9 +163,18 @@ public class GroupCommitPlanner {
                 .build();
         LOG.info("query_id={}, rows={}, reuse group commit query_id={} ", DebugUtil.printId(ctx.queryId()),
                 rows.size(), DebugUtil.printId(loadId));
+        int timeoutSec = Math.max(1, ctx.getExecTimeoutS());
         Future<PGroupCommitInsertResponse> future = BackendServiceProxy.getInstance()
-                .groupCommitInsert(new TNetworkAddress(backend.getHost(), backend.getBrpcPort()), request);
-        return future.get();
+                .groupCommitInsert(new TNetworkAddress(backend.getHost(), backend.getBrpcPort()), request,
+                        timeoutSec);
+        try {
+            return future.get(timeoutSec, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            // avoid the FE thread hanging forever on a dead/hung BE
+            future.cancel(true);
+            throw new RpcException(backend.getHost(),
+                    "group commit insert timed out after " + timeoutSec + "s", e);
+        }
     }
 
     public long getBackendId() {
