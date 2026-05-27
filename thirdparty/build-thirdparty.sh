@@ -70,7 +70,7 @@ KERNEL="$(uname -s)"
 if [[ "${KERNEL}" == 'Darwin' ]]; then
     PARALLEL="$(($(sysctl -n hw.logicalcpu) / 4 + 1))"
 else
-    PARALLEL="$(($(nproc) / 4 + 1))"
+    PARALLEL="$(($(nproc) / 2 + 1))"
 fi
 
 BUILD_AZURE="ON"

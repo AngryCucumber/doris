@@ -85,7 +85,7 @@ public class HardwareInfoController {
             map.put("OS", String.join("<br>", getOperatingSystem(os)));
             map.put("Processor", String.join("<br>", getProcessor(processor)));
             map.put("Memory", String.join("<br>", getMemory(memory)));
-            map.put("Processes", String.join("<br>", getProcesses(os, memory)));
+            // map.put("Processes", String.join("<br>", getProcesses(os, memory)));
             map.put("Disk", String.join("<br>", getDisks(hal.getDiskStores())));
             map.put("FileSystem", String.join("<br>", getFileSystem(os.getFileSystem())));
             map.put("NetworkInterface", String.join("<br>", getNetworkInterfaces(hal.getNetworkIFs())));

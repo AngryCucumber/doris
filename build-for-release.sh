@@ -129,7 +129,7 @@ BE="be"
 CLOUD="ms"
 EXT="extensions"
 TOOLS="tools"
-PACKAGE="apache-doris-${VERSION}-bin-${ARCH}"
+PACKAGE="massdb-sql-${VERSION}-bin-${ARCH}"
 
 if [[ "${_USE_AVX2}" == "0" ]]; then
     PACKAGE="${PACKAGE}-noavx2"
