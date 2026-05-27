@@ -243,7 +243,7 @@ void heap_handler(const WebPageHandler::ArgumentMap& args, std::stringstream* ou
     (*output) << "and make sure there is a 'pprof' executable file in the system PATH or "
                  "'be/tools/bin/' directory."
               << std::endl;
-    (*output) << "Doris will obtain Profile in the following ways:" << std::endl;
+    (*output) << "MassDB SQL will obtain Profile in the following ways:" << std::endl;
     (*output) << std::endl;
     (*output) << "    curl http://localhost:" << config::webserver_port
               << "/pprof/heap?seconds=30 > perf.data" << std::endl;
@@ -309,7 +309,7 @@ void cpu_handler(const WebPageHandler::ArgumentMap& args, std::stringstream* out
     (*output) << "and make sure there is a 'pprof' executable file in the system PATH or "
                  "'be/tools/bin/' directory."
               << std::endl;
-    (*output) << "Doris will obtain Profile in the following ways:" << std::endl;
+    (*output) << "MassDB SQL will obtain Profile in the following ways:" << std::endl;
     (*output) << std::endl;
     (*output) << "    curl http://localhost:" << config::webserver_port
               << "/pprof/profile?seconds=30 > perf.data" << std::endl;
@@ -326,7 +326,7 @@ void cpu_handler(const WebPageHandler::ArgumentMap& args, std::stringstream* out
     (*output) << "    be/tools/FlameGraph/stackcollapse-perf.pl" << std::endl;
     (*output) << "    be/tools/FlameGraph/flamegraph.pl" << std::endl;
     (*output) << std::endl;
-    (*output) << "Doris will obtain the flame graph in the following ways:" << std::endl;
+    (*output) << "MassDB SQL will obtain the flame graph in the following ways:" << std::endl;
     (*output) << std::endl;
     (*output) << "    perf record -m 2 -g -p be_pid -o perf.data - sleep 30" << std::endl;
     (*output) << "    perf script -i perf.data | stackcollapse-perf.pl | flamegraph.pl > "
