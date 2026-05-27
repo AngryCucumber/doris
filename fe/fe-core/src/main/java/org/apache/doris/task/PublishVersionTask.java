@@ -59,7 +59,7 @@ public class PublishVersionTask extends AgentTask {
         super(null, backendId, TTaskType.PUBLISH_VERSION, dbId, -1L, -1L, -1L, -1L, transactionId, createTime);
         this.transactionId = transactionId;
         this.partitionVersionInfos = partitionVersionInfos;
-        this.succTablets = null;
+        this.succTablets = Maps.newHashMap();
         this.errorTablets = new ArrayList<>();
         this.isFinished = false;
     }
@@ -84,7 +84,7 @@ public class PublishVersionTask extends AgentTask {
     }
 
     public void setSuccTablets(Map<Long, Long> succTablets) {
-        this.succTablets = succTablets;
+        this.succTablets = succTablets == null ? Maps.newHashMap() : succTablets;
     }
 
     public synchronized List<Long> getErrorTablets() {

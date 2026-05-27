@@ -897,6 +897,11 @@ public class DatabaseTransactionMgr {
         } finally {
             readUnlock();
         }
+        if (transactionState == null) {
+            LOG.warn("transaction not found when waiting for finish, db={}, txn={}",
+                    db.getFullName(), transactionId);
+            throw new TransactionCommitFailedException("transaction not found");
+        }
 
         switch (transactionState.getTransactionStatus()) {
             case COMMITTED:
@@ -1475,8 +1480,9 @@ public class DatabaseTransactionMgr {
         boolean success = true;
         for (int i = 0; i < subTxnIds.size(); i++) {
             PublishVersionTask task = replicaPublishTasks.get(i);
-            success = (task != null && task.isFinished() && task.getSuccTablets().containsKey(tabletId)) || (
-                    replica.getState() == Replica.ReplicaState.ALTER && (!Config.publish_version_check_alter_replica
+            success = (task != null && task.isFinished() && task.getSuccTablets() != null
+                        && task.getSuccTablets().containsKey(tabletId))
+                    || (replica.getState() == Replica.ReplicaState.ALTER && (!Config.publish_version_check_alter_replica
                             || subTxnIds.get(i) < alterWaterschedTxnId || alterWaterschedTxnId == -1));
             if (!success) {
                 break;

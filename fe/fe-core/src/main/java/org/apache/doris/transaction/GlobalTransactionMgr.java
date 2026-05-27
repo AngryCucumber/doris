@@ -660,12 +660,17 @@ public class GlobalTransactionMgr implements GlobalTransactionMgrIface {
             try {
                 DatabaseTransactionMgr dbTransactionMgr = getDatabaseTransactionMgr(txnInfo.first);
                 TransactionState transactionState = dbTransactionMgr.getTransactionState(txnInfo.second);
+                if (transactionState == null || transactionState.getCoordinator() == null) {
+                    continue;
+                }
                 long coordStartTime = transactionState.getCoordinator().startTime;
                 if (coordStartTime > 0 && coordStartTime < beStartTime) {
                     // does not hold table write lock
                     dbTransactionMgr.abortTransaction(txnInfo.second, "coordinate BE restart", null);
                 }
-            } catch (UserException e) {
+            } catch (Throwable e) {
+                // catch Throwable (not just UserException) so a single txn's NPE/runtime error
+                // does not break the whole abort loop for the rest of the PREPARE txns.
                 LOG.warn("Abort txn on coordinate BE {} failed, msg={}", coordinateHost, e.getMessage());
             }
         }

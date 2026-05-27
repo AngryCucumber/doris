@@ -178,8 +178,8 @@ public class BackendServiceClient {
     }
 
     public Future<InternalService.PGroupCommitInsertResponse> groupCommitInsert(
-            InternalService.PGroupCommitInsertRequest request) {
-        return stub.groupCommitInsert(request);
+            InternalService.PGroupCommitInsertRequest request, int timeoutSec) {
+        return stub.withDeadlineAfter(timeoutSec, TimeUnit.SECONDS).groupCommitInsert(request);
     }
 
     public Future<InternalService.PGetWalQueueSizeResponse> getWalQueueSize(

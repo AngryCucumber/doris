@@ -506,10 +506,10 @@ public class BackendServiceProxy {
     }
 
     public Future<PGroupCommitInsertResponse> groupCommitInsert(TNetworkAddress address,
-            PGroupCommitInsertRequest request) throws RpcException {
+            PGroupCommitInsertRequest request, int timeoutSec) throws RpcException {
         try {
             final BackendServiceClient client = getProxy(address);
-            return client.groupCommitInsert(request);
+            return client.groupCommitInsert(request, timeoutSec);
         } catch (Throwable e) {
             LOG.warn("failed to group commit insert from address={}:{}", address.getHostname(),
                     address.getPort(), e);
