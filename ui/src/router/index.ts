@@ -73,11 +73,11 @@ export default {
                 //     component: Backend,
                 //     title: 'backend',
                 // },
-                {
-                    path: '/Log',
-                    component: Logs,
-                    title: 'Log',
-                },
+                // {
+                //     path: '/Log',
+                //     component: Logs,
+                //     title: 'Log',
+                // },
                 {
                     path: '/QueryProfile',
                     component: QueryProfile,

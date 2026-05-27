@@ -23,7 +23,7 @@ import {Controlled as CodeMirror} from 'react-codemirror2';
 import styles from './codemirror-with-fullscreen.less';
 require('codemirror/lib/codemirror.css');
 require('codemirror/theme/material.css');
-require('./doris.css');
+require('./massdb.css');
 require('codemirror/addon/hint/show-hint.css');
 require('codemirror/addon/display/fullscreen.css');
 require('codemirror/mode/sql/sql');
