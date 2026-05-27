@@ -977,6 +977,11 @@ public class DatabaseTransactionMgr {
         } finally {
             readUnlock();
         }
+        if (transactionState == null) {
+            LOG.warn("transaction not found when waiting for finish, db={}, txn={}",
+                    db.getFullName(), transactionId);
+            throw new TransactionCommitFailedException("transaction not found");
+        }
 
         switch (transactionState.getTransactionStatus()) {
             case COMMITTED:

@@ -72,6 +72,14 @@ public class AgentTaskCleanupDaemon extends MasterDaemon {
                 PushTask task = ((PushTask) agentTask);
                 task.countDownLatchWithStatus(beId, agentTask.getTabletId(), new Status(TStatusCode.ABORTED, errMsg));
             }
+            if (agentTask instanceof PublishVersionTask
+                    && ((PublishVersionTask) agentTask).getSuccTablets() == null) {
+                // BE is down: this replica's publish is treated as failed. Set an empty map so that
+                // downstream checkReplicaContinuousVersionSucc judges this replica as not-succeeded and
+                // goes through quorum, instead of NPE-ing on a null succTablets. (defensive; also covered
+                // by PublishVersionTask defaulting succTablets to an empty map)
+                ((PublishVersionTask) agentTask).setSuccTablets(Maps.newHashMap());
+            }
             agentTask.setFinished(true);
             agentTask.setErrorCode(TStatusCode.ABORTED);
             agentTask.setErrorMsg(errMsg);
