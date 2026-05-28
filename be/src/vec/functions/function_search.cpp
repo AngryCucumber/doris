@@ -42,6 +42,7 @@
 #include "olap/rowset/segment_v2/inverted_index/query_v2/boolean_query/boolean_query_builder.h"
 #include "olap/rowset/segment_v2/inverted_index/query_v2/boolean_query/operator.h"
 #include "olap/rowset/segment_v2/inverted_index/query_v2/collect/doc_set_collector.h"
+#include "olap/rowset/segment_v2/inverted_index/query_v2/collect/multi_segment_util.h"
 #include "olap/rowset/segment_v2/inverted_index/query_v2/collect/top_k_collector.h"
 #include "olap/rowset/segment_v2/inverted_index/query_v2/phrase_query/multi_phrase_query.h"
 #include "olap/rowset/segment_v2/inverted_index/query_v2/phrase_query/phrase_query.h"
@@ -492,15 +493,26 @@ Status FunctionSearch::evaluate_inverted_index_with_search_param(
     // For example: TRUE OR NULL = TRUE (not NULL), FALSE OR NULL = NULL
     std::shared_ptr<roaring::Roaring> null_bitmap = std::make_shared<roaring::Roaring>();
     if (exec_ctx.null_resolver) {
-        auto scorer = weight->scorer(exec_ctx, root_binding_key);
-        if (scorer && scorer->has_null_bitmap(exec_ctx.null_resolver)) {
-            const auto* bitmap = scorer->get_null_bitmap(exec_ctx.null_resolver);
-            if (bitmap != nullptr) {
-                *null_bitmap = *bitmap;
-                VLOG_TRACE << "search: Extracted NULL bitmap with " << null_bitmap->cardinality()
-                           << " NULL documents";
-            }
-        }
+        // Build the three-valued-logic scorer per segment, mirroring collect_multi_segment_doc_set.
+        // Running weight->scorer() directly on the full multi-segment exec_ctx would make leaf
+        // scorers call TermDocs::readBlock() on a multi-segment reader, which CLucene does not
+        // support and which aborts the BE. for_each_index_segment narrows every reader binding to a
+        // single segment, then we offset each segment's NULL bitmap by its doc base and merge.
+        query_v2::for_each_index_segment(
+                exec_ctx, root_binding_key,
+                [&](const query_v2::QueryExecutionContext& seg_ctx, uint32_t seg_base) {
+                    auto scorer = weight->scorer(seg_ctx, root_binding_key);
+                    if (scorer && scorer->has_null_bitmap(seg_ctx.null_resolver)) {
+                        const auto* bitmap = scorer->get_null_bitmap(seg_ctx.null_resolver);
+                        if (bitmap != nullptr) {
+                            for (uint32_t doc : *bitmap) {
+                                null_bitmap->add(seg_base + doc);
+                            }
+                        }
+                    }
+                });
+        VLOG_TRACE << "search: Extracted NULL bitmap with " << null_bitmap->cardinality()
+                   << " NULL documents";
     }
 
     VLOG_TRACE << "search: Before mask - true_bitmap=" << roaring->cardinality()
