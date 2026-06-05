@@ -296,7 +296,15 @@ Status FieldReaderResolver::resolve(const std::string& field_name,
 Status FunctionSearch::execute_impl(FunctionContext* /*context*/, Block& /*block*/,
                                     const ColumnNumbers& /*arguments*/, uint32_t /*result*/,
                                     size_t /*input_rows_count*/) const {
-    return Status::RuntimeError("only inverted index queries are supported");
+    // search() is an inverted-index-only DSL function with no raw-data evaluator.
+    // Reaching execute_impl means the index query was downgraded (the inverted
+    // index is missing/unreadable for some segment), so the predicate cannot be
+    // evaluated. Surface an actionable error instead of the opaque original one.
+    return Status::RuntimeError(
+            "search() requires an inverted index but the index is unavailable for some data "
+            "(missing or unreadable on one or more segments); the query cannot be downgraded to "
+            "raw scan. Please ensure the inverted index is built on the queried columns (run "
+            "BUILD INDEX, or check whether compaction dropped the index) and retry.");
 }
 
 // Enhanced implementation: Handle new parameter structure (DSL + SlotReferences)

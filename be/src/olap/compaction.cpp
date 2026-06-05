@@ -401,6 +401,21 @@ Status CompactionMixin::do_compact_ordered_rowsets() {
 }
 
 Status CompactionMixin::build_basic_info(bool is_ordered_compaction) {
+    // Reset accumulators so this function is idempotent. It can be invoked twice
+    // within a single compaction: ordered compaction calls it via
+    // do_compact_ordered_rowsets(), and if that path bails out (e.g. variant
+    // check_path_stats fails) the normal path calls it again in
+    // execute_compact_impl(). Without resetting, these members would be summed
+    // twice -> _input_row_num becomes 2x -> check_correctness() trips with
+    // "row_num does not match between cumulative input and output" (E-224) and
+    // base compaction can never complete. This is a pure counter fix; it does
+    // not touch the merge or check_correctness, and yields identical results
+    // when called once.
+    _input_rowsets_data_size = 0;
+    _input_rowsets_index_size = 0;
+    _input_rowsets_total_size = 0;
+    _input_row_num = 0;
+    _input_num_segments = 0;
     for (auto& rowset : _input_rowsets) {
         const auto& rowset_meta = rowset->rowset_meta();
         auto index_size = rowset_meta->index_disk_size();
@@ -1180,10 +1195,19 @@ Status CloudCompactionMixin::update_delete_bitmap() {
 }
 
 Status CompactionMixin::construct_output_rowset_writer(RowsetWriterContext& ctx) {
+    // Index compaction (segment writer skips building the inverted index and
+    // do_inverted_index_compaction() merges the source index files into the output via
+    // rowid_conversion) is only correct on the VERTICAL compaction path. On the HORIZONTAL
+    // path (enable_vertical_compaction=false) the merge produces an empty index and the
+    // string inverted indexes are silently dropped (observed: output rowset index size
+    // collapses, e.g. 7.69KB -> 293B), causing later "No index with id ... found" errors.
+    // Restrict index compaction to vertical compaction; on the horizontal path the segment
+    // writer builds the indexes normally instead, which is correct.
     // only do index compaction for dup_keys and unique_keys with mow enabled
-    if (_enable_inverted_index_compaction && (((_tablet->keys_type() == KeysType::UNIQUE_KEYS &&
-                                                _tablet->enable_unique_key_merge_on_write()) ||
-                                               _tablet->keys_type() == KeysType::DUP_KEYS))) {
+    if (_is_vertical && _enable_inverted_index_compaction &&
+        (((_tablet->keys_type() == KeysType::UNIQUE_KEYS &&
+           _tablet->enable_unique_key_merge_on_write()) ||
+          _tablet->keys_type() == KeysType::DUP_KEYS))) {
         construct_index_compaction_columns(ctx);
     }
     ctx.version = _output_version;

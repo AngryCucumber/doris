@@ -435,8 +435,7 @@ TEST_F(FunctionSearchTest, TestExecuteImpl) {
                                                 input_rows_count);
     EXPECT_FALSE(status.ok());
     EXPECT_TRUE(status.code() == ErrorCode::RUNTIME_ERROR);
-    EXPECT_TRUE(status.to_string().find("only inverted index queries are supported") !=
-                std::string::npos);
+    EXPECT_TRUE(status.to_string().find("requires an inverted index") != std::string::npos);
 }
 
 TEST_F(FunctionSearchTest, TestBasicProperties) {
