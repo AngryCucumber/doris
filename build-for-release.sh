@@ -171,7 +171,12 @@ cp -R "${ORI_OUTPUT}"/ms/* "${OUTPUT_CLOUD}"/
 if [[ "${TAR}" -eq 1 ]]; then
     echo "Begin to compress"
     cd "${ORI_OUTPUT}"
-    tar -cf - "${PACKAGE}" | xz -T0 -z - >"${PACKAGE}".tar.xz
+    # Use pigz (parallel gzip) to compress with all CPU cores; fall back to gzip if unavailable.
+    if command -v pigz >/dev/null 2>&1; then
+        tar -cf - "${PACKAGE}" | pigz -p "$(nproc)" >"${PACKAGE}".tar.gz
+    else
+        tar -czf "${PACKAGE}".tar.gz "${PACKAGE}"
+    fi
     cd -
 fi
 
