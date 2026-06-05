@@ -36,7 +36,18 @@ namespace doris::vectorized {
 Status FunctionMultiMatch::execute_impl(FunctionContext* /*context*/, Block& block,
                                         const ColumnNumbers& arguments, uint32_t result,
                                         size_t /*input_rows_count*/) const {
-    return Status::RuntimeError("only inverted index queries are supported");
+    // multi_match currently has no raw-data evaluator. Reaching execute_impl means
+    // the inverted index query was downgraded (the index is missing/unreadable for
+    // some segment, e.g. an index entry dropped by compaction), so the predicate
+    // cannot be evaluated here. Surface an actionable error instead of the opaque
+    // original one. TODO: implement a raw-data fallback (add prepare() to build a
+    // per-column analyzer context, then tokenize+match each column and combine by
+    // query_type), mirroring FunctionMatchBase, guarded by unit tests.
+    return Status::RuntimeError(
+            "multi_match() requires an inverted index but the index is unavailable for some data "
+            "(missing or unreadable on one or more segments); the query cannot be downgraded to "
+            "raw scan. Please ensure the inverted index is built on the queried columns (run "
+            "BUILD INDEX, or check whether compaction dropped the index) and retry.");
 }
 
 InvertedIndexQueryType get_query_type(const std::string& query_type) {

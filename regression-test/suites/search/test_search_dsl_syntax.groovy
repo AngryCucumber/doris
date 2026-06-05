@@ -217,7 +217,7 @@ suite("test_search_dsl_syntax", "p0") {
         sql "SELECT /*+SET_VAR(enable_common_expr_pushdown=true) */ id FROM ${tableName} WHERE search('') ORDER BY id"
         // Should handle empty string gracefully
     } catch (Exception e) {
-        assertTrue(e.getMessage().contains("only inverted index queries are supported") || e.getMessage().contains("Invalid"))
+        assertTrue(e.getMessage().contains("requires an inverted index") || e.getMessage().contains("Invalid"))
     }
 
     // Edge Case Test 2: Very long search string
