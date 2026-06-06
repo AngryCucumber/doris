@@ -507,24 +507,24 @@ Status FunctionSearch::evaluate_inverted_index_with_search_param(
         // support and which aborts the BE, so for_each_index_segment is still used for narrowing.
         //
         // The NULL bitmap itself, however, is fetched through the resolver from
-        // IndexIterator::read_null_bitmap(): one bitmap per index file, covering the whole data
-        // segment in GLOBAL row ids. It is not per lucene sub-segment, so every sub-segment
-        // callback would receive the same bitmap. Collect it exactly once and do NOT shift it by
-        // the sub-segment doc base: re-adding it shifted marks valid rows as NULL and
-        // mask_out_null() below would then silently drop matching rows.
-        bool null_bitmap_collected = false;
+        // IndexIterator::read_null_bitmap(): one bitmap per index file PER FIELD, covering the
+        // whole data segment in GLOBAL row ids. It is not per lucene sub-segment, so it must NOT
+        // be shifted by the sub-segment doc base: re-adding it shifted marks valid rows as NULL
+        // and mask_out_null() below would then silently drop matching rows.
+        //
+        // Still visit every sub-segment (union, no offset) rather than only the first one: a leaf
+        // term that has postings only in a later sub-segment degrades to an EmptyScorer (no NULL
+        // bitmap) in the earlier ones, so collecting from a single sub-segment could miss that
+        // field's NULL rows. The union is idempotent because each field contributes the same
+        // global bitmap from whichever sub-segments have its postings.
         query_v2::for_each_index_segment(
                 exec_ctx, root_binding_key,
                 [&](const query_v2::QueryExecutionContext& seg_ctx, uint32_t /*seg_base*/) {
-                    if (null_bitmap_collected) {
-                        return;
-                    }
-                    null_bitmap_collected = true;
                     auto scorer = weight->scorer(seg_ctx, root_binding_key);
                     if (scorer && scorer->has_null_bitmap(seg_ctx.null_resolver)) {
                         const auto* bitmap = scorer->get_null_bitmap(seg_ctx.null_resolver);
                         if (bitmap != nullptr) {
-                            *null_bitmap = *bitmap;
+                            *null_bitmap |= *bitmap;
                         }
                     }
                 });
