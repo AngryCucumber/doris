@@ -501,21 +501,30 @@ Status FunctionSearch::evaluate_inverted_index_with_search_param(
     // For example: TRUE OR NULL = TRUE (not NULL), FALSE OR NULL = NULL
     std::shared_ptr<roaring::Roaring> null_bitmap = std::make_shared<roaring::Roaring>();
     if (exec_ctx.null_resolver) {
-        // Build the three-valued-logic scorer per segment, mirroring collect_multi_segment_doc_set.
+        // Build the three-valued-logic scorer on a narrowed (single lucene sub-segment) context.
         // Running weight->scorer() directly on the full multi-segment exec_ctx would make leaf
         // scorers call TermDocs::readBlock() on a multi-segment reader, which CLucene does not
-        // support and which aborts the BE. for_each_index_segment narrows every reader binding to a
-        // single segment, then we offset each segment's NULL bitmap by its doc base and merge.
+        // support and which aborts the BE, so for_each_index_segment is still used for narrowing.
+        //
+        // The NULL bitmap itself, however, is fetched through the resolver from
+        // IndexIterator::read_null_bitmap(): one bitmap per index file, covering the whole data
+        // segment in GLOBAL row ids. It is not per lucene sub-segment, so every sub-segment
+        // callback would receive the same bitmap. Collect it exactly once and do NOT shift it by
+        // the sub-segment doc base: re-adding it shifted marks valid rows as NULL and
+        // mask_out_null() below would then silently drop matching rows.
+        bool null_bitmap_collected = false;
         query_v2::for_each_index_segment(
                 exec_ctx, root_binding_key,
-                [&](const query_v2::QueryExecutionContext& seg_ctx, uint32_t seg_base) {
+                [&](const query_v2::QueryExecutionContext& seg_ctx, uint32_t /*seg_base*/) {
+                    if (null_bitmap_collected) {
+                        return;
+                    }
+                    null_bitmap_collected = true;
                     auto scorer = weight->scorer(seg_ctx, root_binding_key);
                     if (scorer && scorer->has_null_bitmap(seg_ctx.null_resolver)) {
                         const auto* bitmap = scorer->get_null_bitmap(seg_ctx.null_resolver);
                         if (bitmap != nullptr) {
-                            for (uint32_t doc : *bitmap) {
-                                null_bitmap->add(seg_base + doc);
-                            }
+                            *null_bitmap = *bitmap;
                         }
                     }
                 });
