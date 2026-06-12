@@ -28,7 +28,7 @@
 set -eo pipefail
 
 build_version_prefix="${DORIS_BUILD_VERSION_PREFIX-massdb-sql}"
-build_version_major="${DORIS_BUILD_VERSION_MAJOR-4}"
+build_version_major="${DORIS_BUILD_VERSION_MAJOR-2}"
 build_version_minor="${DORIS_BUILD_VERSION_MINOR-0}"
 build_version_patch="${DORIS_BUILD_VERSION_PATCH-5}"
 build_version_hotfix="${DORIS_BUILD_VERSION_HOTFIX-0}"
