@@ -520,9 +520,24 @@ public:
 
     int compare_at(size_t n, size_t m, const IColumn& rhs_,
                    int /*nan_direction_hint*/) const override {
-        const ColumnStr<T>& rhs = assert_cast<const ColumnStr<T>&>(rhs_);
-        return memcmp_small_allow_overflow15(chars.data() + offset_at(n), size_at(n),
-                                             rhs.chars.data() + rhs.offset_at(m), rhs.size_at(m));
+        // A DataTypeString column may physically hold either ColumnStr<uint32_t> or
+        // ColumnStr<uint64_t> (see DataTypeString::check_column). In particular, the
+        // partition/distribution key block is always built as ColumnStr<uint32_t>, while a
+        // loaded data block may carry the same logical string column as ColumnStr<uint64_t>.
+        // Comparing the two with a hard assert_cast<const ColumnStr<T>&> would abort the BE,
+        // so handle both offset widths here, mirroring insert_range_from/insert_indices_from.
+        auto do_compare = [&](const auto& rhs) {
+            const auto& rhs_offsets = rhs.get_offsets();
+            const auto& rhs_chars = rhs.get_chars();
+            const auto rhs_offset = rhs_offsets[m - 1];
+            const size_t rhs_size = rhs_offsets[m] - rhs_offsets[m - 1];
+            return memcmp_small_allow_overflow15(chars.data() + offset_at(n), size_at(n),
+                                                 rhs_chars.data() + rhs_offset, rhs_size);
+        };
+        if (rhs_.is_column_string64()) {
+            return do_compare(assert_cast<const ColumnStr<uint64_t>&>(rhs_));
+        }
+        return do_compare(assert_cast<const ColumnStr<uint32_t>&>(rhs_));
     }
 
     void get_permutation(bool reverse, size_t limit, int nan_direction_hint, HybridSorter& sorter,

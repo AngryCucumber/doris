@@ -336,6 +336,32 @@ TEST_F(ColumnStringTest, is_column_string64) {
     EXPECT_FALSE(column_str32_json->is_column_string64());
     EXPECT_TRUE(column_str64_json->is_column_string64());
 }
+// A DataTypeString column may physically hold either ColumnStr<uint32_t> or
+// ColumnStr<uint64_t>, so compare_at must tolerate comparing across the two offset
+// widths (e.g. partition key block is uint32 while the loaded data block is uint64).
+// Previously this aborted the BE with a bad assert_cast.
+TEST_F(ColumnStringTest, compare_at_mixed_offset_width) {
+    auto col32 = ColumnString::create();
+    auto col64 = ColumnString64::create();
+    auto fill = [](IColumn* col) {
+        col->insert_data("apple", 5);
+        col->insert_data("banana", 6);
+        col->insert_data("apple", 5);
+    };
+    fill(col32.get());
+    fill(col64.get());
+
+    // uint32 column compared against uint64 column.
+    EXPECT_EQ(col32->compare_at(0, 0, *col64, -1), 0);    // apple vs apple
+    EXPECT_LT(col32->compare_at(0, 1, *col64, -1), 0);    // apple < banana
+    EXPECT_GT(col32->compare_at(1, 0, *col64, -1), 0);    // banana > apple
+    EXPECT_EQ(col32->compare_at(2, 0, *col64, -1), 0);    // apple vs apple
+
+    // uint64 column compared against uint32 column (the reverse direction).
+    EXPECT_EQ(col64->compare_at(0, 2, *col32, -1), 0);    // apple vs apple
+    EXPECT_LT(col64->compare_at(0, 1, *col32, -1), 0);    // apple < banana
+    EXPECT_GT(col64->compare_at(1, 0, *col32, -1), 0);    // banana > apple
+}
 TEST_F(ColumnStringTest, insert_from) {
     {
         assert_column_vector_insert_from_callback<TYPE_STRING>(ColumnString(),
