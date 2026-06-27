@@ -508,7 +508,10 @@ public class TabletScheduler extends MasterDaemon {
             // do not schedule more tablet is tablet scheduler is disabled.
             throw new SchedException(Status.UNRECOVERABLE, SubCode.DIAGNOSE_IGNORE, "tablet scheduler is disabled");
         }
-        if (Config.disable_balance && tabletCtx.getType() == Type.BALANCE) {
+        if (Config.disable_balance && tabletCtx.getType() == Type.BALANCE
+                && tabletCtx.getBalanceType() != TabletSchedCtx.BalanceType.TIER_MIGRATION) {
+            // Tablet tiering (B route) is not governed by disable_balance; it is
+            // controlled by enable_tablet_tiering. See design v2 §9.6 / R18.
             throw new SchedException(Status.UNRECOVERABLE, SubCode.DIAGNOSE_IGNORE, "balance is disabled");
         }
 
@@ -1434,12 +1437,96 @@ public class TabletScheduler extends MasterDaemon {
             checkDiskBalanceLastSuccTime(tabletCtx.getDestBackendId(), tabletCtx.getDestPathHash());
         } else if (tabletCtx.getBalanceType() == TabletSchedCtx.BalanceType.BE_BALANCE) {
             task = rebalancer.createBalanceTask(tabletCtx);
+        } else if (tabletCtx.getBalanceType() == TabletSchedCtx.BalanceType.TIER_MIGRATION) {
+            task = createTierMigrationTask(tabletCtx);
         } else {
             throw new SchedException(Status.UNRECOVERABLE,
                 "unknown balance type: " + tabletCtx.getBalanceType().toString());
         }
         batchTask.addTask(task);
         incrDestPathCopingSize(tabletCtx);
+    }
+
+    // Tablet tiering (B route): build a cross-medium (SSD<->HDD) migration task on
+    // the same BE. Reuses TabletSchedCtx + PathSlot like disk balance, but selects
+    // a dest path on the TARGET medium and carries dest_path_hash + tiering fields
+    // (strict). See design v2 §9.5 / T4.3.
+    private AgentTask createTierMigrationTask(TabletSchedCtx tabletCtx) throws SchedException {
+        completeTierMigrationCtx(tabletCtx);
+        StorageMediaMigrationTask task = tabletCtx.createStorageMediaMigrationTask();
+        org.apache.doris.tiering.TabletTieringMgr mgr = Env.getCurrentEnv().getTabletTieringMgr();
+        org.apache.doris.tiering.TabletTierState state =
+                mgr != null ? mgr.getTabletTierState(tabletCtx.getTabletId()) : null;
+        long effectiveRevision = state != null ? state.getEffectiveRevision() : -1L;
+        long version = state != null ? state.getVersion() : -1L;
+        long attemptId = mgr != null ? mgr.nextMigrationAttemptId() : System.nanoTime();
+        task.setTieringFields(tabletCtx.getSrcPathHash(), tabletCtx.getDestPathHash(),
+                effectiveRevision, version, attemptId, true /* strict */, "tiering");
+        return task;
+    }
+
+    private void completeTierMigrationCtx(TabletSchedCtx tabletCtx) throws SchedException {
+        LoadStatisticForTag clusterStat = statisticMap.get(tabletCtx.getTag());
+        if (clusterStat == null) {
+            throw new SchedException(Status.UNRECOVERABLE,
+                    String.format("tag %s does not exist", tabletCtx.getTag()));
+        }
+        if (tabletCtx.getTempSrcBackendId() == -1 || tabletCtx.getTempSrcPathHash() == -1) {
+            throw new SchedException(Status.UNRECOVERABLE, "tier migration src is not set correctly");
+        }
+        Replica replica;
+        try {
+            replica = invertedIndex.getReplica(tabletCtx.getTabletId(), tabletCtx.getTempSrcBackendId());
+        } catch (IllegalStateException e) {
+            replica = null;
+        }
+        if (replica == null || replica.getPathHash() != tabletCtx.getTempSrcPathHash()) {
+            throw new SchedException(Status.UNRECOVERABLE, SubCode.DIAGNOSE_IGNORE,
+                    "tier migration src replica may be changed");
+        }
+        long beId = replica.getBackendIdWithoutException();
+        PathSlot slot = backendsWorkingSlots.get(beId);
+        if (slot == null) {
+            throw new SchedException(Status.UNRECOVERABLE, "unable to take src slot");
+        }
+        long srcPathHash = slot.takeBalanceSlot(replica.getPathHash());
+        if (srcPathHash == -1) {
+            throw new SchedException(Status.UNRECOVERABLE, SubCode.DIAGNOSE_IGNORE, "unable to take src slot");
+        }
+        tabletCtx.setSrc(replica);
+
+        BackendLoadStatistic beStat = clusterStat.getBackendLoadStatistic(beId);
+        if (beStat == null || !beStat.isAvailable()) {
+            throw new SchedException(Status.UNRECOVERABLE, "the backend is not available");
+        }
+        // Select a dest path on the TARGET medium (cross-medium), same BE.
+        List<RootPathLoadStatistic> availPaths = Lists.newArrayList();
+        BalanceStatus bs = beStat.isFit(tabletCtx.getTabletSize(), tabletCtx.getStorageMedium(),
+                availPaths, false /* not supplement */);
+        if (bs != BalanceStatus.OK) {
+            throw new SchedException(Status.UNRECOVERABLE, SubCode.DIAGNOSE_IGNORE,
+                    "tablet does not fit on target medium in BE " + beId);
+        }
+        boolean setDest = false;
+        for (RootPathLoadStatistic pathStat : availPaths) {
+            if (pathStat.getStorageMedium() != tabletCtx.getStorageMedium()) {
+                continue;
+            }
+            if (pathStat.getPathHash() == replica.getPathHash()) {
+                continue;
+            }
+            long destPathHash = slot.takeBalanceSlot(pathStat.getPathHash());
+            if (destPathHash == -1) {
+                continue;
+            }
+            tabletCtx.setDest(beId, destPathHash, pathStat.getPath());
+            setDest = true;
+            break;
+        }
+        if (!setDest) {
+            throw new SchedException(Status.UNRECOVERABLE, SubCode.DIAGNOSE_IGNORE,
+                    "unable to find an available dest path on the target medium");
+        }
     }
 
     // choose a path on a backend which is fit for the tablet

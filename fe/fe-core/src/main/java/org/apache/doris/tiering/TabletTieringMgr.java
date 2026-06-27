@@ -75,6 +75,17 @@ public class TabletTieringMgr extends MasterDaemon {
     private final AtomicLong decisionTotal = new AtomicLong();
     private final AtomicLong dryRunDecisionTotal = new AtomicLong();
     private final AtomicBoolean metricsRegistered = new AtomicBoolean(false);
+    // Unique migration attempt id, monotonic across this master's lifetime.
+    private final AtomicLong migrationAttemptIdGen = new AtomicLong(System.currentTimeMillis());
+    private final TabletTieringScheduler tieringScheduler = new TabletTieringScheduler(this);
+
+    public long nextMigrationAttemptId() {
+        return migrationAttemptIdGen.incrementAndGet();
+    }
+
+    public java.util.Collection<TabletTierState> getTabletTierStates() {
+        return tabletTierStates.values();
+    }
 
     private long countTemperature(TieringTemperature temp) {
         long n = 0;
@@ -523,6 +534,15 @@ public class TabletTieringMgr extends MasterDaemon {
                 evaluateTablet(profile, nowMs);
             } catch (Throwable t) {
                 LOG.warn("evaluate tablet {} failed", profile.getTabletId(), t);
+            }
+        }
+        // After evaluation updates targets, dispatch migrations for tablets whose
+        // actual medium != target. dry-run only decides, never migrates.
+        if (!Config.tablet_tiering_dry_run) {
+            try {
+                tieringScheduler.dispatchMigrations(nowMs);
+            } catch (Throwable t) {
+                LOG.warn("tier migration dispatch failed", t);
             }
         }
     }
