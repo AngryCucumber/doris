@@ -94,7 +94,10 @@ public class TabletSchedCtx implements Comparable<TabletSchedCtx> {
     }
 
     public enum BalanceType {
-        BE_BALANCE, DISK_BALANCE
+        BE_BALANCE, DISK_BALANCE,
+        // Tablet tiering (B route): cross-medium (SSD<->HDD) migration on the same
+        // BE, produced by TabletTieringScheduler. See design v2 §9.5.
+        TIER_MIGRATION
     }
 
     public enum Priority {

@@ -5034,6 +5034,17 @@ public class Env {
                             continue;
                         }
                         DataProperty dataProperty = partitionInfo.getDataProperty(partition.getId());
+                        // Tablet tiering (B route): when tiering owns this partition,
+                        // cooldown is only a policy input -- do NOT rewrite the
+                        // partition DataProperty to HDD here, which would override
+                        // per-tablet targets and fight the tier scheduler. The
+                        // partition's declared medium is still surfaced. See §23.2.
+                        TabletTieringMgr tieringMgr = getTabletTieringMgr();
+                        if (tieringMgr != null
+                                && tieringMgr.isTieringOwned(olapTable.getId(), partition.getId())) {
+                            storageMediumMap.put(partitionId, dataProperty.getStorageMedium());
+                            continue;
+                        }
                         if (dataProperty.getStorageMedium() == TStorageMedium.SSD
                                 && dataProperty.getCooldownTimeMs() < currentTimeMs) {
                             // expire. change to HDD.

@@ -108,6 +108,17 @@ public class TabletTieringMgr extends MasterDaemon {
         return state == null ? null : state.getTargetMedium();
     }
 
+    /**
+     * Effective medium for a tablet = persisted target if present, else the given
+     * partition default. Rebalancer consumers and the scheduler read this instead
+     * of {@code TabletMeta.storageMedium} (which must stay the partition default,
+     * since one index's tablets share a TabletMeta instance). See design v2 §9.4.
+     */
+    public TStorageMedium resolveEffectiveMedium(long tabletId, TStorageMedium partitionDefault) {
+        TStorageMedium target = resolveEffectiveTarget(tabletId);
+        return target != null ? target : partitionDefault;
+    }
+
     // ---------------------------------------------------------------------
     // Master-side mutations (write edit log + apply). Callers must be master.
     // ---------------------------------------------------------------------
@@ -181,6 +192,22 @@ public class TabletTieringMgr extends MasterDaemon {
     public void onTabletDeleted(long tabletId) {
         tabletTierStates.remove(tabletId);
         heatProfiles.remove(tabletId);
+    }
+
+    /**
+     * Called from the scheduler finish path when a TIER_MIGRATION task succeeds.
+     * Records the migration time on the tier state; actual medium/path are NOT
+     * written here (reconciled by the next tablet report). The await-report
+     * barrier (P4 ReplicaTierProgress) prevents re-send until reconciled.
+     * See design v2 §9.5 / T4.4.
+     */
+    public void onTierMigrationFinished(long tabletId, long migrationAttemptId) {
+        TabletTierState state = tabletTierStates.get(tabletId);
+        if (state == null) {
+            return;
+        }
+        state.setLastMigrationTimeMs(System.currentTimeMillis());
+        modifyTabletTierState(state);
     }
 
     // ---------------------------------------------------------------------

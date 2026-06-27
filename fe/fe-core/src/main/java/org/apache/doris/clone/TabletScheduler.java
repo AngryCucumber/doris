@@ -645,7 +645,17 @@ public class TabletScheduler extends MasterDaemon {
             tabletCtx.updateTabletSize();
             tabletCtx.setVersionInfo(partition.getVisibleVersion(), partition.getCommittedVersion());
             tabletCtx.setSchemaHash(tbl.getSchemaHashByIndexId(idx.getId()));
-            tabletCtx.setStorageMedium(tbl.getPartitionInfo().getDataProperty(partition.getId()).getStorageMedium());
+            // Tablet tiering (B route): use the effective target medium (tablet
+            // target if any, else partition default) so REPAIR/BALANCE/TIER all
+            // place replicas on the tier-decided medium, not the partition default
+            // (which would drag a HOT tablet's new replica back to HDD). §23.3/T4.7.
+            TStorageMedium partitionMedium =
+                    tbl.getPartitionInfo().getDataProperty(partition.getId()).getStorageMedium();
+            org.apache.doris.tiering.TabletTieringMgr tieringMgr =
+                    Env.getCurrentEnv().getTabletTieringMgr();
+            tabletCtx.setStorageMedium(tieringMgr != null
+                    ? tieringMgr.resolveEffectiveMedium(tabletCtx.getTabletId(), partitionMedium)
+                    : partitionMedium);
 
             handleTabletByTypeAndStatus(tabletHealth.status, tabletCtx, batchTask);
         } finally {
@@ -1827,12 +1837,25 @@ public class TabletScheduler extends MasterDaemon {
             LOG.warn("tablet info does not exist: {}", tabletId);
             return true;
         }
-        if (tabletCtx.getBalanceType() != TabletSchedCtx.BalanceType.DISK_BALANCE) {
+        boolean isTierMigration =
+                tabletCtx.getBalanceType() == TabletSchedCtx.BalanceType.TIER_MIGRATION;
+        if (tabletCtx.getBalanceType() != TabletSchedCtx.BalanceType.DISK_BALANCE && !isTierMigration) {
             // this should not happen
             LOG.warn("task type is not as excepted. tablet {}", tabletId);
             return true;
         }
         if (request.getTaskStatus().getStatusCode() == TStatusCode.OK) {
+            if (isTierMigration) {
+                // Tablet tiering (B route): actual medium / path hash are NOT written
+                // here -- they are reconciled by the next tablet report (single source
+                // of truth). So do NOT call updateDestPathHash. Record the migration
+                // time on the tier state; the await-report barrier prevents re-send
+                // until report reconciles. See design v2 §9.5 / T4.4.
+                Env.getCurrentEnv().getTabletTieringMgr()
+                        .onTierMigrationFinished(tabletId, migrationTask.getMigrationAttemptId());
+                finalizeTabletCtx(tabletCtx, TabletSchedCtx.State.FINISHED, Status.FINISHED, "finished");
+                return true;
+            }
             // if we have a success task, then stat must be refreshed before schedule a new task
             updateDiskBalanceLastSuccTime(tabletCtx.getSrcBackendId(), tabletCtx.getSrcPathHash());
             updateDiskBalanceLastSuccTime(tabletCtx.getDestBackendId(), tabletCtx.getDestPathHash());

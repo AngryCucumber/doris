@@ -436,6 +436,17 @@ public class TabletInvertedIndex {
         long partitionId = tabletMeta.getPartitionId();
         TStorageMedium storageMedium = storageMediumMap.get(partitionId);
 
+        // Tablet tiering (B route): if this tablet is owned by tiering, the tier
+        // scheduler (TIER_MIGRATION) owns its placement. Legacy report-driven
+        // fire-and-forget migration must NOT touch it -- do not add it to
+        // tabletMigrationMap and do not write the shared TabletMeta medium. This
+        // shielding holds regardless of the global switch (enable=false == pause:
+        // keep state, still shielded, never moved back). See design v2 §9.4 / §23.2.
+        TabletTieringMgr tieringMgr = Env.getCurrentEnv().getTabletTieringMgr();
+        if (tieringMgr != null && tieringMgr.isTieringOwned(tabletMeta.getTableId(), partitionId)) {
+            return;
+        }
+
         if (storageMedium != null && backendTabletInfo.isSetStorageMedium()
                 && isLocal(storageMedium)
                 && isLocal(backendTabletInfo.getStorageMedium())
