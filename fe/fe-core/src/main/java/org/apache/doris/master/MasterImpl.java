@@ -596,6 +596,17 @@ public class MasterImpl {
 
     private void finishStorageMediumMigrate(AgentTask task, TFinishTaskRequest request) {
         StorageMediaMigrationTask migrationTask = (StorageMediaMigrationTask) task;
+        // Tablet tiering (B route): for TIER migrations the task carries a unique
+        // migration_attempt_id. A late finish from a superseded attempt (the task
+        // was re-sent after timeout) must NOT consume/remove the current in-flight
+        // task. Only act when the echoed attempt id matches. See design v2 §6.4 / T4.4.
+        if (migrationTask.getMigrationAttemptId() != -1 && request.isSetMigrationAttemptId()
+                && request.getMigrationAttemptId() != migrationTask.getMigrationAttemptId()) {
+            LOG.warn("ignore stale tier migration finish for tablet {}: finish attempt {} != task {}",
+                    migrationTask.getTabletId(), request.getMigrationAttemptId(),
+                    migrationTask.getMigrationAttemptId());
+            return;
+        }
         Env.getCurrentEnv().getTabletScheduler().finishStorageMediaMigrationTask(migrationTask, request);
         AgentTaskQueue.removeTask(task.getBackendId(), TTaskType.STORAGE_MEDIUM_MIGRATE, task.getSignature());
     }

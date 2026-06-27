@@ -951,6 +951,18 @@ public class TabletInvertedIndex {
         return tabletIds;
     }
 
+    // Tablet tiering (B route): the effective medium of a tablet = its tier target
+    // if any, else the partition default (TabletMeta.storageMedium). Rebalancer
+    // consumers must classify by this, not the shared TabletMeta medium, so disk
+    // balance does not treat an SSD-target tablet as an HDD one. See §23.2 / T4.2.
+    private TStorageMedium effectiveMedium(long tabletId, TabletMeta meta) {
+        TabletTieringMgr tieringMgr = Env.getCurrentEnv().getTabletTieringMgr();
+        if (tieringMgr != null) {
+            return tieringMgr.resolveEffectiveMedium(tabletId, meta.getStorageMedium());
+        }
+        return meta.getStorageMedium();
+    }
+
     public List<Pair<Long, Long>> getTabletSizeByBackendIdAndStorageMedium(long backendId,
             TStorageMedium storageMedium) {
         List<Pair<Long, Long>> tabletIdSizes = Lists.newArrayList();
@@ -959,7 +971,8 @@ public class TabletInvertedIndex {
             Map<Long, Replica> replicaMetaWithBackend = backingReplicaMetaTable.row(backendId);
             if (replicaMetaWithBackend != null) {
                 tabletIdSizes = replicaMetaWithBackend.entrySet().stream()
-                        .filter(entry -> tabletMetaMap.get(entry.getKey()).getStorageMedium() == storageMedium)
+                        .filter(entry -> effectiveMedium(entry.getKey(),
+                                tabletMetaMap.get(entry.getKey())) == storageMedium)
                         .map(entry -> Pair.of(entry.getKey(), entry.getValue().getDataSize()))
                         .collect(Collectors.toList());
             }
@@ -997,7 +1010,7 @@ public class TabletInvertedIndex {
             Map<Long, Replica> replicaMetaWithBackend = backingReplicaMetaTable.row(backendId);
             if (replicaMetaWithBackend != null) {
                 for (long tabletId : replicaMetaWithBackend.keySet()) {
-                    if (tabletMetaMap.get(tabletId).getStorageMedium() == TStorageMedium.HDD) {
+                    if (effectiveMedium(tabletId, tabletMetaMap.get(tabletId)) == TStorageMedium.HDD) {
                         hddNum++;
                     } else {
                         ssdNum++;

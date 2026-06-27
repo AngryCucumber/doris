@@ -2423,6 +2423,12 @@ void storage_medium_migrate_callback(StorageEngine& engine, const TAgentTaskRequ
     finish_task_request.__set_task_type(req.task_type);
     finish_task_request.__set_signature(req.signature);
     finish_task_request.__set_task_status(status.to_thrift());
+    // Tablet tiering (B route): echo the attempt id so FE can ignore a late finish
+    // from a superseded attempt (conditional removeTask). See design v2 §6.4 / T4.4.
+    if (storage_medium_migrate_req.__isset.migration_attempt_id) {
+        finish_task_request.__set_migration_attempt_id(
+                storage_medium_migrate_req.migration_attempt_id);
+    }
 
     finish_task(finish_task_request);
     remove_task_info(req.task_type, req.signature);
