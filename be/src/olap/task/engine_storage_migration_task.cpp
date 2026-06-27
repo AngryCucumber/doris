@@ -195,7 +195,10 @@ bool EngineStorageMigrationTask::_is_rowsets_size_less_than_threshold(
     for (const auto& rs : consistent_rowsets) {
         total_size += rs->index_disk_size() + rs->data_disk_size();
     }
-    if (total_size < config::migration_remaining_size_threshold_mb) {
+    // migration_remaining_size_threshold_mb is in MiB; total_size is in bytes.
+    // (Pre-existing bug: the threshold was compared without the MiB conversion,
+    // so 10MB was effectively ~10 bytes.) See execution plan v2 T5.2 / §12.
+    if (total_size < (size_t) config::migration_remaining_size_threshold_mb * 1024 * 1024) {
         return true;
     }
     return false;

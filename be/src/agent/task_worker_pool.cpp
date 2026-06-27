@@ -328,7 +328,46 @@ Status check_migrate_request(StorageEngine& engine, const TStorageMediumMigrateR
         return Status::InternalError("could not find tablet {}", tablet_id);
     }
 
-    if (req.__isset.data_dir) {
+    // Tablet tiering (B route) strict checks. Triggered ONLY when the FE marks the
+    // task strict (req.strict_check) -- legacy migration leaves these unset so its
+    // behavior is byte-for-byte unchanged. See design v2 §8.2 / T5.1.
+    bool strict = req.__isset.strict_check && req.strict_check;
+    if (strict && tablet->schema_hash() != req.schema_hash) {
+        return Status::InternalError("stale migration task: schema_hash mismatch req={}, tablet={}",
+                                     req.schema_hash, tablet->schema_hash());
+    }
+    if (req.__isset.src_path_hash
+        && static_cast<int64_t>(tablet->data_dir()->path_hash()) != req.src_path_hash) {
+        // src replica was moved since FE generated the task -> stale, FE re-evaluates.
+        return Status::InternalError("stale migration task: src path hash changed for tablet {}",
+                                     tablet_id);
+    }
+
+    if (req.__isset.dest_path_hash) {
+        // Strict: the dest path hash MUST resolve to a store on this BE; never fall
+        // back to a random store (unlike the storage_medium branch below).
+        DataDir* found = nullptr;
+        for (DataDir* store : engine.get_stores()) {
+            if (static_cast<int64_t>(store->path_hash()) == req.dest_path_hash) {
+                found = store;
+                break;
+            }
+        }
+        if (found == nullptr) {
+            return Status::InternalError("dest path hash {} not found on this BE", req.dest_path_hash);
+        }
+        // If data_dir is also set, it must agree with dest_path_hash.
+        if (req.__isset.data_dir) {
+            DataDir* by_dir = engine.get_store(req.data_dir);
+            if (by_dir == nullptr || by_dir->path_hash() != found->path_hash()) {
+                return Status::InternalError("data_dir and dest_path_hash are inconsistent");
+            }
+        }
+        if (strict && found->storage_medium() != req.storage_medium) {
+            return Status::InternalError("dest path medium does not match requested medium");
+        }
+        *dest_store = found;
+    } else if (req.__isset.data_dir) {
         // request specify the data dir
         *dest_store = engine.get_store(req.data_dir);
         if (*dest_store == nullptr) {
