@@ -97,6 +97,7 @@
 #include "olap/schema_change.h"
 #include "olap/single_replica_compaction.h"
 #include "olap/storage_engine.h"
+#include "olap/tablet_heat_collector.h"
 #include "olap/storage_policy.h"
 #include "olap/tablet_manager.h"
 #include "olap/tablet_meta.h"
@@ -710,6 +711,17 @@ Status Tablet::add_inc_rowset(const RowsetSharedPtr& rowset) {
     ++_newly_created_rowset_num;
 
     add_compaction_score(rowset->rowset_meta()->get_compaction_score());
+
+    // Tablet tiering (B route): refresh write freshness from the rowset's own
+    // newest_write_timestamp (seconds). This is the load-publish path; compaction
+    // inherits the original write time and schema change uses a separate path, so
+    // cold data is not mis-flagged as a fresh write. T2.4.
+    if (config::enable_tablet_heat_report) {
+        TabletHeatCollector* collector = _engine.tablet_heat_collector();
+        if (collector != nullptr) {
+            collector->update_write_time(tablet_id(), rowset->newest_write_timestamp() * 1000);
+        }
+    }
 
     return Status::OK();
 }

@@ -46,6 +46,7 @@
 #include "olap/olap_tuple.h"
 #include "olap/schema_cache.h"
 #include "olap/storage_engine.h"
+#include "olap/tablet_heat_collector.h"
 #include "olap/tablet_schema.h"
 #include "pipeline/exec/olap_scan_operator.h"
 #include "runtime/descriptors.h"
@@ -636,6 +637,24 @@ Status OlapScanner::_get_block_impl(RuntimeState* state, Block* block, bool* eof
 Status OlapScanner::close(RuntimeState* state) {
     if (_is_closed) {
         return Status::OK();
+    }
+    // Tablet tiering (B route): record one range-scan access with final scan
+    // bytes/rows at scanner close. Local engine only; inert when disabled. T2.3.
+    if (_has_prepared && _tablet_reader != nullptr && config::enable_tablet_heat_report
+        && !config::is_cloud_mode()) {
+        const auto& heat_tablet = _tablet_reader_params.tablet;
+        if (heat_tablet != nullptr) {
+            const OlapReaderStatistics& heat_stats = _tablet_reader->stats();
+            auto* collector =
+                    ExecEnv::GetInstance()->storage_engine().to_local().tablet_heat_collector();
+            if (collector != nullptr) {
+                collector->record_access(heat_tablet->tablet_id(), heat_tablet->table_id(),
+                                         heat_tablet->partition_id(), 0,
+                                         TabletAccessType::RANGE_SCAN,
+                                         heat_stats.uncompressed_bytes_read,
+                                         heat_stats.raw_rows_read);
+            }
+        }
     }
     RETURN_IF_ERROR(Scanner::close(state));
     return Status::OK();
