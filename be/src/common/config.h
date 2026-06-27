@@ -626,6 +626,21 @@ DECLARE_Int32(max_tablet_migration_threads);
 DECLARE_mInt32(finished_migration_tasks_size);
 // If size less than this, the remaining rowsets will be force to complete
 DECLARE_mInt32(migration_remaining_size_threshold_mb);
+
+// Tablet-level same-node SSD/HDD tiering (B route) BE configs. All default OFF.
+// See docs/tablet-tiering-b-route-design-v2.md.
+DECLARE_mBool(enable_tablet_heat_report);
+DECLARE_mInt32(tablet_heat_report_interval_sec);
+DECLARE_mInt32(tablet_heat_full_interval);
+DECLARE_mInt32(tablet_heat_max_report_items);
+DECLARE_mInt32(tablet_heat_idle_expire_sec);
+DECLARE_mBool(tablet_heat_include_compaction_read);
+DECLARE_mBool(enable_tablet_heat_sampling);
+DECLARE_mDouble(tablet_heat_sampling_ratio);
+// Master switch only; the actual strict check is triggered per-request
+// (req.strict_check), not by this global flag, so legacy migration is
+// unaffected (keeps switch-off zero diff).
+DECLARE_mBool(tablet_tiering_strict_migration_check);
 // If the task runs longer than this time, the task will be terminated, in seconds.
 // timeout = std::max(migration_task_timeout_secs,  tablet size / 1MB/s)
 DECLARE_mInt32(migration_task_timeout_secs);

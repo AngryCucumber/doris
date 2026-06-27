@@ -794,6 +794,96 @@ public class Config extends ConfigBase {
                     + "and disable storage cool down function."})
     public static boolean disable_storage_medium_check = false;
 
+    //==========================================================================
+    // Tablet-level same-node SSD/HDD tiering (B route). All default OFF: when
+    // enable_tablet_tiering=false the feature is fully inert (gate G0, zero diff).
+    // See docs/tablet-tiering-b-route-design-v2.md / -execution-plan-v2.md.
+    //==========================================================================
+    @ConfField(mutable = true, masterOnly = true, description = {
+            "tablet 级同节点 SSD/HDD 分层总开关。默认关闭，关闭时本特性完全不生效。",
+            "Master switch for tablet-level same-node SSD/HDD tiering. Off by default; "
+                    + "when off the feature is fully inert."})
+    public static boolean enable_tablet_tiering = false;
+
+    @ConfField(mutable = true, masterOnly = true, description = {
+            "tablet 分层 dry-run：只产出决策、写 metric，不下发迁移任务。",
+            "Tablet tiering dry-run: only emit decisions/metrics, do not issue migration tasks."})
+    public static boolean tablet_tiering_dry_run = true;
+
+    @ConfField(mutable = true, masterOnly = true, description = {
+            "tablet 分层评估调度周期，单位秒。", "Tablet tiering evaluation/scheduling interval in seconds."})
+    public static int tablet_tiering_scheduler_interval_sec = 60;
+
+    @ConfField(mutable = true, masterOnly = true, description = {
+            "FE 启动/切主后预热期，单位秒，期内只恢复状态不批量迁移。",
+            "Warmup seconds after FE start/master switch; only state recovery, no bulk migration."})
+    public static int tablet_tiering_warmup_sec = 600;
+
+    @ConfField(mutable = true, masterOnly = true, description = {
+            "全局 tablet 分层迁移并发上限。", "Global max running tablet tiering migration tasks."})
+    public static int tablet_tiering_max_running_tasks = 100;
+
+    @ConfField(mutable = true, masterOnly = true, description = {
+            "单 BE tablet 分层迁移并发上限。", "Max tablet tiering migration tasks per backend."})
+    public static int tablet_tiering_max_tasks_per_backend = 2;
+
+    @ConfField(mutable = true, masterOnly = true, description = {
+            "单路径 tablet 分层迁移并发上限。", "Max tablet tiering migration tasks per path."})
+    public static int tablet_tiering_max_tasks_per_path = 1;
+
+    @ConfField(mutable = true, masterOnly = true, description = {
+            "单表 tablet 分层迁移并发上限，避免单表占满迁移资源。",
+            "Max tablet tiering migration tasks per table."})
+    public static int tablet_tiering_max_tasks_per_table = 4;
+
+    @ConfField(mutable = true, masterOnly = true, description = {
+            "单轮 tablet 分层迁移字节预算，默认 1TB。", "Copy bytes budget per tiering round, default 1TB."})
+    public static long tablet_tiering_max_copy_bytes_per_round = 1099511627776L;
+
+    @ConfField(mutable = true, masterOnly = true, description = {
+            "默认升温阈值。", "Default hot threshold."})
+    public static int tablet_tiering_default_hot_threshold = 100;
+
+    @ConfField(mutable = true, masterOnly = true, description = {
+            "默认降冷阈值。", "Default cold threshold."})
+    public static int tablet_tiering_default_cold_threshold = 10;
+
+    @ConfField(mutable = true, masterOnly = true, description = {
+            "迟滞保护：强制 hot_threshold - cold_threshold >= 此值。",
+            "Hysteresis: enforce hot_threshold - cold_threshold >= this value."})
+    public static int tablet_tiering_min_score_gap = 20;
+
+    @ConfField(mutable = true, masterOnly = true, description = {
+            "heat checkpoint 周期，单位秒。", "Heat checkpoint interval in seconds."})
+    public static int tablet_tiering_state_checkpoint_interval_sec = 600;
+
+    @ConfField(mutable = true, masterOnly = true, description = {
+            "迁移 finish 后等 tablet report 收口的超时兜底，单位秒。",
+            "Timeout fallback (seconds) waiting for tablet report to reconcile after migration finish."})
+    public static int tablet_tiering_await_report_timeout_sec = 300;
+
+    @ConfField(mutable = true, masterOnly = true, description = {
+            "内存 tiering history 环形容量。", "In-memory tiering history ring capacity."})
+    public static int tablet_tiering_history_capacity = 10000;
+
+    @ConfField(mutable = true, masterOnly = true, description = {
+            "SSD 压力驱逐触发水位，0~1。", "SSD pressure eviction trigger watermark, 0~1."})
+    public static double tablet_tiering_ssd_high_watermark = 0.85;
+
+    @ConfField(mutable = true, masterOnly = true, description = {
+            "新写保护期，单位秒，期内加 freshness 分。",
+            "Fresh-write protection seconds; adds freshness score within the window."})
+    public static int tablet_tiering_fresh_write_protect_sec = 1800;
+
+    @ConfField(mutable = true, masterOnly = true, description = {
+            "新写保护期内的 freshness 加分。", "Freshness score added during fresh-write protection."})
+    public static int tablet_tiering_fresh_write_score = 50;
+
+    @ConfField(mutable = true, masterOnly = true, description = {
+            "FE 侧 HeatProfile 老化阈值：连续此秒数未在 report 出现则清理，单位秒。",
+            "FE-side HeatProfile aging: drop after this many seconds absent from heat report."})
+    public static int tablet_heat_fe_expire_sec = 172800;
+
     @ConfField(description = {"创建表或分区时，可以指定存储介质 (HDD 或 SSD)。如果未指定，"
             + "则使用此配置指定的默认介质。",
             "When create a table(or partition), you can specify its storage medium(HDD or SSD)."})

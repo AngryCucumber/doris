@@ -281,6 +281,7 @@ import org.apache.doris.thrift.TNetworkAddress;
 import org.apache.doris.thrift.TStatus;
 import org.apache.doris.thrift.TStatusCode;
 import org.apache.doris.thrift.TStorageMedium;
+import org.apache.doris.tiering.TabletTieringMgr;
 import org.apache.doris.transaction.DbUsedDataQuotaInfoCollector;
 import org.apache.doris.transaction.GlobalExternalTransactionInfoMgr;
 import org.apache.doris.transaction.GlobalTransactionMgrIface;
@@ -483,6 +484,8 @@ public class Env {
     private TabletScheduler tabletScheduler;
 
     private TabletChecker tabletChecker;
+
+    private TabletTieringMgr tabletTieringMgr;
 
     // Thread pools for pending and loading task, separately
     private MasterTaskExecutor pendingLoadTaskScheduler;
@@ -772,6 +775,7 @@ public class Env {
         this.tabletScheduler = new TabletScheduler(this, systemInfo, tabletInvertedIndex, stat,
                 Config.tablet_rebalancer_type);
         this.tabletChecker = new TabletChecker(this, systemInfo, tabletScheduler, stat);
+        this.tabletTieringMgr = new TabletTieringMgr();
 
         // The pendingLoadTaskScheduler's queue size should not less than Config.desired_max_waiting_jobs.
         // So that we can guarantee that all submitted load jobs can be scheduled without being starved.
@@ -960,6 +964,10 @@ public class Env {
 
     public TabletChecker getTabletChecker() {
         return tabletChecker;
+    }
+
+    public TabletTieringMgr getTabletTieringMgr() {
+        return tabletTieringMgr;
     }
 
     public AuditEventProcessor getAuditEventProcessor() {
@@ -1897,6 +1905,9 @@ public class Env {
             // Tablet checker and scheduler
             tabletChecker.start();
             tabletScheduler.start();
+            // Tablet tiering manager (B route). Master-only + non-cloud; inert
+            // unless enable_tablet_tiering is on.
+            tabletTieringMgr.start();
             // Colocate tables checker and balancer
             ColocateTableCheckerAndBalancer.getInstance().start();
             // Publish Version Daemon

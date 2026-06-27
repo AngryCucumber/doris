@@ -562,6 +562,18 @@ DEFINE_Int32(max_tablet_migration_threads, "1");
 DEFINE_mInt32(finished_migration_tasks_size, "10000");
 // If size less than this, the remaining rowsets will be force to complete
 DEFINE_mInt32(migration_remaining_size_threshold_mb, "10");
+
+// Tablet-level same-node SSD/HDD tiering (B route) BE configs. All default OFF.
+// See docs/tablet-tiering-b-route-design-v2.md.
+DEFINE_mBool(enable_tablet_heat_report, "false");
+DEFINE_mInt32(tablet_heat_report_interval_sec, "30");
+DEFINE_mInt32(tablet_heat_full_interval, "300");
+DEFINE_mInt32(tablet_heat_max_report_items, "10000");
+DEFINE_mInt32(tablet_heat_idle_expire_sec, "86400");
+DEFINE_mBool(tablet_heat_include_compaction_read, "false");
+DEFINE_mBool(enable_tablet_heat_sampling, "false");
+DEFINE_mDouble(tablet_heat_sampling_ratio, "1.0");
+DEFINE_mBool(tablet_tiering_strict_migration_check, "true");
 // If the task runs longer than this time, the task will be terminated, in seconds.
 // timeout = std::max(migration_task_timeout_secs,  tablet size / 1MB/s)
 DEFINE_mInt32(migration_task_timeout_secs, "300");
