@@ -2397,11 +2397,15 @@ void storage_medium_migrate_callback(StorageEngine& engine, const TAgentTaskRequ
     TabletSharedPtr tablet;
     DataDir* dest_store = nullptr;
 
+    int64_t copy_size = 0;
+    int64_t copy_time_ms = 0;
     auto status = check_migrate_request(engine, storage_medium_migrate_req, tablet, &dest_store);
     if (status.ok()) {
         EngineStorageMigrationTask engine_task(engine, tablet, dest_store);
         SCOPED_ATTACH_TASK(engine_task.mem_tracker());
         status = engine_task.execute();
+        copy_size = engine_task.get_copy_size();
+        copy_time_ms = engine_task.get_copy_time_ms();
     }
     // fe should ignore this err
     if (status.is<FILE_ALREADY_EXIST>()) {
@@ -2428,6 +2432,10 @@ void storage_medium_migrate_callback(StorageEngine& engine, const TAgentTaskRequ
     if (storage_medium_migrate_req.__isset.migration_attempt_id) {
         finish_task_request.__set_migration_attempt_id(
                 storage_medium_migrate_req.migration_attempt_id);
+    }
+    if (copy_size > 0) {
+        finish_task_request.__set_copy_size(copy_size);
+        finish_task_request.__set_copy_time_ms(copy_time_ms);
     }
 
     finish_task(finish_task_request);

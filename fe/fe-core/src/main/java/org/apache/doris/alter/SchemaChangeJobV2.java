@@ -758,6 +758,26 @@ public class SchemaChangeJobV2 extends AlterJobV2 implements GsonPostProcessable
                     }
                 }
 
+                // Tablet tiering (B route): transfer tier state origin -> shadow
+                // BEFORE the origin tablets are deleted, so the SC result keeps its
+                // target medium / manual hold instead of falling back to partition
+                // default. Memory-only + idempotent (replay-safe). See §9.6 / T4.7.
+                org.apache.doris.tiering.TabletTieringMgr tieringMgr =
+                        Env.getCurrentEnv().getTabletTieringMgr();
+                if (tieringMgr != null) {
+                    Map<Long, Long> shadowToOrigin =
+                            partitionIndexTabletMap.get(partition.getId(), shadowIdxId);
+                    if (shadowToOrigin != null) {
+                        for (Tablet shadowTablet : shadowIdx.getTablets()) {
+                            Long originTabletId = shadowToOrigin.get(shadowTablet.getId());
+                            if (originTabletId != null) {
+                                tieringMgr.transferTabletTierState(originTabletId,
+                                        shadowTablet.getId(), tbl.getId(), partition.getId());
+                            }
+                        }
+                    }
+                }
+
                 partition.visualiseShadowIndex(shadowIdxId, originIdxId == partition.getBaseIndex().getId());
 
                 // delete origin replicas

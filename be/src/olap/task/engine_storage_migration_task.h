@@ -43,6 +43,10 @@ public:
     EngineStorageMigrationTask(StorageEngine& engine, TabletSharedPtr tablet, DataDir* dest_store);
     ~EngineStorageMigrationTask() override;
 
+    // Tablet tiering (B route): copy stats for the finish report (design v2 §8.3).
+    int64_t get_copy_size() const { return _copy_size; }
+    int64_t get_copy_time_ms() const { return _copy_time_ms; }
+
 private:
     Status _migrate();
     // check if task is timeout
@@ -82,6 +86,8 @@ private:
     DataDir* _dest_store = nullptr;
     int64_t _task_start_time;
     std::vector<PendingRowsetGuard> _pending_rs_guards;
+    int64_t _copy_size = 0;
+    int64_t _copy_time_ms = 0;
 }; // EngineTask
 
 } // namespace doris

@@ -278,6 +278,34 @@ public class TabletTieringMgr extends MasterDaemon {
     }
 
     /**
+     * Transfer tier state from an origin tablet to its replacement (schema change
+     * is in-place but creates a new tablet id; without transfer the new tablet
+     * falls back to partition default, losing the tier decision and manual hold).
+     * Memory-only and idempotent so it is replay-safe (onFinished runs on replay
+     * too); durably persisted at the next checkpoint. Proper atomic-journal
+     * embedding (R58) is a follow-up. See design v2 §9.6 / T4.7.
+     */
+    public void transferTabletTierState(long oldTabletId, long newTabletId, long newTableId,
+            long partitionId) {
+        TabletTierState old = tabletTierStates.get(oldTabletId);
+        if (old == null) {
+            return;
+        }
+        TabletTierState moved = new TabletTierState(newTabletId, newTableId, partitionId);
+        moved.setTargetMedium(old.getTargetMedium());
+        moved.setPreviousTargetMedium(old.getPreviousTargetMedium());
+        moved.setTemperatureState(old.getTemperatureState());
+        moved.setReasonCode(old.getReasonCode());
+        moved.setEffectiveRevision(old.getEffectiveRevision());
+        moved.setManualOverride(old.isManualOverride());
+        moved.setFrozenReason(old.getFrozenReason());
+        moved.setVersion(old.getVersion());
+        moved.setLastTargetChangeTimeMs(old.getLastTargetChangeTimeMs());
+        tabletTierStates.put(newTabletId, moved);
+        // The old state is removed when the old tablet is deleted (onTabletDeleted).
+    }
+
+    /**
      * Called from the scheduler finish path when a TIER_MIGRATION task succeeds.
      * Records the migration time on the tier state; actual medium/path are NOT
      * written here (reconciled by the next tablet report). The await-report

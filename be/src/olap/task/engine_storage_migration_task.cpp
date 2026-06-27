@@ -270,6 +270,8 @@ Status EngineStorageMigrationTask::_migrate() {
 
     std::vector<RowsetSharedPtr> temp_consistent_rowsets(consistent_rowsets);
     RowsetBinlogMetasPB rowset_binlog_metas_pb;
+    // Tablet tiering (B route): measure copy time/size for the finish report.
+    int64_t copy_start_ms = UnixMillis();
     do {
         // migrate all index and data files but header file
         res = _copy_index_and_data_files(full_path, temp_consistent_rowsets,
@@ -344,6 +346,14 @@ Status EngineStorageMigrationTask::_migrate() {
         // we should remove the dir directly for avoid disk full of junk data, and it's safe to remove
         RETURN_IF_ERROR(io::global_local_filesystem()->delete_directory(full_path));
         RETURN_IF_ERROR(DataDir::delete_tablet_parent_path_if_empty(full_path));
+    } else {
+        // Tablet tiering (B route): record copy stats for the finish report.
+        _copy_time_ms = UnixMillis() - copy_start_ms;
+        int64_t total = 0;
+        for (const auto& rs : consistent_rowsets) {
+            total += rs->index_disk_size() + rs->data_disk_size();
+        }
+        _copy_size = total;
     }
     return res;
 }
