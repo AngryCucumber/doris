@@ -61,11 +61,19 @@ public class TabletTieringScheduler {
 
         long awaitMs = (long) Config.tablet_tiering_await_report_timeout_sec * 1000L;
         int maxPerRound = Config.tablet_tiering_max_running_tasks;
+        long copyBudget = Config.tablet_tiering_max_copy_bytes_per_round;
+        int maxPerTable = Config.tablet_tiering_max_tasks_per_table;
         int added = 0;
+        long copyBytes = 0;
+        java.util.Map<Long, Integer> perTableCount = new java.util.HashMap<>();
 
         for (TabletTierState state : mgr.getTabletTierStates()) {
-            if (added >= maxPerRound) {
+            if (added >= maxPerRound || copyBytes >= copyBudget) {
                 break;
+            }
+            int tableCount = perTableCount.getOrDefault(state.getTableId(), 0);
+            if (maxPerTable > 0 && tableCount >= maxPerTable) {
+                continue;
             }
             TStorageMedium target = state.getTargetMedium();
             if (target == null) {
@@ -109,6 +117,8 @@ public class TabletTieringScheduler {
                 TabletScheduler.AddResult result = scheduler.addTablet(ctx, false);
                 if (result == TabletScheduler.AddResult.ADDED) {
                     added++;
+                    copyBytes += Math.max(0, replica.getDataSize());
+                    perTableCount.merge(state.getTableId(), 1, Integer::sum);
                 }
                 // tabletId-level dedup: at most one replica per tablet in flight.
                 break;
