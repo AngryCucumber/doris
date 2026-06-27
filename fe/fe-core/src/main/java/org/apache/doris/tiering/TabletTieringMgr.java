@@ -21,6 +21,9 @@ import org.apache.doris.catalog.Env;
 import org.apache.doris.common.Config;
 import org.apache.doris.common.io.Text;
 import org.apache.doris.common.util.MasterDaemon;
+import org.apache.doris.metric.GaugeMetric;
+import org.apache.doris.metric.Metric.MetricUnit;
+import org.apache.doris.metric.MetricRepo;
 import org.apache.doris.persist.gson.GsonUtils;
 import org.apache.doris.thrift.TStorageMedium;
 import org.apache.doris.thrift.TTabletHeatStat;
@@ -37,6 +40,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -70,6 +74,74 @@ public class TabletTieringMgr extends MasterDaemon {
 
     private final AtomicLong decisionTotal = new AtomicLong();
     private final AtomicLong dryRunDecisionTotal = new AtomicLong();
+    private final AtomicBoolean metricsRegistered = new AtomicBoolean(false);
+
+    private long countTemperature(TieringTemperature temp) {
+        long n = 0;
+        for (TabletTierState s : tabletTierStates.values()) {
+            if (s.getTemperatureState() == temp) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /** Register tiering gauges once. Done regardless of the switch so the feature
+     * is observable even while disabled (values are 0 then). See design v2 §13. */
+    private void registerMetricsOnce() {
+        if (!metricsRegistered.compareAndSet(false, true)) {
+            return;
+        }
+        MetricRepo.DORIS_METRIC_REGISTER.addMetrics(new GaugeMetric<Long>(
+                "tablet_tiering_policy_count", MetricUnit.NOUNIT, "tiering policy count") {
+            @Override
+            public Long getValue() {
+                return (long) policyManager.size();
+            }
+        });
+        MetricRepo.DORIS_METRIC_REGISTER.addMetrics(new GaugeMetric<Long>(
+                "tablet_tiering_state_count", MetricUnit.NOUNIT, "tiering tablet state count") {
+            @Override
+            public Long getValue() {
+                return (long) tabletTierStates.size();
+            }
+        });
+        MetricRepo.DORIS_METRIC_REGISTER.addMetrics(new GaugeMetric<Long>(
+                "tablet_tiering_heat_profile_count", MetricUnit.NOUNIT, "tiering heat profile count") {
+            @Override
+            public Long getValue() {
+                return (long) heatProfiles.size();
+            }
+        });
+        MetricRepo.DORIS_METRIC_REGISTER.addMetrics(new GaugeMetric<Long>(
+                "tablet_tiering_hot_tablet_count", MetricUnit.NOUNIT, "hot tablet count") {
+            @Override
+            public Long getValue() {
+                return countTemperature(TieringTemperature.HOT);
+            }
+        });
+        MetricRepo.DORIS_METRIC_REGISTER.addMetrics(new GaugeMetric<Long>(
+                "tablet_tiering_cold_tablet_count", MetricUnit.NOUNIT, "cold tablet count") {
+            @Override
+            public Long getValue() {
+                return countTemperature(TieringTemperature.COLD);
+            }
+        });
+        MetricRepo.DORIS_METRIC_REGISTER.addMetrics(new GaugeMetric<Long>(
+                "tablet_tiering_decision_total", MetricUnit.NOUNIT, "applied tiering decisions") {
+            @Override
+            public Long getValue() {
+                return decisionTotal.get();
+            }
+        });
+        MetricRepo.DORIS_METRIC_REGISTER.addMetrics(new GaugeMetric<Long>(
+                "tablet_tiering_dry_run_decision_total", MetricUnit.NOUNIT, "dry-run tiering decisions") {
+            @Override
+            public Long getValue() {
+                return dryRunDecisionTotal.get();
+            }
+        });
+    }
 
     public TabletTieringMgr() {
         super("tablet tiering mgr",
@@ -424,6 +496,8 @@ public class TabletTieringMgr extends MasterDaemon {
 
     @Override
     protected void runAfterCatalogReady() {
+        // Register observability gauges once, regardless of the switch.
+        registerMetricsOnce();
         // Defensive double-gate: the daemon is only started on a non-cloud master
         // (see Env#startMasterOnlyDaemonThreads), but cloud mode must never run any
         // local SSD/HDD tiering logic regardless of how it was started.
