@@ -42,6 +42,8 @@ public final class ProcService {
         root.register("jobs", new JobsDbProcDir(Env.getCurrentEnv()));
         root.register("statistic", new StatisticProcNode(Env.getCurrentEnv()));
         root.register("tasks", new TasksProcDir());
+        // Tablet tiering (B route): SHOW PROC '/tiering' for policies + tablet states.
+        root.register("tiering", new TieringProcDir());
         root.register("frontends", new FrontendsProcNode(Env.getCurrentEnv()));
         root.register("brokers", Env.getCurrentEnv().getBrokerMgr().getProcNode());
         root.register("resources", Env.getCurrentEnv().getResourceMgr().getProcNode());
