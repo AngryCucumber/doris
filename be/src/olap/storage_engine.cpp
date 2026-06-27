@@ -67,6 +67,7 @@
 #include "olap/schema_cache.h"
 #include "olap/single_replica_compaction.h"
 #include "olap/snapshot_manager.h"
+#include "olap/tablet_heat_collector.h"
 #include "olap/tablet_manager.h"
 #include "olap/tablet_meta.h"
 #include "olap/tablet_meta_manager.h"
@@ -223,6 +224,7 @@ StorageEngine::StorageEngine(const EngineOptions& options)
           _is_all_cluster_id_exist(true),
           _stopped(false),
           _tablet_manager(new TabletManager(*this, config::tablet_map_shard_size)),
+          _tablet_heat_collector(std::make_unique<TabletHeatCollector>()),
           _txn_manager(new TxnManager(*this, config::txn_map_shard_size, config::txn_shard_size)),
           _default_rowset_type(BETA_ROWSET),
           _create_tablet_idx_lru_cache(

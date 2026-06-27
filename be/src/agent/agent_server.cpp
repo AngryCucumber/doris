@@ -41,6 +41,7 @@
 #include "olap/options.h"
 #include "olap/snapshot_manager.h"
 #include "olap/storage_engine.h"
+#include "olap/tablet_heat_reporter.h"
 #include "runtime/exec_env.h"
 #include "util/work_thread_pool.hpp"
 
@@ -198,6 +199,13 @@ void AgentServer::start_workers(StorageEngine& engine, ExecEnv* exec_env) {
 
     _report_workers.push_back(std::make_unique<ReportWorker>(
             "REPORT_INDEX_POLICY", _cluster_info, config::report_index_policy_interval_seconds,[&cluster_info = _cluster_info] { report_index_policy_callback(cluster_info); }));
+
+    // Tablet tiering (B route) heat report. Registered only here (start_workers,
+    // local engine) so it is naturally cloud-gated; inert unless
+    // enable_tablet_heat_report is on. Dedicated worker at its own 30s cadence,
+    // NOT piggybacked on the 60s tablet report. See design v2 §8.1 / T2.5.
+    _report_workers.push_back(std::make_unique<ReportWorker>(
+            "REPORT_TABLET_HEAT", _cluster_info, config::tablet_heat_report_interval_sec,[&engine, &cluster_info = _cluster_info] { report_tablet_heat_callback(engine, cluster_info); }));
     // clang-format on
 
     exec_env->storage_engine().to_local().workers = &_workers;

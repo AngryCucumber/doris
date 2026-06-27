@@ -42,6 +42,7 @@
 #include "olap/rowset/beta_rowset.h"
 #include "olap/rowset/rowset_fwd.h"
 #include "olap/storage_engine.h"
+#include "olap/tablet_heat_collector.h"
 #include "olap/tablet_manager.h"
 #include "olap/tablet_schema.h"
 #include "olap/utils.h"
@@ -286,6 +287,17 @@ Status PointQueryExecutor::init(const PTabletKeyLookupRequest* request,
     auto cache_handle = LookupConnectionCache::instance()->get(uuid);
     _binary_row_format = request->is_binary_row();
     _tablet = DORIS_TRY(ExecEnv::get_tablet(request->tablet_id()));
+    // Tablet tiering (B route): record a point-lookup access (high-weight hotness
+    // signal) + last access time. Local engine only; inert when disabled.
+    if (config::enable_tablet_heat_report && !config::is_cloud_mode()) {
+        TabletHeatCollector* heat_collector =
+                ExecEnv::GetInstance()->storage_engine().to_local().tablet_heat_collector();
+        if (heat_collector != nullptr) {
+            heat_collector->record_access(_tablet->tablet_id(), _tablet->table_id(),
+                                          _tablet->partition_id(), 0,
+                                          TabletAccessType::POINT_LOOKUP);
+        }
+    }
     if (cache_handle != nullptr) {
         _reusable = cache_handle;
         _profile_metrics.hit_lookup_cache = true;

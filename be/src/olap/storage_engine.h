@@ -82,6 +82,7 @@ using CumuCompactionPolicyTable =
 
 class StorageEngine;
 class CloudStorageEngine;
+class TabletHeatCollector;
 
 extern bvar::Status<int64_t> g_max_rowsets_with_useless_delete_bitmap;
 extern bvar::Status<int64_t> g_max_rowsets_with_useless_delete_bitmap_version;
@@ -289,6 +290,10 @@ public:
                        bool restore = false);
 
     TabletManager* tablet_manager() { return _tablet_manager.get(); }
+
+    // Tablet tiering (B route) heat collector. Local engine only (cloud has none),
+    // so callers are naturally cloud-gated. See design v2 §8.1.
+    TabletHeatCollector* tablet_heat_collector() { return _tablet_heat_collector.get(); }
     TxnManager* txn_manager() { return _txn_manager.get(); }
     SnapshotManager* snapshot_mgr() { return _snapshot_mgr.get(); }
     // Rowset garbage collection helpers
@@ -507,6 +512,7 @@ private:
     std::mutex _engine_task_mutex;
 
     std::unique_ptr<TabletManager> _tablet_manager;
+    std::unique_ptr<TabletHeatCollector> _tablet_heat_collector;
     std::unique_ptr<TxnManager> _txn_manager;
 
     // Used to control the migration from segment_v1 to segment_v2, can be deleted in futrue.
