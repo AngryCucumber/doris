@@ -79,6 +79,19 @@ public class PropertyAnalyzer {
     public static final String PROPERTIES_STORAGE_TYPE = "storage_type";
     public static final String PROPERTIES_STORAGE_MEDIUM = "storage_medium";
     public static final String PROPERTIES_STORAGE_COOLDOWN_TIME = "storage_cooldown_time";
+
+    // Tablet tiering (B route) properties. These are routed to TieringPolicy
+    // (single authoritative source), NOT TableProperty. See design v2 §11 / T1.7.
+    public static final String PROPERTIES_TABLET_TIERING_PREFIX = "tablet_tiering.";
+    public static final String PROPERTIES_TABLET_TIERING_ENABLE = "tablet_tiering.enable";
+    public static final String PROPERTIES_TABLET_TIERING_HOT_THRESHOLD = "tablet_tiering.hot_threshold";
+    public static final String PROPERTIES_TABLET_TIERING_COLD_THRESHOLD = "tablet_tiering.cold_threshold";
+    public static final String PROPERTIES_TABLET_TIERING_COOLDOWN_TIME = "tablet_tiering.cooldown_time";
+    public static final String PROPERTIES_TABLET_TIERING_MIN_HOT_RESIDENCE = "tablet_tiering.min_hot_residence";
+    public static final String PROPERTIES_TABLET_TIERING_MIN_COLD_RESIDENCE = "tablet_tiering.min_cold_residence";
+    public static final String PROPERTIES_TABLET_TIERING_MAX_SSD_QUOTA = "tablet_tiering.max_ssd_quota";
+    public static final String PROPERTIES_TABLET_TIERING_BATCH_SCAN_PENALTY = "tablet_tiering.batch_scan_penalty";
+    public static final String PROPERTIES_TABLET_TIERING_HOLD = "tablet_tiering.hold";
     // base time for the data in the partition
     public static final String PROPERTIES_DATA_BASE_TIME = "data_base_time_ms";
     // for 1.x -> 2.x migration
@@ -1983,5 +1996,134 @@ public class PropertyAnalyzer {
             return TEncryptionAlgorithm.PLAINTEXT;
         }
         throw new AnalysisException("Invalid tde algorithm: " + name + ", only support AES256 and SM4 currently");
+    }
+
+    // ---------------------------------------------------------------------
+    // Tablet tiering (B route) property parsing. See design v2 §11 / T1.7.
+    // ---------------------------------------------------------------------
+
+    public static void checkTabletTieringProperties(Map<String, String> properties) throws AnalysisException {
+        for (Map.Entry<String, String> e : properties.entrySet()) {
+            String k = e.getKey();
+            String v = e.getValue();
+            switch (k) {
+                case PROPERTIES_TABLET_TIERING_ENABLE:
+                case PROPERTIES_TABLET_TIERING_HOLD:
+                    if (!"true".equalsIgnoreCase(v) && !"false".equalsIgnoreCase(v)) {
+                        throw new AnalysisException(k + " must be true or false");
+                    }
+                    break;
+                case PROPERTIES_TABLET_TIERING_HOT_THRESHOLD:
+                case PROPERTIES_TABLET_TIERING_COLD_THRESHOLD:
+                case PROPERTIES_TABLET_TIERING_BATCH_SCAN_PENALTY:
+                    try {
+                        Double.parseDouble(v);
+                    } catch (NumberFormatException ex) {
+                        throw new AnalysisException("Invalid number for " + k + ": " + v);
+                    }
+                    break;
+                case PROPERTIES_TABLET_TIERING_COOLDOWN_TIME:
+                case PROPERTIES_TABLET_TIERING_MIN_HOT_RESIDENCE:
+                case PROPERTIES_TABLET_TIERING_MIN_COLD_RESIDENCE:
+                    parseTieringDurationSec(k, v);
+                    break;
+                case PROPERTIES_TABLET_TIERING_MAX_SSD_QUOTA:
+                    ParseUtil.analyzeDataVolume(v);
+                    break;
+                default:
+                    throw new AnalysisException("Unknown tablet_tiering property: " + k);
+            }
+        }
+    }
+
+    private static long parseTieringDurationSec(String key, String value) throws AnalysisException {
+        try {
+            String s = value.trim().toLowerCase();
+            long mult = 1;
+            if (s.endsWith("d")) {
+                mult = 86400;
+                s = s.substring(0, s.length() - 1);
+            } else if (s.endsWith("h")) {
+                mult = 3600;
+                s = s.substring(0, s.length() - 1);
+            } else if (s.endsWith("m")) {
+                mult = 60;
+                s = s.substring(0, s.length() - 1);
+            } else if (s.endsWith("s")) {
+                s = s.substring(0, s.length() - 1);
+            }
+            long n = Long.parseLong(s.trim());
+            if (n < 0) {
+                throw new AnalysisException(key + " can not be negative: " + value);
+            }
+            return n * mult;
+        } catch (NumberFormatException ex) {
+            throw new AnalysisException("Invalid duration for " + key + ": " + value
+                    + " (use e.g. 7d, 6h, 30m, 3600s, or raw seconds)");
+        }
+    }
+
+    /**
+     * Build/merge a scope TieringPolicy from tablet_tiering.* properties, starting
+     * from the existing policy so partial updates merge (optional three-state).
+     * Bumps the epoch so finish-time stale detection sees the change.
+     */
+    public static org.apache.doris.tiering.TieringPolicy analyzeTabletTieringPolicy(
+            Map<String, String> properties, org.apache.doris.tiering.TieringScopeType scopeType,
+            long scopeId, org.apache.doris.tiering.TieringPolicy existing) throws AnalysisException {
+        checkTabletTieringProperties(properties);
+        org.apache.doris.tiering.TieringPolicy policy =
+                new org.apache.doris.tiering.TieringPolicy(scopeType, scopeId);
+        if (existing != null) {
+            policy.setPolicyId(existing.getPolicyId());
+            policy.setEpoch(existing.getEpoch());
+            policy.setEnabled(existing.getEnabled());
+            policy.setHotThreshold(existing.getHotThreshold());
+            policy.setColdThreshold(existing.getColdThreshold());
+            policy.setCooldownTimeSec(existing.getCooldownTimeSec());
+            policy.setMinHotResidenceSec(existing.getMinHotResidenceSec());
+            policy.setMinColdResidenceSec(existing.getMinColdResidenceSec());
+            policy.setMaxSsdBytes(existing.getMaxSsdBytes());
+            policy.setBatchScanPenalty(existing.getBatchScanPenalty());
+            policy.setManualHold(existing.getManualHold());
+        }
+        for (Map.Entry<String, String> e : properties.entrySet()) {
+            String k = e.getKey();
+            String v = e.getValue();
+            switch (k) {
+                case PROPERTIES_TABLET_TIERING_ENABLE:
+                    policy.setEnabled(Boolean.parseBoolean(v));
+                    break;
+                case PROPERTIES_TABLET_TIERING_HOLD:
+                    policy.setManualHold(Boolean.parseBoolean(v));
+                    break;
+                case PROPERTIES_TABLET_TIERING_HOT_THRESHOLD:
+                    policy.setHotThreshold(Double.parseDouble(v));
+                    break;
+                case PROPERTIES_TABLET_TIERING_COLD_THRESHOLD:
+                    policy.setColdThreshold(Double.parseDouble(v));
+                    break;
+                case PROPERTIES_TABLET_TIERING_BATCH_SCAN_PENALTY:
+                    policy.setBatchScanPenalty(Double.parseDouble(v));
+                    break;
+                case PROPERTIES_TABLET_TIERING_COOLDOWN_TIME:
+                    policy.setCooldownTimeSec(parseTieringDurationSec(k, v));
+                    break;
+                case PROPERTIES_TABLET_TIERING_MIN_HOT_RESIDENCE:
+                    policy.setMinHotResidenceSec(parseTieringDurationSec(k, v));
+                    break;
+                case PROPERTIES_TABLET_TIERING_MIN_COLD_RESIDENCE:
+                    policy.setMinColdResidenceSec(parseTieringDurationSec(k, v));
+                    break;
+                case PROPERTIES_TABLET_TIERING_MAX_SSD_QUOTA:
+                    policy.setMaxSsdBytes(ParseUtil.analyzeDataVolume(v));
+                    break;
+                default:
+                    break;
+            }
+        }
+        policy.setEpoch(policy.getEpoch() + 1);
+        policy.setUpdatedTimeMs(System.currentTimeMillis());
+        return policy;
     }
 }

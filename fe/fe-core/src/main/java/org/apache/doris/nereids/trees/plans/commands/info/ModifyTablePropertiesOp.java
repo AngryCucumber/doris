@@ -79,12 +79,21 @@ public class ModifyTablePropertiesOp extends AlterTableOp {
         if (properties.size() != 1
                 && !TableProperty.isSamePrefixProperties(
                         properties, DynamicPartitionProperty.DYNAMIC_PARTITION_PROPERTY_PREFIX)
-                && !TableProperty.isSamePrefixProperties(properties, PropertyAnalyzer.PROPERTIES_BINLOG_PREFIX)) {
+                && !TableProperty.isSamePrefixProperties(properties, PropertyAnalyzer.PROPERTIES_BINLOG_PREFIX)
+                && !TableProperty.isSamePrefixProperties(
+                        properties, PropertyAnalyzer.PROPERTIES_TABLET_TIERING_PREFIX)) {
             throw new AnalysisException(
                     "Can only set one table property(without dynamic partition && binlog) at a time");
         }
 
-        if (properties.containsKey(PropertyAnalyzer.PROPERTIES_COLOCATE_WITH)) {
+        if (TableProperty.isSamePrefixProperties(
+                properties, PropertyAnalyzer.PROPERTIES_TABLET_TIERING_PREFIX)) {
+            // Tablet tiering (B route): validated here, applied via TieringPolicy
+            // (single authoritative source), NOT TableProperty. See §11 / T1.7.
+            PropertyAnalyzer.checkTabletTieringProperties(properties);
+            this.needTableStable = false;
+            this.opType = org.apache.doris.alter.AlterOpType.MODIFY_TABLE_PROPERTY_SYNC;
+        } else if (properties.containsKey(PropertyAnalyzer.PROPERTIES_COLOCATE_WITH)) {
             this.needTableStable = false;
         } else if (properties.containsKey(PropertyAnalyzer.PROPERTIES_STORAGE_TYPE)) {
             if (!properties.get(PropertyAnalyzer.PROPERTIES_STORAGE_TYPE).equalsIgnoreCase("column")) {

@@ -223,6 +223,13 @@ public class Alter {
         }
 
         olapTable.checkNormalStateForAlter();
+        // Tablet tiering (B route): intercept pure tablet_tiering.* property
+        // modifications and route them to TieringPolicy (single authoritative
+        // source), NOT TableProperty. Returns early so the normal property /
+        // schema-change flow never sees these properties. See design v2 §11 / T1.7.
+        if (processTabletTieringProperties(olapTable, alterClauses)) {
+            return false;
+        }
         boolean needProcessOutsideTableLock = false;
         BaseTableInfo oldBaseTableInfo = new BaseTableInfo(olapTable);
         Optional<BaseTableInfo> newBaseTableInfo = Optional.empty();
@@ -472,6 +479,43 @@ public class Alter {
             }
         }
         return false;
+    }
+
+    // Tablet tiering (B route): if ALL alter clauses are tablet_tiering.* property
+    // modifications, route them to TieringPolicy and return true (handled). Any
+    // non-tiering clause makes this a no-op so the normal flow runs. T1.7.
+    private boolean processTabletTieringProperties(OlapTable olapTable, List<AlterClause> alterClauses)
+            throws UserException {
+        if (alterClauses == null || alterClauses.isEmpty()) {
+            return false;
+        }
+        Map<String, String> merged = Maps.newHashMap();
+        for (AlterClause clause : alterClauses) {
+            if (!(clause instanceof ModifyTablePropertiesClause)) {
+                return false;
+            }
+            Map<String, String> props = ((ModifyTablePropertiesClause) clause).getProperties();
+            if (props == null || props.isEmpty()) {
+                return false;
+            }
+            for (String key : props.keySet()) {
+                if (!key.startsWith(PropertyAnalyzer.PROPERTIES_TABLET_TIERING_PREFIX)) {
+                    return false;
+                }
+            }
+            merged.putAll(props);
+        }
+        if (Config.isCloudMode()) {
+            throw new DdlException("tablet_tiering is not supported in cloud mode");
+        }
+        org.apache.doris.tiering.TabletTieringMgr mgr = Env.getCurrentEnv().getTabletTieringMgr();
+        org.apache.doris.tiering.TieringPolicy existing = mgr.getPolicyManager()
+                .getPolicy(org.apache.doris.tiering.TieringScopeType.TABLE, olapTable.getId());
+        org.apache.doris.tiering.TieringPolicy policy = PropertyAnalyzer.analyzeTabletTieringPolicy(
+                merged, org.apache.doris.tiering.TieringScopeType.TABLE, olapTable.getId(), existing);
+        mgr.modifyTieringPolicy(policy);
+        LOG.info("modify tablet tiering policy for table {}: {}", olapTable.getId(), merged);
+        return true;
     }
 
     private void processModifyTableComment(Database db, OlapTable tbl, AlterClause alterClause)
