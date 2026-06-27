@@ -425,6 +425,14 @@ public class OperationType {
 
     public static final short OP_BEGIN_SNAPSHOT = 1100;
 
+    // Tablet-level same-node SSD/HDD tiering (B route).
+    // See docs/tablet-tiering-b-route-design-v2.md.
+    public static final short OP_MODIFY_TIERING_POLICY = 1110;
+    public static final short OP_REMOVE_TIERING_POLICY = 1111;
+    public static final short OP_MODIFY_TABLET_TIER_STATE = 1112;
+    public static final short OP_BATCH_MODIFY_TABLET_TIER_STATE = 1113;
+    public static final short OP_CLEAN_TABLET_TIER_STATE = 1114;
+
     /**
      * Get opcode name by op code.
      **/

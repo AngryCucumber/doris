@@ -1087,6 +1087,36 @@ public class EditLog {
                     env.getPolicyMgr().replayDrop(log);
                     break;
                 }
+                case OperationType.OP_MODIFY_TIERING_POLICY: {
+                    org.apache.doris.tiering.TieringPolicy log =
+                            (org.apache.doris.tiering.TieringPolicy) journal.getData();
+                    env.getTabletTieringMgr().replayModifyTieringPolicy(log);
+                    break;
+                }
+                case OperationType.OP_REMOVE_TIERING_POLICY: {
+                    org.apache.doris.tiering.DropTieringPolicyInfo log =
+                            (org.apache.doris.tiering.DropTieringPolicyInfo) journal.getData();
+                    env.getTabletTieringMgr().replayRemoveTieringPolicy(log);
+                    break;
+                }
+                case OperationType.OP_MODIFY_TABLET_TIER_STATE: {
+                    org.apache.doris.tiering.TabletTierState log =
+                            (org.apache.doris.tiering.TabletTierState) journal.getData();
+                    env.getTabletTieringMgr().replayModifyTabletTierState(log);
+                    break;
+                }
+                case OperationType.OP_BATCH_MODIFY_TABLET_TIER_STATE: {
+                    org.apache.doris.tiering.BatchModifyTabletTierStateInfo log =
+                            (org.apache.doris.tiering.BatchModifyTabletTierStateInfo) journal.getData();
+                    env.getTabletTieringMgr().replayBatchModifyTabletTierState(log);
+                    break;
+                }
+                case OperationType.OP_CLEAN_TABLET_TIER_STATE: {
+                    org.apache.doris.tiering.CleanTabletTierStateInfo log =
+                            (org.apache.doris.tiering.CleanTabletTierStateInfo) journal.getData();
+                    env.getTabletTieringMgr().replayCleanTabletTierState(log);
+                    break;
+                }
                 case OperationType.OP_ALTER_STORAGE_POLICY: {
                     StoragePolicy log = (StoragePolicy) journal.getData();
                     env.getPolicyMgr().replayStoragePolicyAlter(log);
@@ -2289,6 +2319,26 @@ public class EditLog {
 
     public void logDropPolicy(DropPolicyLog log) {
         logEdit(OperationType.OP_DROP_POLICY, log);
+    }
+
+    public void logModifyTieringPolicy(org.apache.doris.tiering.TieringPolicy policy) {
+        logEdit(OperationType.OP_MODIFY_TIERING_POLICY, policy);
+    }
+
+    public void logRemoveTieringPolicy(org.apache.doris.tiering.DropTieringPolicyInfo info) {
+        logEdit(OperationType.OP_REMOVE_TIERING_POLICY, info);
+    }
+
+    public void logModifyTabletTierState(org.apache.doris.tiering.TabletTierState state) {
+        logEdit(OperationType.OP_MODIFY_TABLET_TIER_STATE, state);
+    }
+
+    public void logBatchModifyTabletTierState(org.apache.doris.tiering.BatchModifyTabletTierStateInfo info) {
+        logEdit(OperationType.OP_BATCH_MODIFY_TABLET_TIER_STATE, info);
+    }
+
+    public void logCleanTabletTierState(org.apache.doris.tiering.CleanTabletTierStateInfo info) {
+        logEdit(OperationType.OP_CLEAN_TABLET_TIER_STATE, info);
     }
 
     public void logCreateIndexPolicy(IndexPolicy policy) {

@@ -90,6 +90,12 @@ public class MetaPersistMethod {
                 metaPersistMethod.writeMethod =
                         Env.class.getDeclaredMethod("saveRecycleBin", CountingDataOutputStream.class, long.class);
                 break;
+            case "tabletTiering":
+                metaPersistMethod.readMethod =
+                        Env.class.getDeclaredMethod("loadTabletTiering", DataInputStream.class, long.class);
+                metaPersistMethod.writeMethod =
+                        Env.class.getDeclaredMethod("saveTabletTiering", CountingDataOutputStream.class, long.class);
+                break;
             case "globalVariable":
                 metaPersistMethod.readMethod =
                         Env.class.getDeclaredMethod("loadGlobalVariable", DataInputStream.class, long.class);

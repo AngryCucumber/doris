@@ -365,6 +365,21 @@ struct TCompactionReq {
     3: optional string type
 }
 
+// Typed migration result reason for tablet tiering (B route) finish reports.
+// BE fills a stable positive enum; FE maps it to retry/frozen handling instead
+// of parsing error_msgs strings. See design v2 §7.2 / §13.
+enum TTabletMigrationReasonCode {
+    OK = 0,
+    ALREADY_APPLIED = 1,
+    STALE = 2,
+    CAPACITY = 3,
+    SCHEMA_CHANGE = 4,
+    COMPACTION = 5,
+    REMOTE_COOLDOWN = 6,
+    RETRYABLE = 7,
+    UNRECOVERABLE = 8
+}
+
 struct TStorageMediumMigrateReq {
     1: required Types.TTabletId tablet_id
     2: required Types.TSchemaHash schema_hash
@@ -372,6 +387,16 @@ struct TStorageMediumMigrateReq {
     // if data dir is specified, the storage_medium is meaning less,
     // Doris will try to migrate the tablet to the specified data dir.
     4: optional string data_dir
+    // Tablet tiering (B route) extensions. Old BE ignores these optional fields.
+    // FE generates tiering tasks setting dest_path_hash (NOT data_dir); BE must
+    // strictly match dest_path_hash and never fall back to a random store.
+    5: optional i64 src_path_hash
+    6: optional i64 dest_path_hash
+    7: optional i64 policy_effective_revision
+    8: optional string reason_code
+    9: optional i64 tablet_tier_state_version
+    10: optional bool strict_check
+    11: optional i64 migration_attempt_id
 }
 
 struct TCancelDeleteDataReq {

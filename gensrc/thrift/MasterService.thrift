@@ -78,6 +78,14 @@ struct TFinishTaskRequest {
     19: optional map<i64, map<i64, i64>> table_id_to_tablet_id_to_delta_num_rows
     // for Cloud mow table only, used by FE to check if the response is for the latest request
     20: optional list<AgentService.TCalcDeleteBitmapPartitionInfo> resp_partitions;
+    // Tablet tiering (B route) finish fields. copy_size/copy_time_ms (15/16) and
+    // finish_tablet_infos (6, carrying path_hash/storage_medium) are reused; the
+    // following identify the attempt and carry a typed result. See design v2 §7.2.
+    21: optional i64 migration_attempt_id
+    22: optional i64 policy_effective_revision
+    23: optional i64 tablet_tier_state_version
+    24: optional AgentService.TTabletMigrationReasonCode migration_reason_code
+    25: optional bool retryable
 }
 
 struct TTablet {
@@ -102,6 +110,33 @@ struct TPluginInfo {
     2: required i32 type
 }
 
+// Tablet tiering (B route) heat statistics, BE -> FE. Absolute-value mode:
+// each report carries the BE's current 5m/1h/1d absolute counts per tablet; FE
+// overwrites the (BE,tablet) snapshot and sums across BEs. BE has no tenant
+// concept, so field 5 (former tenant_id) is reserved. current_medium /
+// current_path_hash are DIAGNOSTIC ONLY (actual medium comes from tablet report).
+// See design v2 §7.1.
+struct TTabletHeatStat {
+    1: required i64 tablet_id
+    2: optional i64 replica_id
+    3: optional i64 table_id
+    4: optional i64 partition_id
+    // 5: reserved (was tenant_id; tenant is FE-resolved)
+    6: optional i64 read_count_5m
+    7: optional i64 read_count_1h
+    8: optional i64 read_count_1d
+    9: optional i64 point_lookup_count_5m
+    10: optional i64 point_lookup_count_1h
+    11: optional i64 range_scan_count_1h
+    12: optional i64 full_scan_count_1h
+    13: optional i64 scan_bytes_1h
+    14: optional i64 scan_rows_1h
+    15: optional i64 last_access_time_ms
+    16: optional i64 last_write_time_ms
+    17: optional Types.TStorageMedium current_medium
+    18: optional i64 current_path_hash
+}
+
 struct TReportRequest {
     1: required Types.TBackend backend
     2: optional i64 report_version
@@ -123,6 +158,17 @@ struct TReportRequest {
     15: optional list<AgentService.TIndexPolicy> index_policy
     // Running query/loading tasks
     16: optional i64 running_tasks
+    // Tablet tiering (B route) heat report. Sent by a dedicated heat ReportWorker
+    // (heat-only request). Old FE ignores these optional fields. epoch/seq are for
+    // dedup/drop-stale; full snapshots are chunked via snapshot_id/chunk_index/
+    // chunk_count and atomically swapped once all chunks arrive. See design v2 §7.1.
+    17: optional list<TTabletHeatStat> tablet_heat_stats
+    18: optional bool tablet_heat_report_full
+    19: optional i64 tablet_heat_report_epoch
+    20: optional i64 tablet_heat_report_seq
+    21: optional i64 tablet_heat_snapshot_id
+    22: optional i32 tablet_heat_chunk_index
+    23: optional i32 tablet_heat_chunk_count
 }
 
 struct TMasterResult {

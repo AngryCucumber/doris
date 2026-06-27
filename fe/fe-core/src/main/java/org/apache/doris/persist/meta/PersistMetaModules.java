@@ -42,7 +42,10 @@ public class PersistMetaModules {
             "paloAuth", "transactionState", "colocateTableIndex", "routineLoadJobs", "loadJobV2", "smallFiles",
             "plugins", "deleteHandler", "sqlBlockRule", "policy", "globalFunction", "workloadGroups",
             "binlogs", "resourceGroups", "AnalysisMgrV2", "AsyncJobManager", "workloadSchedPolicy",
-            "insertOverwrite", "plsql", "dictionaryManager", "indexPolicy", "KeyManagerStore");
+            "insertOverwrite", "plsql", "dictionaryManager", "indexPolicy", "KeyManagerStore",
+            // New modules MUST be appended at the end to stay backward-compatible
+            // with old images (an old FE reads it as an unknown trailing module).
+            "tabletTiering");
 
     // The modules in `CloudEnv`.
     public static final ImmutableList<String> CLOUD_MODULE_NAMES = ImmutableList.of("cloudWarmUpJob");

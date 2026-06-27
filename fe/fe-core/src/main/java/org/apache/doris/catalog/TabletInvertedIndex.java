@@ -30,6 +30,7 @@ import org.apache.doris.thrift.TStorageMedium;
 import org.apache.doris.thrift.TTablet;
 import org.apache.doris.thrift.TTabletInfo;
 import org.apache.doris.thrift.TTabletMetaInfo;
+import org.apache.doris.tiering.TabletTieringMgr;
 import org.apache.doris.transaction.GlobalTransactionMgrIface;
 import org.apache.doris.transaction.PartitionCommitInfo;
 import org.apache.doris.transaction.TableCommitInfo;
@@ -822,6 +823,14 @@ public class TabletInvertedIndex {
                 if (LOG.isDebugEnabled()) {
                     LOG.debug("delete tablet meta: {}", tabletId);
                 }
+            }
+
+            // Tablet tiering (B route) cleanup hook: memory-only, idempotent and
+            // replay-safe (NO edit log here). Persistent cleanup is recorded by the
+            // master operation path or folded into the parent op (design v2 T1.5).
+            TabletTieringMgr tieringMgr = Env.getCurrentEnv().getTabletTieringMgr();
+            if (tieringMgr != null) {
+                tieringMgr.onTabletDeleted(tabletId);
             }
 
             if (LOG.isDebugEnabled()) {

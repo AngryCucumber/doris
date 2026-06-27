@@ -2497,6 +2497,15 @@ public class Env {
         return checksum;
     }
 
+    // Checksum-neutral image module for tablet tiering (B route): like the
+    // "policy" module it returns checksum unchanged so an old FE that skips this
+    // unknown module still validates the image checksum. See design v2 §10.
+    public long loadTabletTiering(DataInputStream in, long checksum) throws IOException {
+        tabletTieringMgr.readImage(in);
+        LOG.info("finished replay tablet tiering from image");
+        return checksum;
+    }
+
     /**
      * Load catalogs through file.
      **/
@@ -2797,6 +2806,11 @@ public class Env {
 
     public long savePolicy(CountingDataOutputStream out, long checksum) throws IOException {
         Env.getCurrentEnv().getPolicyMgr().write(out);
+        return checksum;
+    }
+
+    public long saveTabletTiering(CountingDataOutputStream out, long checksum) throws IOException {
+        Env.getCurrentEnv().getTabletTieringMgr().writeImage(out);
         return checksum;
     }
 

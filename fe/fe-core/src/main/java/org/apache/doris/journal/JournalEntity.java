@@ -725,6 +725,31 @@ public class JournalEntity implements Writable {
                 isRead = true;
                 break;
             }
+            case OperationType.OP_MODIFY_TIERING_POLICY: {
+                data = org.apache.doris.tiering.TieringPolicy.read(in);
+                isRead = true;
+                break;
+            }
+            case OperationType.OP_REMOVE_TIERING_POLICY: {
+                data = org.apache.doris.tiering.DropTieringPolicyInfo.read(in);
+                isRead = true;
+                break;
+            }
+            case OperationType.OP_MODIFY_TABLET_TIER_STATE: {
+                data = org.apache.doris.tiering.TabletTierState.read(in);
+                isRead = true;
+                break;
+            }
+            case OperationType.OP_BATCH_MODIFY_TABLET_TIER_STATE: {
+                data = org.apache.doris.tiering.BatchModifyTabletTierStateInfo.read(in);
+                isRead = true;
+                break;
+            }
+            case OperationType.OP_CLEAN_TABLET_TIER_STATE: {
+                data = org.apache.doris.tiering.CleanTabletTierStateInfo.read(in);
+                isRead = true;
+                break;
+            }
             case OperationType.OP_ALTER_STORAGE_POLICY: {
                 data = StoragePolicy.read(in);
                 isRead = true;
