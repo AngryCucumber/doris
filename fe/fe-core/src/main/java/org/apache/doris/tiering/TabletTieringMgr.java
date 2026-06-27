@@ -87,6 +87,36 @@ public class TabletTieringMgr extends MasterDaemon {
         return tabletTierStates.values();
     }
 
+    /** Current heat score for a tablet (0 if no profile). Used by SSD eviction. */
+    public double getScoreOf(long tabletId) {
+        TabletHeatProfile p = heatProfiles.get(tabletId);
+        return p == null ? 0.0 : p.getCurrentScore();
+    }
+
+    /**
+     * Demote an SSD-target tablet to HDD under SSD pressure (design v2 §14.2 /
+     * T4.5). Respects min hot residence so a just-promoted tablet is not evicted.
+     * Returns true if demoted.
+     */
+    public boolean demoteForSsdPressure(TabletTierState state, long nowMs) {
+        if (state.getTargetMedium() != TStorageMedium.SSD) {
+            return false;
+        }
+        ResolvedTieringPolicy policy = policyManager.resolve(state.getTableId(), state.getPartitionId());
+        if (state.getLastTargetChangeTimeMs() > 0
+                && nowMs - state.getLastTargetChangeTimeMs() < policy.minHotResidenceSec * 1000L) {
+            return false;
+        }
+        state.setPreviousTargetMedium(state.getTargetMedium());
+        state.setTargetMedium(TStorageMedium.HDD);
+        state.setTemperatureState(TieringTemperature.COLD);
+        state.setReasonCode(TieringReasonCode.SSD_PRESSURE_EVICT);
+        state.setLastTargetChangeTimeMs(nowMs);
+        state.setVersion(state.getVersion() + 1);
+        modifyTabletTierState(state);
+        return true;
+    }
+
     private long countTemperature(TieringTemperature temp) {
         long n = 0;
         for (TabletTierState s : tabletTierStates.values()) {
@@ -567,6 +597,11 @@ public class TabletTieringMgr extends MasterDaemon {
         // After evaluation updates targets, dispatch migrations for tablets whose
         // actual medium != target. dry-run only decides, never migrates.
         if (!Config.tablet_tiering_dry_run) {
+            try {
+                tieringScheduler.applySsdPressureEviction(nowMs);
+            } catch (Throwable t) {
+                LOG.warn("tier ssd pressure eviction failed", t);
+            }
             try {
                 tieringScheduler.dispatchMigrations(nowMs);
             } catch (Throwable t) {

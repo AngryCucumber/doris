@@ -137,4 +137,67 @@ public class TabletTieringScheduler {
         }
         return null;
     }
+
+    /**
+     * SSD pressure eviction (design v2 §14.2 / T4.5): for each BE whose SSD usage
+     * exceeds tablet_tiering_ssd_high_watermark, demote (target SSD -&gt; HDD) the
+     * coldest SSD-target tablets on that BE, bounded per round. The next dispatch
+     * round migrates them; iterating across rounds relieves pressure gradually.
+     */
+    public void applySsdPressureEviction(long nowMs) {
+        Env env = Env.getCurrentEnv();
+        SystemInfoService infoService = env.getCurrentSystemInfo();
+        TabletInvertedIndex invertedIndex = env.getTabletInvertedIndex();
+        if (infoService == null || invertedIndex == null) {
+            return;
+        }
+        double watermark = Config.tablet_tiering_ssd_high_watermark;
+        int maxPerBe = Math.max(1, Config.tablet_tiering_max_tasks_per_backend);
+        java.util.Map<Long, Backend> backends;
+        try {
+            backends = infoService.getAllBackendsByAllCluster();
+        } catch (Exception e) {
+            return;
+        }
+        for (Backend be : backends.values()) {
+            long ssdTotal = 0;
+            long ssdUsed = 0;
+            for (DiskInfo disk : be.getDisks().values()) {
+                if (disk.getStorageMedium() == TStorageMedium.SSD) {
+                    ssdTotal += disk.getTotalCapacityB();
+                    ssdUsed += disk.getDiskUsedCapacityB();
+                }
+            }
+            if (ssdTotal <= 0 || (double) ssdUsed / ssdTotal < watermark) {
+                continue;
+            }
+            // collect SSD-target tablets with a replica on this BE, coldest first
+            java.util.List<TabletTierState> candidates = new java.util.ArrayList<>();
+            for (TabletTierState state : mgr.getTabletTierStates()) {
+                if (state.getTargetMedium() != TStorageMedium.SSD) {
+                    continue;
+                }
+                for (Replica replica : invertedIndex.getReplicasByTabletId(state.getTabletId())) {
+                    if (replica.getBackendIdWithoutException() == be.getId() && !replica.isBad()) {
+                        candidates.add(state);
+                        break;
+                    }
+                }
+            }
+            candidates.sort(java.util.Comparator.comparingDouble(
+                    s -> mgr.getScoreOf(s.getTabletId())));
+            int demoted = 0;
+            for (TabletTierState state : candidates) {
+                if (demoted >= maxPerBe) {
+                    break;
+                }
+                if (mgr.demoteForSsdPressure(state, nowMs)) {
+                    demoted++;
+                }
+            }
+            if (demoted > 0) {
+                LOG.info("SSD pressure on BE {}: demoted {} coldest tablets", be.getId(), demoted);
+            }
+        }
+    }
 }
