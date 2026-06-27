@@ -23,6 +23,7 @@ import org.apache.doris.common.io.Text;
 import org.apache.doris.common.util.MasterDaemon;
 import org.apache.doris.persist.gson.GsonUtils;
 import org.apache.doris.thrift.TStorageMedium;
+import org.apache.doris.thrift.TTabletHeatStat;
 
 import com.google.gson.annotations.SerializedName;
 import org.apache.logging.log4j.LogManager;
@@ -32,9 +33,11 @@ import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Tablet-level same-node SSD/HDD tiering manager (B route).
@@ -56,9 +59,17 @@ public class TabletTieringMgr extends MasterDaemon {
     /** BE capability bit: only BEs declaring this get tiering migration tasks. */
     public static final String TIER_MIGRATION_V1 = "TIER_MIGRATION_V1";
 
+    // Scan bytes normalization unit for scoring (1 MiB).
+    private static final long SCAN_BYTES_UNIT = 1024L * 1024L;
+
     private final TieringPolicyManager policyManager = new TieringPolicyManager();
     // FE-persisted per-tablet tier state, key = tablet id. Lazily created.
     private final ConcurrentHashMap<Long, TabletTierState> tabletTierStates = new ConcurrentHashMap<>();
+    // FE in-memory heat profiles, key = tablet id. Not persisted (optional checkpoint).
+    private final ConcurrentHashMap<Long, TabletHeatProfile> heatProfiles = new ConcurrentHashMap<>();
+
+    private final AtomicLong decisionTotal = new AtomicLong();
+    private final AtomicLong dryRunDecisionTotal = new AtomicLong();
 
     public TabletTieringMgr() {
         super("tablet tiering mgr",
@@ -169,6 +180,183 @@ public class TabletTieringMgr extends MasterDaemon {
      */
     public void onTabletDeleted(long tabletId) {
         tabletTierStates.remove(tabletId);
+        heatProfiles.remove(tabletId);
+    }
+
+    // ---------------------------------------------------------------------
+    // Heat merge (BE -> FE), absolute-value mode. See design v2 §7.1 / §9.1.
+    // ---------------------------------------------------------------------
+
+    /**
+     * Merge a BE's heat report into FE heat profiles. Absolute values per (BE,
+     * tablet) are overwritten by the latest (deduped by epoch/seq) and summed
+     * across BEs. Heat is advisory only and never affects correctness.
+     */
+    public void mergeHeatStats(long beId, List<TTabletHeatStat> stats, long epoch, long seq) {
+        if (Config.isCloudMode() || stats == null) {
+            return;
+        }
+        long nowMs = System.currentTimeMillis();
+        for (TTabletHeatStat stat : stats) {
+            long tabletId = stat.getTabletId();
+            TabletHeatProfile profile = heatProfiles.computeIfAbsent(tabletId,
+                    id -> new TabletHeatProfile(id, stat.getTableId(), stat.getPartitionId()));
+            profile.mergeBe(beId, epoch, seq, stat.getReadCount5m(), stat.getReadCount1h(),
+                    stat.getReadCount1d(), stat.getPointLookupCount5m(), stat.getPointLookupCount1h(),
+                    stat.getRangeScanCount1h(), stat.getFullScanCount1h(), stat.getScanBytes1h(),
+                    stat.getScanRows1h(), stat.getLastAccessTimeMs(), stat.getLastWriteTimeMs(),
+                    stat.getTableId(), stat.getPartitionId(), nowMs);
+        }
+    }
+
+    /** FE-side HeatProfile aging: drop profiles absent from reports for too long. */
+    private void ageHeatProfiles(long nowMs) {
+        long expireMs = (long) Config.tablet_heat_fe_expire_sec * 1000L;
+        if (expireMs <= 0) {
+            return;
+        }
+        Iterator<Map.Entry<Long, TabletHeatProfile>> it = heatProfiles.entrySet().iterator();
+        while (it.hasNext()) {
+            TabletHeatProfile p = it.next().getValue();
+            if (p.getLastReportTimeMs() > 0 && nowMs - p.getLastReportTimeMs() > expireMs) {
+                it.remove();
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Evaluation: scoring + state machine + decision (design v2 §9.2/§9.3).
+    // ---------------------------------------------------------------------
+
+    /** Patent six-factor access score (design v2 §9.2). */
+    private double computeScore(TabletHeatProfile profile, ResolvedTieringPolicy policy, long nowMs) {
+        double score = profile.getReadCount5m();
+        score += profile.getPointLookupCount1h() * policy.pointLookupWeight;
+        score += ((double) profile.getScanBytes1h() / SCAN_BYTES_UNIT) * policy.scanBytesWeight;
+        // freshness: newly-written data is protected from demotion
+        long lastWrite = profile.getLastWriteTimeMs();
+        if (lastWrite > 0
+                && nowMs - lastWrite < (long) Config.tablet_tiering_fresh_write_protect_sec * 1000L) {
+            score += Config.tablet_tiering_fresh_write_score;
+        }
+        // access recency: recent access keeps it warm (patent "last access time")
+        long lastAccess = profile.getLastAccessTimeMs();
+        if (lastAccess > 0 && nowMs - lastAccess < 300_000L) {
+            score += profile.getReadCount5m();
+        }
+        // batch scan penalty
+        score -= profile.getFullScanCount1h() * policy.batchScanPenalty;
+        return score;
+    }
+
+    /**
+     * Temperature state machine with hysteresis + minimum residence. Returns the
+     * new temperature; the caller maps it to a target medium.
+     */
+    private TieringTemperature evaluateTemperature(TabletHeatProfile profile,
+            ResolvedTieringPolicy policy, TabletTierState state, double score, long nowMs) {
+        if (policy.manualHold) {
+            return TieringTemperature.POLICY_FROZEN;
+        }
+        // enforce hysteresis: cold must sit at least min_score_gap below hot
+        double coldThreshold = Math.min(policy.coldThreshold,
+                policy.hotThreshold - Config.tablet_tiering_min_score_gap);
+        TStorageMedium curTarget = state == null ? null : state.getTargetMedium();
+        long lastChange = state == null ? 0 : state.getLastTargetChangeTimeMs();
+
+        if (score >= policy.hotThreshold) {
+            // promote unless we just demoted and min cold residence not elapsed
+            if (curTarget == TStorageMedium.HDD && lastChange > 0
+                    && nowMs - lastChange < policy.minColdResidenceSec * 1000L) {
+                return TieringTemperature.WARM;
+            }
+            return TieringTemperature.HOT;
+        }
+        if (score <= coldThreshold) {
+            long idleMs = nowMs - profile.getLastAccessTimeMs();
+            boolean idleEnough = profile.getLastAccessTimeMs() == 0
+                    || idleMs > policy.cooldownTimeSec * 1000L;
+            boolean residenceOk = curTarget != TStorageMedium.SSD || lastChange == 0
+                    || nowMs - lastChange >= policy.minHotResidenceSec * 1000L;
+            if (idleEnough && residenceOk) {
+                return TieringTemperature.COLD;
+            }
+        }
+        return TieringTemperature.WARM;
+    }
+
+    private TStorageMedium temperatureToTarget(TieringTemperature temp, TStorageMedium curTarget) {
+        switch (temp) {
+            case HOT:
+                return TStorageMedium.SSD;
+            case COLD:
+                return TStorageMedium.HDD;
+            default:
+                return curTarget; // WARM / POLICY_FROZEN: keep current
+        }
+    }
+
+    private void evaluateTablet(TabletHeatProfile profile, long nowMs) {
+        long tableId = profile.getTableId();
+        long partitionId = profile.getPartitionId();
+        if (!isTieringOwned(tableId, partitionId)) {
+            return;
+        }
+        ResolvedTieringPolicy policy = policyManager.resolve(tableId, partitionId);
+        if (!policy.enabled) {
+            return;
+        }
+        double score = computeScore(profile, policy, nowMs);
+        profile.setCurrentScore(score);
+        profile.setLastEvalTimeMs(nowMs);
+
+        TabletTierState state = tabletTierStates.get(profile.getTabletId());
+        TStorageMedium oldTarget = state == null ? null : state.getTargetMedium();
+        TieringTemperature temp = evaluateTemperature(profile, policy, state, score, nowMs);
+        profile.setTemperatureState(temp);
+        TStorageMedium newTarget = temperatureToTarget(temp, oldTarget);
+
+        TieringReasonCode reason = TieringReasonCode.NONE;
+        if (temp == TieringTemperature.HOT) {
+            reason = TieringReasonCode.HIGH_QPS_PROMOTE;
+        } else if (temp == TieringTemperature.COLD) {
+            reason = TieringReasonCode.LOW_ACCESS_DEMOTE;
+        }
+
+        TieringDecision decision = new TieringDecision(profile.getTabletId(), oldTarget, newTarget,
+                temp, score, policy.effectiveRevision, reason,
+                "temp=" + temp + " score=" + score);
+
+        if (Config.tablet_tiering_dry_run) {
+            dryRunDecisionTotal.incrementAndGet();
+            if (decision.isTargetChanged() && LOG.isDebugEnabled()) {
+                LOG.debug("[tiering dry-run] tablet {} {} -> {} ({})", profile.getTabletId(),
+                        oldTarget, newTarget, decision.getExplain());
+            }
+            return;
+        }
+
+        if (decision.isTargetChanged()) {
+            decisionTotal.incrementAndGet();
+            applyDecision(profile, decision, nowMs);
+        }
+    }
+
+    private void applyDecision(TabletHeatProfile profile, TieringDecision decision, long nowMs) {
+        TabletTierState state = tabletTierStates.get(profile.getTabletId());
+        if (state == null) {
+            state = new TabletTierState(profile.getTabletId(), profile.getTableId(),
+                    profile.getPartitionId());
+        }
+        state.setPreviousTargetMedium(state.getTargetMedium());
+        state.setTargetMedium(decision.getNewTargetMedium());
+        state.setTemperatureState(decision.getTemperature());
+        state.setReasonCode(decision.getReasonCode());
+        state.setEffectiveRevision(decision.getEffectiveRevision());
+        state.setLastTargetChangeTimeMs(nowMs);
+        state.setVersion(state.getVersion() + 1);
+        // Persist only on target change (design v2 §9.3). P4 feeds the scheduler.
+        modifyTabletTierState(state);
     }
 
     // ---------------------------------------------------------------------
@@ -227,6 +415,14 @@ public class TabletTieringMgr extends MasterDaemon {
     }
 
     private void runTieringCycle() {
-        // Intentionally empty until the evaluator (P3) and scheduler (P4) land.
+        long nowMs = System.currentTimeMillis();
+        ageHeatProfiles(nowMs);
+        for (TabletHeatProfile profile : heatProfiles.values()) {
+            try {
+                evaluateTablet(profile, nowMs);
+            } catch (Throwable t) {
+                LOG.warn("evaluate tablet {} failed", profile.getTabletId(), t);
+            }
+        }
     }
 }

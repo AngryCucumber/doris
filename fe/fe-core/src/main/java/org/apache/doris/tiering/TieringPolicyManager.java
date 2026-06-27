@@ -17,6 +17,8 @@
 
 package org.apache.doris.tiering;
 
+import org.apache.doris.common.Config;
+
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -81,6 +83,74 @@ public class TieringPolicyManager {
             enabled = partition.getEnabled();
         }
         return enabled;
+    }
+
+    /**
+     * Full field-level resolution for a tablet: table then partition override the
+     * config defaults, field by field (only explicitly-set fields override).
+     * {@code enabled} is judged after the merge. SSD quota uses the hierarchical
+     * min(self, parent) rule. See design v2 §6.1.
+     */
+    public ResolvedTieringPolicy resolve(long tableId, long partitionId) {
+        ResolvedTieringPolicy r = new ResolvedTieringPolicy();
+        // defaults
+        r.enabled = false;
+        r.hotThreshold = Config.tablet_tiering_default_hot_threshold;
+        r.coldThreshold = Config.tablet_tiering_default_cold_threshold;
+        r.cooldownTimeSec = 0;
+        r.minHotResidenceSec = 0;
+        r.minColdResidenceSec = 0;
+        r.maxSsdBytes = -1;
+        r.pointLookupWeight = 1.0;
+        r.scanBytesWeight = 1.0;
+        r.batchScanPenalty = 0.0;
+        r.manualHold = false;
+
+        apply(r, getPolicy(TieringScopeType.TABLE, tableId));
+        apply(r, getPolicy(TieringScopeType.PARTITION, partitionId));
+        r.effectiveRevision = effectiveRevision(tableId, partitionId);
+        return r;
+    }
+
+    private void apply(ResolvedTieringPolicy r, TieringPolicy p) {
+        if (p == null) {
+            return;
+        }
+        if (p.getEnabled() != null) {
+            r.enabled = p.getEnabled();
+        }
+        if (p.getHotThreshold() != null) {
+            r.hotThreshold = p.getHotThreshold();
+        }
+        if (p.getColdThreshold() != null) {
+            r.coldThreshold = p.getColdThreshold();
+        }
+        if (p.getCooldownTimeSec() != null) {
+            r.cooldownTimeSec = p.getCooldownTimeSec();
+        }
+        if (p.getMinHotResidenceSec() != null) {
+            r.minHotResidenceSec = p.getMinHotResidenceSec();
+        }
+        if (p.getMinColdResidenceSec() != null) {
+            r.minColdResidenceSec = p.getMinColdResidenceSec();
+        }
+        if (p.getMaxSsdBytes() != null) {
+            // Hierarchical: a child quota cannot exceed the remaining parent quota.
+            r.maxSsdBytes = (r.maxSsdBytes < 0) ? p.getMaxSsdBytes()
+                    : Math.min(r.maxSsdBytes, p.getMaxSsdBytes());
+        }
+        if (p.getPointLookupWeight() != null) {
+            r.pointLookupWeight = p.getPointLookupWeight();
+        }
+        if (p.getScanBytesWeight() != null) {
+            r.scanBytesWeight = p.getScanBytesWeight();
+        }
+        if (p.getBatchScanPenalty() != null) {
+            r.batchScanPenalty = p.getBatchScanPenalty();
+        }
+        if (p.getManualHold() != null) {
+            r.manualHold = p.getManualHold();
+        }
     }
 
     /**

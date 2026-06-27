@@ -89,6 +89,7 @@ import org.apache.doris.thrift.TStoragePolicy;
 import org.apache.doris.thrift.TStorageResource;
 import org.apache.doris.thrift.TStorageType;
 import org.apache.doris.thrift.TTablet;
+import org.apache.doris.thrift.TTabletHeatStat;
 import org.apache.doris.thrift.TTabletInfo;
 import org.apache.doris.thrift.TTabletMetaInfo;
 import org.apache.doris.thrift.TTaskType;
@@ -130,6 +131,7 @@ public class ReportHandler extends Daemon {
         DISK,
         TABLET,
         INDEX_POLICY,
+        HEAT,
     }
 
     public ReportHandler() {
@@ -200,6 +202,20 @@ public class ReportHandler extends Daemon {
             reportType = ReportType.INDEX_POLICY;
         }
 
+        // Tablet tiering (B route) heat report, from the dedicated heat worker.
+        // Heat-only requests carry tablet_heat_stats and no tasks/disks/tablets.
+        List<TTabletHeatStat> tabletHeatStats = null;
+        long heatEpoch = -1;
+        long heatSeq = -1;
+        if (request.isSetTabletHeatStats()) {
+            tabletHeatStats = request.getTabletHeatStats();
+            heatEpoch = request.isSetTabletHeatReportEpoch() ? request.getTabletHeatReportEpoch() : -1;
+            heatSeq = request.isSetTabletHeatReportSeq() ? request.getTabletHeatReportSeq() : -1;
+            if (reportType == null) {
+                reportType = ReportType.HEAT;
+            }
+        }
+
         if (tablets == null) {
             numTablets = request.isSetNumTablets() ? request.getNumTablets() : 0;
         } else {
@@ -226,6 +242,9 @@ public class ReportHandler extends Daemon {
                 reportVersion, request.getStoragePolicy(), request.getResource(), request.getNumCores(),
                 request.getPipelineExecutorSize(), numTablets, request.getIndexPolicy(),
                 request.isSetRunningTasks() ? request.getRunningTasks() : -1);
+        reportTask.tabletHeatStats = tabletHeatStats;
+        reportTask.heatEpoch = heatEpoch;
+        reportTask.heatSeq = heatSeq;
         try {
             putToQueue(reportTask);
         } catch (Exception e) {
@@ -318,6 +337,10 @@ public class ReportHandler extends Daemon {
         private long runningTasks;
         private long numTablets;
         private List<TIndexPolicy> indexPolicys;
+        // Tablet tiering (B route) heat report payload.
+        private List<TTabletHeatStat> tabletHeatStats;
+        private long heatEpoch;
+        private long heatSeq;
 
         public ReportTask(long beId, ReportType reportType, Map<TTaskType, Set<Long>> tasks,
                 Map<String, TDisk> disks, Map<Long, TTablet> tablets,
@@ -354,6 +377,13 @@ public class ReportHandler extends Daemon {
             }
             if (indexPolicys != null) {
                 storageIndexPolicyReport(beId, indexPolicys);
+            }
+
+            // Tablet tiering (B route) heat merge. Advisory only; cloud-gated
+            // inside mergeHeatStats; never affects correctness.
+            if (tabletHeatStats != null) {
+                Env.getCurrentEnv().getTabletTieringMgr()
+                        .mergeHeatStats(beId, tabletHeatStats, heatEpoch, heatSeq);
             }
 
             if (tablets != null) {
