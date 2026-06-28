@@ -543,6 +543,16 @@ public class InternalCatalog implements CatalogIf<Database> {
             // 3. remove db from catalog
             idToDb.remove(db.getId());
             fullNameToDb.remove(db.getFullName());
+            // Tablet tiering (B route): drop the TENANT-scope policy (keyed by db id)
+            // so a dropped tenant does not leave an orphaned policy. Only logs when a
+            // policy actually exists (zero-diff when tiering is unused).
+            org.apache.doris.tiering.TabletTieringMgr tieringMgr =
+                    Env.getCurrentEnv().getTabletTieringMgr();
+            if (tieringMgr != null && tieringMgr.getPolicyManager()
+                    .getPolicy(org.apache.doris.tiering.TieringScopeType.TENANT, db.getId()) != null) {
+                tieringMgr.removeTieringPolicy(
+                        org.apache.doris.tiering.TieringScopeType.TENANT, db.getId());
+            }
             DropDbInfo info = new DropDbInfo(dbName, force, recycleTime);
             Env.getCurrentEnv().getQueryStats().clear(Env.getCurrentEnv().getCurrentCatalog().getId(), db.getId());
             Env.getCurrentEnv().getDictionaryManager().dropDbDictionaries(dbName);

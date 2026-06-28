@@ -18,6 +18,7 @@
 package org.apache.doris.tiering;
 
 import org.apache.doris.catalog.Env;
+import org.apache.doris.catalog.TabletMeta;
 import org.apache.doris.common.Config;
 import org.apache.doris.common.io.Text;
 import org.apache.doris.common.util.MasterDaemon;
@@ -102,7 +103,8 @@ public class TabletTieringMgr extends MasterDaemon {
         if (state.getTargetMedium() != TStorageMedium.SSD) {
             return false;
         }
-        ResolvedTieringPolicy policy = policyManager.resolve(state.getTableId(), state.getPartitionId());
+        ResolvedTieringPolicy policy = policyManager.resolve(dbIdOf(state.getTabletId()),
+                state.getTableId(), state.getPartitionId());
         if (state.getLastTargetChangeTimeMs() > 0
                 && nowMs - state.getLastTargetChangeTimeMs() < policy.minHotResidenceSec * 1000L) {
             return false;
@@ -202,12 +204,22 @@ public class TabletTieringMgr extends MasterDaemon {
     }
 
     /**
-     * Whether the given tablet's table/partition is owned by tiering. Phase 1
-     * bases this on effective-enable; the persistent {@code detach} flag that
-     * keeps ownership across {@code enable=false} pause lands in P4.
+     * Whether the given tablet's table/partition (under tenant/database {@code
+     * dbId}) is owned by tiering. Bases this on effective-enable after the
+     * table/partition/tenant field-level merge.
      */
-    public boolean isTieringOwned(long tableId, long partitionId) {
-        return policyManager.resolveEffectiveEnabled(tableId, partitionId);
+    public boolean isTieringOwned(long dbId, long tableId, long partitionId) {
+        return policyManager.resolveEffectiveEnabled(dbId, tableId, partitionId);
+    }
+
+    /**
+     * Resolve the database (tenant) id for a tablet from the inverted index. Used
+     * to consult the TENANT-scope policy. Returns -1 when the tablet meta is gone
+     * (the tenant policy then simply does not apply).
+     */
+    private long dbIdOf(long tabletId) {
+        TabletMeta meta = Env.getCurrentEnv().getTabletInvertedIndex().getTabletMeta(tabletId);
+        return meta == null ? -1 : meta.getDbId();
     }
 
     /**
@@ -467,10 +479,11 @@ public class TabletTieringMgr extends MasterDaemon {
     private void evaluateTablet(TabletHeatProfile profile, long nowMs) {
         long tableId = profile.getTableId();
         long partitionId = profile.getPartitionId();
-        if (!isTieringOwned(tableId, partitionId)) {
+        long dbId = dbIdOf(profile.getTabletId());
+        if (!isTieringOwned(dbId, tableId, partitionId)) {
             return;
         }
-        ResolvedTieringPolicy policy = policyManager.resolve(tableId, partitionId);
+        ResolvedTieringPolicy policy = policyManager.resolve(dbId, tableId, partitionId);
         if (!policy.enabled) {
             return;
         }

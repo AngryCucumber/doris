@@ -17,7 +17,10 @@
 
 package org.apache.doris.nereids.trees.plans.commands;
 
+import org.apache.doris.catalog.DatabaseIf;
 import org.apache.doris.catalog.Env;
+import org.apache.doris.common.Config;
+import org.apache.doris.common.DdlException;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
 import org.apache.doris.common.UserException;
@@ -28,6 +31,9 @@ import org.apache.doris.nereids.trees.plans.PlanType;
 import org.apache.doris.nereids.trees.plans.visitor.PlanVisitor;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.qe.StmtExecutor;
+import org.apache.doris.tiering.TabletTieringMgr;
+import org.apache.doris.tiering.TieringPolicy;
+import org.apache.doris.tiering.TieringScopeType;
 
 import com.google.common.base.Strings;
 
@@ -72,7 +78,47 @@ public class AlterDatabasePropertiesCommand extends AlterCommand {
     public void doRun(ConnectContext ctx, StmtExecutor executor) throws Exception {
         validate(ctx);
 
+        // Tablet tiering (B route): a TENANT-scope policy is keyed by the database
+        // id (database = tenant). ALTER DATABASE <db> SET PROPERTIES('tablet_tiering.*')
+        // is intercepted here and routed to the tiering manager rather than stored
+        // as a plain database property. Priority is table < partition < tenant.
+        if (handleTenantTieringProperties()) {
+            return;
+        }
+
         Env.getCurrentEnv().alterDatabaseProperty(dbName, properties);
+    }
+
+    private boolean handleTenantTieringProperties() throws UserException {
+        boolean anyTiering = false;
+        boolean allTiering = true;
+        for (String key : properties.keySet()) {
+            if (key.startsWith(PropertyAnalyzer.PROPERTIES_TABLET_TIERING_PREFIX)) {
+                anyTiering = true;
+            } else {
+                allTiering = false;
+            }
+        }
+        if (!anyTiering) {
+            return false;
+        }
+        if (!allTiering) {
+            throw new DdlException("tablet_tiering.* database properties cannot be mixed with "
+                    + "other properties in one ALTER DATABASE statement");
+        }
+        if (Config.isCloudMode()) {
+            throw new DdlException("tablet_tiering is not supported in cloud mode");
+        }
+        DatabaseIf db = Env.getCurrentEnv().getInternalCatalog().getDbOrDdlException(dbName);
+        long dbId = db.getId();
+        TabletTieringMgr mgr = Env.getCurrentEnv().getTabletTieringMgr();
+        if (mgr == null) {
+            throw new DdlException("tablet tiering manager is not available");
+        }
+        TieringPolicy existing = mgr.getPolicyManager().getPolicy(TieringScopeType.TENANT, dbId);
+        mgr.modifyTieringPolicy(PropertyAnalyzer.analyzeTabletTieringPolicy(
+                properties, TieringScopeType.TENANT, dbId, existing));
+        return true;
     }
 
     public String getDbName() {

@@ -67,12 +67,13 @@ public class TieringPolicyManager {
     }
 
     /**
-     * Effective {@code enabled} after table-then-partition field-level merge.
-     * Default is {@code false} (feature off) when no scope sets it. A partition
-     * setting overrides the table; a partition {@code enabled=false} locally
-     * disables rather than falling back to the table value.
+     * Effective {@code enabled} after table-then-partition-then-tenant field-level
+     * merge (tenant scope = database id, highest priority). Default is
+     * {@code false} (feature off) when no scope sets it. A higher-priority scope
+     * overrides a lower one; an {@code enabled=false} at any scope locally
+     * disables rather than falling back to the parent value. See design v2 §6.1.
      */
-    public boolean resolveEffectiveEnabled(long tableId, long partitionId) {
+    public boolean resolveEffectiveEnabled(long dbId, long tableId, long partitionId) {
         boolean enabled = false;
         TieringPolicy table = getPolicy(TieringScopeType.TABLE, tableId);
         if (table != null && table.getEnabled() != null) {
@@ -82,16 +83,21 @@ public class TieringPolicyManager {
         if (partition != null && partition.getEnabled() != null) {
             enabled = partition.getEnabled();
         }
+        TieringPolicy tenant = getPolicy(TieringScopeType.TENANT, dbId);
+        if (tenant != null && tenant.getEnabled() != null) {
+            enabled = tenant.getEnabled();
+        }
         return enabled;
     }
 
     /**
-     * Full field-level resolution for a tablet: table then partition override the
-     * config defaults, field by field (only explicitly-set fields override).
-     * {@code enabled} is judged after the merge. SSD quota uses the hierarchical
-     * min(self, parent) rule. See design v2 §6.1.
+     * Full field-level resolution for a tablet: table, then partition, then tenant
+     * (database) override the config defaults, field by field (only explicitly-set
+     * fields override). {@code enabled} is judged after the merge. SSD quota uses
+     * the hierarchical min(self, parent) rule. Tenant (database) has the highest
+     * priority. See design v2 §6.1.
      */
-    public ResolvedTieringPolicy resolve(long tableId, long partitionId) {
+    public ResolvedTieringPolicy resolve(long dbId, long tableId, long partitionId) {
         ResolvedTieringPolicy r = new ResolvedTieringPolicy();
         // defaults
         r.enabled = false;
@@ -108,7 +114,8 @@ public class TieringPolicyManager {
 
         apply(r, getPolicy(TieringScopeType.TABLE, tableId));
         apply(r, getPolicy(TieringScopeType.PARTITION, partitionId));
-        r.effectiveRevision = effectiveRevision(tableId, partitionId);
+        apply(r, getPolicy(TieringScopeType.TENANT, dbId));
+        r.effectiveRevision = effectiveRevision(dbId, tableId, partitionId);
         return r;
     }
 
@@ -155,12 +162,12 @@ public class TieringPolicyManager {
 
     /**
      * Derived per-tablet effective revision = a stable combination of the epochs
-     * of the contributing scopes (table, partition). It changes whenever any
-     * contributing scope changes, but is intentionally NOT globally monotonic so
-     * that changing one table's policy does not over-invalidate in-flight tasks
-     * of unrelated tables. See design v2 §6.1.
+     * of the contributing scopes (table, partition, tenant). It changes whenever
+     * any contributing scope changes, but is intentionally NOT globally monotonic
+     * so that changing one table's (or one tenant's) policy does not
+     * over-invalidate in-flight tasks of unrelated tables. See design v2 §6.1.
      */
-    public long effectiveRevision(long tableId, long partitionId) {
+    public long effectiveRevision(long dbId, long tableId, long partitionId) {
         long tableEpoch = 0L;
         TieringPolicy table = getPolicy(TieringScopeType.TABLE, tableId);
         if (table != null) {
@@ -171,6 +178,11 @@ public class TieringPolicyManager {
         if (partition != null) {
             partitionEpoch = partition.getEpoch();
         }
-        return tableEpoch * 1_000_003L + partitionEpoch;
+        long tenantEpoch = 0L;
+        TieringPolicy tenant = getPolicy(TieringScopeType.TENANT, dbId);
+        if (tenant != null) {
+            tenantEpoch = tenant.getEpoch();
+        }
+        return (tableEpoch * 1_000_003L + partitionEpoch) * 1_000_003L + tenantEpoch;
     }
 }

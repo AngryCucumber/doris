@@ -443,7 +443,8 @@ public class TabletInvertedIndex {
         // shielding holds regardless of the global switch (enable=false == pause:
         // keep state, still shielded, never moved back). See design v2 §9.4 / §23.2.
         TabletTieringMgr tieringMgr = Env.getCurrentEnv().getTabletTieringMgr();
-        if (tieringMgr != null && tieringMgr.isTieringOwned(tabletMeta.getTableId(), partitionId)) {
+        if (tieringMgr != null
+                && tieringMgr.isTieringOwned(tabletMeta.getDbId(), tabletMeta.getTableId(), partitionId)) {
             return;
         }
 

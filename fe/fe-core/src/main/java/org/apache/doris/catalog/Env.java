@@ -5041,7 +5041,7 @@ public class Env {
                         // partition's declared medium is still surfaced. See §23.2.
                         TabletTieringMgr tieringMgr = getTabletTieringMgr();
                         if (tieringMgr != null
-                                && tieringMgr.isTieringOwned(olapTable.getId(), partition.getId())) {
+                                && tieringMgr.isTieringOwned(dbId, olapTable.getId(), partition.getId())) {
                             storageMediumMap.put(partitionId, dataProperty.getStorageMedium());
                             continue;
                         }
