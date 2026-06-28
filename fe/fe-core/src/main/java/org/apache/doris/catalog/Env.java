@@ -3935,6 +3935,21 @@ public class Env {
         if (olapTable.isInAtomicRestore()) {
             sb.append(",\n\"").append(PropertyAnalyzer.PROPERTIES_IN_ATOMIC_RESTORE).append("\" = \"true\"");
         }
+
+        // tablet tiering (B route): derive the TABLE-scope tablet_tiering.* lines from
+        // the authoritative TieringPolicy at display time (compute-on-display, not a
+        // second stored copy). Partition/tenant scopes remain visible via SHOW PROC
+        // '/tiering/policies' and SHOW CREATE DATABASE.
+        TabletTieringMgr tieringMgr = Env.getCurrentEnv().getTabletTieringMgr();
+        if (tieringMgr != null) {
+            org.apache.doris.tiering.TieringPolicy tablePolicy = tieringMgr.getPolicyManager()
+                    .getPolicy(org.apache.doris.tiering.TieringScopeType.TABLE, olapTable.getId());
+            if (tablePolicy != null) {
+                for (Map.Entry<String, String> e : tablePolicy.displayProperties().entrySet()) {
+                    sb.append(",\n\"").append(e.getKey()).append("\" = \"").append(e.getValue()).append("\"");
+                }
+            }
+        }
     }
 
     /**.

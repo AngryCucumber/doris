@@ -102,9 +102,23 @@ public class ShowCreateDatabaseCommand extends ShowCommand {
         } else {
             DatabaseIf db = catalog.getDbOrAnalysisException(databaseName);
             sb.append("CREATE DATABASE `").append(ClusterNamespace.getNameFromFullName(databaseName)).append("`");
-            if (db.getDbProperties().getProperties().size() > 0) {
+            // Merge stored db properties with the derived TENANT-scope tablet_tiering.*
+            // properties (compute-on-display from the authoritative TieringPolicy; not a
+            // second stored copy, so there is no consistency risk).
+            java.util.Map<String, String> props =
+                    new java.util.LinkedHashMap<>(db.getDbProperties().getProperties());
+            org.apache.doris.tiering.TabletTieringMgr tieringMgr =
+                    Env.getCurrentEnv().getTabletTieringMgr();
+            if (tieringMgr != null) {
+                org.apache.doris.tiering.TieringPolicy tenant = tieringMgr.getPolicyManager()
+                        .getPolicy(org.apache.doris.tiering.TieringScopeType.TENANT, db.getId());
+                if (tenant != null) {
+                    props.putAll(tenant.displayProperties());
+                }
+            }
+            if (!props.isEmpty()) {
                 sb.append("\nPROPERTIES (\n");
-                sb.append(new PrintableMap<>(db.getDbProperties().getProperties(), "=", true, true, false));
+                sb.append(new PrintableMap<>(props, "=", true, true, false));
                 sb.append("\n)");
             }
         }

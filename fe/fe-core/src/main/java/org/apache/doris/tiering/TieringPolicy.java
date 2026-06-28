@@ -26,6 +26,8 @@ import com.google.gson.annotations.SerializedName;
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * A tablet tiering policy bound to a scope (TABLE / PARTITION / TENANT).
@@ -206,6 +208,46 @@ public class TieringPolicy implements Writable {
 
     public void setUpdatedTimeMs(long updatedTimeMs) {
         this.updatedTimeMs = updatedTimeMs;
+    }
+
+    /**
+     * The explicitly-set fields rendered as user-facing {@code tablet_tiering.*}
+     * properties, for compute-on-display in SHOW CREATE DATABASE/TABLE. Only set
+     * (non-null) fields are emitted, preserving the three-state semantics. This is
+     * derived from the single authoritative policy at query time -- it is NOT a
+     * second stored copy, so there is no consistency risk. Keys mirror
+     * {@code PropertyAnalyzer.PROPERTIES_TABLET_TIERING_*}.
+     */
+    public Map<String, String> displayProperties() {
+        Map<String, String> m = new LinkedHashMap<>();
+        if (enabled != null) {
+            m.put("tablet_tiering.enable", String.valueOf(enabled));
+        }
+        if (manualHold != null) {
+            m.put("tablet_tiering.hold", String.valueOf(manualHold));
+        }
+        if (hotThreshold != null) {
+            m.put("tablet_tiering.hot_threshold", String.valueOf(hotThreshold));
+        }
+        if (coldThreshold != null) {
+            m.put("tablet_tiering.cold_threshold", String.valueOf(coldThreshold));
+        }
+        if (cooldownTimeSec != null) {
+            m.put("tablet_tiering.cooldown_time", cooldownTimeSec + "s");
+        }
+        if (minHotResidenceSec != null) {
+            m.put("tablet_tiering.min_hot_residence", minHotResidenceSec + "s");
+        }
+        if (minColdResidenceSec != null) {
+            m.put("tablet_tiering.min_cold_residence", minColdResidenceSec + "s");
+        }
+        if (maxSsdBytes != null) {
+            m.put("tablet_tiering.max_ssd_quota", String.valueOf(maxSsdBytes));
+        }
+        if (batchScanPenalty != null) {
+            m.put("tablet_tiering.batch_scan_penalty", String.valueOf(batchScanPenalty));
+        }
+        return m;
     }
 
     @Override
