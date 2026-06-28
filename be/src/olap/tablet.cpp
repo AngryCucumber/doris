@@ -719,7 +719,8 @@ Status Tablet::add_inc_rowset(const RowsetSharedPtr& rowset) {
     if (config::enable_tablet_heat_report) {
         TabletHeatCollector* collector = _engine.tablet_heat_collector();
         if (collector != nullptr) {
-            collector->update_write_time(tablet_id(), rowset->newest_write_timestamp() * 1000);
+            collector->update_write_time(tablet_id(), table_id(), partition_id(),
+                                         rowset->newest_write_timestamp() * 1000);
         }
     }
 

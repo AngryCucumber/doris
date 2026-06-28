@@ -75,6 +75,11 @@ public class TabletTieringScheduler {
             if (maxPerTable > 0 && tableCount >= maxPerTable) {
                 continue;
             }
+            // FROZEN tablets (storage policy / remote cooldown / protection) are
+            // never migrated, regardless of any prior target.
+            if (state.getTemperatureState() == TieringTemperature.POLICY_FROZEN) {
+                continue;
+            }
             TStorageMedium target = state.getTargetMedium();
             if (target == null) {
                 continue;

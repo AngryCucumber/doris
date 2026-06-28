@@ -192,16 +192,23 @@ void TabletHeatCollector::record_access(int64_t tablet_id, int64_t table_id, int
     it->second->record(now_sec, type, scan_bytes, scan_rows);
 }
 
-void TabletHeatCollector::update_write_time(int64_t tablet_id, int64_t write_time_ms) {
+void TabletHeatCollector::update_write_time(int64_t tablet_id, int64_t table_id,
+                                           int64_t partition_id, int64_t write_time_ms) {
     if (!config::enable_tablet_heat_report) {
         return;
     }
     Shard& shard = shard_of(tablet_id);
     std::lock_guard<std::mutex> l(shard.mu);
     auto it = shard.map.find(tablet_id);
-    if (it != shard.map.end()) {
-        it->second->set_last_write_time_ms(write_time_ms);
+    if (it == shard.map.end()) {
+        // Create the entry so the write freshness is retained even before the
+        // first read access creates a profile.
+        it = shard.map
+                     .emplace(tablet_id, std::make_unique<TabletHeatBuckets>(tablet_id, table_id,
+                                                                             partition_id, 0))
+                     .first;
     }
+    it->second->set_last_write_time_ms(write_time_ms);
 }
 
 void TabletHeatCollector::snapshot(std::vector<TabletHeatSnapshot>* out) {

@@ -489,32 +489,74 @@ public class Alter {
         if (alterClauses == null || alterClauses.isEmpty()) {
             return false;
         }
-        Map<String, String> merged = Maps.newHashMap();
+        boolean allTableProps = true;
+        boolean allPartitionProps = true;
         for (AlterClause clause : alterClauses) {
-            if (!(clause instanceof ModifyTablePropertiesClause)) {
-                return false;
+            allTableProps &= clause instanceof ModifyTablePropertiesClause;
+            allPartitionProps &= clause instanceof ModifyPartitionClause;
+        }
+        org.apache.doris.tiering.TabletTieringMgr mgr = Env.getCurrentEnv().getTabletTieringMgr();
+
+        if (allTableProps) {
+            Map<String, String> merged = Maps.newHashMap();
+            for (AlterClause clause : alterClauses) {
+                Map<String, String> props = ((ModifyTablePropertiesClause) clause).getProperties();
+                if (props == null || props.isEmpty() || !isAllTieringKeys(props)) {
+                    return false;
+                }
+                merged.putAll(props);
             }
-            Map<String, String> props = ((ModifyTablePropertiesClause) clause).getProperties();
-            if (props == null || props.isEmpty()) {
-                return false;
+            if (Config.isCloudMode()) {
+                throw new DdlException("tablet_tiering is not supported in cloud mode");
             }
-            for (String key : props.keySet()) {
-                if (!key.startsWith(PropertyAnalyzer.PROPERTIES_TABLET_TIERING_PREFIX)) {
+            org.apache.doris.tiering.TieringPolicy existing = mgr.getPolicyManager()
+                    .getPolicy(org.apache.doris.tiering.TieringScopeType.TABLE, olapTable.getId());
+            mgr.modifyTieringPolicy(PropertyAnalyzer.analyzeTabletTieringPolicy(
+                    merged, org.apache.doris.tiering.TieringScopeType.TABLE, olapTable.getId(),
+                    existing));
+            LOG.info("modify TABLE tiering policy for table {}: {}", olapTable.getId(), merged);
+            return true;
+        }
+
+        if (allPartitionProps) {
+            // Validate all clauses are pure tablet_tiering.* first.
+            for (AlterClause clause : alterClauses) {
+                Map<String, String> props = ((ModifyPartitionClause) clause).getProperties();
+                if (props == null || props.isEmpty() || !isAllTieringKeys(props)) {
                     return false;
                 }
             }
-            merged.putAll(props);
+            if (Config.isCloudMode()) {
+                throw new DdlException("tablet_tiering is not supported in cloud mode");
+            }
+            for (AlterClause clause : alterClauses) {
+                ModifyPartitionClause pc = (ModifyPartitionClause) clause;
+                for (String partName : pc.getPartitionNames()) {
+                    org.apache.doris.catalog.Partition partition = olapTable.getPartition(partName);
+                    if (partition == null) {
+                        throw new DdlException("partition does not exist: " + partName);
+                    }
+                    long partId = partition.getId();
+                    org.apache.doris.tiering.TieringPolicy existing = mgr.getPolicyManager()
+                            .getPolicy(org.apache.doris.tiering.TieringScopeType.PARTITION, partId);
+                    mgr.modifyTieringPolicy(PropertyAnalyzer.analyzeTabletTieringPolicy(
+                            pc.getProperties(),
+                            org.apache.doris.tiering.TieringScopeType.PARTITION, partId, existing));
+                    LOG.info("modify PARTITION tiering policy for partition {}: {}", partId,
+                            pc.getProperties());
+                }
+            }
+            return true;
         }
-        if (Config.isCloudMode()) {
-            throw new DdlException("tablet_tiering is not supported in cloud mode");
+        return false;
+    }
+
+    private static boolean isAllTieringKeys(Map<String, String> props) {
+        for (String key : props.keySet()) {
+            if (!key.startsWith(PropertyAnalyzer.PROPERTIES_TABLET_TIERING_PREFIX)) {
+                return false;
+            }
         }
-        org.apache.doris.tiering.TabletTieringMgr mgr = Env.getCurrentEnv().getTabletTieringMgr();
-        org.apache.doris.tiering.TieringPolicy existing = mgr.getPolicyManager()
-                .getPolicy(org.apache.doris.tiering.TieringScopeType.TABLE, olapTable.getId());
-        org.apache.doris.tiering.TieringPolicy policy = PropertyAnalyzer.analyzeTabletTieringPolicy(
-                merged, org.apache.doris.tiering.TieringScopeType.TABLE, olapTable.getId(), existing);
-        mgr.modifyTieringPolicy(policy);
-        LOG.info("modify tablet tiering policy for table {}: {}", olapTable.getId(), merged);
         return true;
     }
 

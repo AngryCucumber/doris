@@ -474,6 +474,13 @@ public class TabletTieringMgr extends MasterDaemon {
         if (!policy.enabled) {
             return;
         }
+        // FROZEN pre-gate: a partition with a storage policy (or a tablet already
+        // cooled down to remote) is NOT locally tiered -- it goes through the
+        // local->remote lifecycle instead. Mark FROZEN and skip. See §9.2 / T3.4.
+        if (isRemoteTieredPartition(tableId, partitionId)) {
+            markFrozen(profile, TieringReasonCode.REMOTE_COOLDOWN_DATA, nowMs);
+            return;
+        }
         double score = computeScore(profile, policy, nowMs);
         profile.setCurrentScore(score);
         profile.setLastEvalTimeMs(nowMs);
@@ -508,6 +515,42 @@ public class TabletTieringMgr extends MasterDaemon {
             decisionTotal.incrementAndGet();
             applyDecision(profile, decision, nowMs);
         }
+    }
+
+    /** True if the partition has a storage policy (local->remote lifecycle owns it). */
+    private boolean isRemoteTieredPartition(long tableId, long partitionId) {
+        try {
+            org.apache.doris.catalog.Table tbl =
+                    Env.getCurrentEnv().getInternalCatalog().getTableByTableId(tableId);
+            if (!(tbl instanceof org.apache.doris.catalog.OlapTable)) {
+                return false;
+            }
+            String policy = ((org.apache.doris.catalog.OlapTable) tbl).getPartitionInfo()
+                    .getStoragePolicy(partitionId);
+            return policy != null && !policy.isEmpty();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** Mark a tablet FROZEN (write a state once for visibility; no target change). */
+    private void markFrozen(TabletHeatProfile profile, TieringReasonCode reason, long nowMs) {
+        profile.setTemperatureState(TieringTemperature.POLICY_FROZEN);
+        profile.setLastEvalTimeMs(nowMs);
+        TabletTierState state = tabletTierStates.get(profile.getTabletId());
+        if (state != null && state.getTemperatureState() == TieringTemperature.POLICY_FROZEN
+                && state.getReasonCode() == reason) {
+            return; // already frozen with this reason, avoid edit-log churn
+        }
+        if (state == null) {
+            state = new TabletTierState(profile.getTabletId(), profile.getTableId(),
+                    profile.getPartitionId());
+        }
+        state.setTemperatureState(TieringTemperature.POLICY_FROZEN);
+        state.setReasonCode(reason);
+        state.setFrozenReason(reason.name());
+        state.setVersion(state.getVersion() + 1);
+        modifyTabletTierState(state);
     }
 
     private void applyDecision(TabletHeatProfile profile, TieringDecision decision, long nowMs) {

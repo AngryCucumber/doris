@@ -134,8 +134,11 @@ public:
                        int64_t replica_id, TabletAccessType type, int64_t scan_bytes = 0,
                        int64_t scan_rows = 0);
 
-    // "rowset visible to query" freshness hook (design v2 §8.1 / T2.4).
-    void update_write_time(int64_t tablet_id, int64_t write_time_ms);
+    // "rowset visible to query" freshness hook (design v2 §8.1 / T2.4). Creates the
+    // tablet entry if absent so a write that precedes the first read is not lost
+    // (otherwise the freshness factor never fires for write-then-read tablets).
+    void update_write_time(int64_t tablet_id, int64_t table_id, int64_t partition_id,
+                           int64_t write_time_ms);
 
     // Absolute-value snapshot of all live tablets; also evicts idle tablets that
     // have had no access for `tablet_heat_idle_expire_sec`.
