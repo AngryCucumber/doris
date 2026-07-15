@@ -64,8 +64,8 @@ struct HasiSearchStats {
 
 // Per-leaf fixed-size sketch of one numeric measure (v2b core, format version 2).
 // NULL semantics follow NodeAgg (§4.2): sum/min/max skip NULL measure values,
-// non_null counts the rest; rows whose GEO cell is NULL never reach the sketch
-// (they are fed as measure-NULL by the caller).
+// non_null counts the rest; rows whose GEO cell is NULL never enter the sketch
+// (the builder tracks null-cell rids and drops their measures itself).
 struct HasiLeafMeasure {
     double sum = 0;
     double min = std::numeric_limits<double>::infinity();
@@ -100,13 +100,26 @@ public:
     // Seals the last leaf; the topology stays in memory for measure attachment.
     void finish_topology();
 
-    // Declares the measures that will be streamed; only callable between
-    // finish_topology() and the first add_measure_row().
+    // Declares the measures that will be streamed; callable any time before the
+    // first add_measure_row().
     Status attach_measures(const std::vector<std::string>& measure_names);
 
     // Streams one row's measure values (values[i] valid iff nulls[i] == 0), rid
     // strictly increasing; rids may be skipped (skipped rows count as all-NULL).
+    // Because leaves are fixed-size rid blocks, this may interleave with the cell
+    // feed -- but a given row's measures must arrive AFTER its cell (the NULL-cell
+    // filter depends on it; segment writers append column data first, so this holds
+    // naturally there).
     Status add_measure_row(uint32_t rid, const double* values, const uint8_t* nulls);
+
+    // Rows fed through add_measure_row; the writer drops the measures section
+    // (serializes as v1) unless this equals the indexed row count.
+    uint32_t measure_rows_fed() const { return _measure_rows_fed; }
+    bool has_measures_attached() const { return !_measure_names.empty(); }
+    void drop_measures() {
+        _measure_names.clear();
+        _measures.clear();
+    }
 
     // Serializes everything. The builder must not be reused afterwards.
     Status serialize(std::string* out);
@@ -135,11 +148,11 @@ private:
     uint32_t _num_leaves = 0;
     uint64_t _cur_cells_offset = 0; // offset of the open leaf's stream within _cells
     bool _topology_done = false;
-    std::vector<uint32_t> _leaf_rid_ends; // rid_end per sealed leaf, for measure routing
+    roaring::Roaring _null_rids; // rows with NULL geo cell; their measures are ignored
     std::vector<std::string> _measure_names;
     std::vector<HasiLeafMeasure> _measures; // [leaf][measure], row-major per leaf
-    uint32_t _measure_leaf_cursor = 0;
     uint32_t _last_measure_rid = 0;
+    uint32_t _measure_rows_fed = 0;
     bool _measure_seen = false;
 };
 

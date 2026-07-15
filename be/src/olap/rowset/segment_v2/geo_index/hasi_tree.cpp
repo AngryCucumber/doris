@@ -116,6 +116,7 @@ void HasiTreeBuilder::_append_cell(uint64_t raw_cell) {
     put_varint(&_cells, zigzag_encode(static_cast<int64_t>(raw_cell - _cur.prev_cell)));
     _cur.prev_cell = raw_cell;
     if (raw_cell == 0) {
+        _null_rids.add(_num_rows);
         ++_cur.null_count;
     } else if (!_cur.has_value) {
         _cur.min_cell = raw_cell;
@@ -161,7 +162,6 @@ void HasiTreeBuilder::_seal_leaf() {
     put_u32(&_dir, rid_end);
     put_u32(&_dir, _cur.null_count);
     put_u64(&_dir, _cur_cells_offset);
-    _leaf_rid_ends.push_back(rid_end);
     ++_num_leaves;
     _cur = LeafAccum();
     _cur_cells_offset = _cells.size();
@@ -176,9 +176,6 @@ void HasiTreeBuilder::finish_topology() {
 }
 
 Status HasiTreeBuilder::attach_measures(const std::vector<std::string>& measure_names) {
-    if (!_topology_done) {
-        return Status::InternalError("attach_measures before finish_topology");
-    }
     if (_measure_seen || !_measure_names.empty()) {
         return Status::InternalError("measures already attached");
     }
@@ -186,8 +183,6 @@ Status HasiTreeBuilder::attach_measures(const std::vector<std::string>& measure_
         return Status::InvalidArgument("invalid measure count {}", measure_names.size());
     }
     _measure_names = measure_names;
-    _measures.assign(static_cast<size_t>(_num_leaves) * measure_names.size(),
-                     HasiLeafMeasure());
     return Status::OK();
 }
 
@@ -202,15 +197,20 @@ Status HasiTreeBuilder::add_measure_row(uint32_t rid, const double* values,
     }
     _measure_seen = true;
     _last_measure_rid = rid;
-    while (_measure_leaf_cursor < _leaf_rid_ends.size() &&
-           rid >= _leaf_rid_ends[_measure_leaf_cursor]) {
-        ++_measure_leaf_cursor;
+    ++_measure_rows_fed;
+    // Leaves are fixed-size rid blocks, so the target leaf is known a priori --
+    // measures may stream before, interleaved with, or after the cell feed.
+    const size_t leaf_idx = rid / _leaf_rows;
+    const size_t needed = (leaf_idx + 1) * _measure_names.size();
+    if (_measures.size() < needed) {
+        _measures.resize(needed);
     }
-    if (_measure_leaf_cursor >= _leaf_rid_ends.size()) {
-        return Status::InternalError("measure rid {} beyond {} indexed rows", rid, _num_rows);
+    // Rows whose geo cell is NULL belong to no region (§4.2 NULL semantics): their
+    // measures never enter the sketch, whatever the caller feeds.
+    if (_null_rids.contains(rid)) {
+        return Status::OK();
     }
-    HasiLeafMeasure* leaf_measures =
-            &_measures[static_cast<size_t>(_measure_leaf_cursor) * _measure_names.size()];
+    HasiLeafMeasure* leaf_measures = &_measures[leaf_idx * _measure_names.size()];
     for (size_t m = 0; m < _measure_names.size(); ++m) {
         if (nulls != nullptr && nulls[m] != 0) {
             continue;
@@ -238,6 +238,7 @@ Status HasiTreeBuilder::serialize(std::string* out) {
     out->append(_dir);
     out->append(_cells);
     if (!_measure_names.empty()) {
+        _measures.resize(static_cast<size_t>(_num_leaves) * _measure_names.size());
         // trailer: measures section + its start offset. Written at the end so the
         // cells section keeps its v1 layout and offsets.
         const uint64_t measures_offset = out->size();

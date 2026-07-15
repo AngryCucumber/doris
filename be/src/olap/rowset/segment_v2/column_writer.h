@@ -181,6 +181,11 @@ public:
 
     virtual Status write_geo_index() { return Status::OK(); }
 
+    // Non-null only on the ScalarColumnWriter of a geo-indexed column; the segment
+    // writer uses it to stream measure rows (v2b), since index column writers only
+    // ever see their own column.
+    virtual IndexColumnWriter* geo_index_writer() const { return nullptr; }
+
     virtual Status write_bloom_filter_index() = 0;
 
     virtual ordinal_t get_next_rowid() const = 0;
@@ -238,6 +243,7 @@ public:
     Status write_zone_map() override;
     Status write_inverted_index() override;
     Status write_geo_index() override;
+    IndexColumnWriter* geo_index_writer() const override { return _geo_index_writer.get(); }
     Status write_bloom_filter_index() override;
     ordinal_t get_next_rowid() const override { return _next_rowid; }
 

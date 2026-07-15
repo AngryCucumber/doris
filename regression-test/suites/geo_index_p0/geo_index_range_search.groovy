@@ -254,4 +254,52 @@ suite("geo_index_range_search") {
     checkOnOff("geo_index_nokey_t", "nokey-predicate-filter")
 
     sql "set enable_geo_index_query=true;"
+
+    // ---- 6. v2b measures property: sketches are built at write (format v2 index
+    // files); retrieval must be unaffected and bit-exact on such tables ----
+    sql "drop table if exists geo_index_meas_t"
+    sql """
+    create table geo_index_meas_t (
+        `__s2` bigint generated always as (st_s2_cellid(`lon`, `lat`)) null,
+        `id` bigint not null,
+        `lon` double null,
+        `lat` double null,
+        `val` double null,
+        INDEX idx_geo(`__s2`) USING GEO PROPERTIES("leaf_rows" = "1024", "measures" = "val")
+    ) engine=olap
+    duplicate key(`__s2`)
+    distributed by hash(`id`) buckets 2
+    properties("replication_num" = "1");
+    """
+    def measValues = []
+    long mid = 0
+    for (double dLon = -0.5; dLon <= 0.5; dLon += 0.02) {
+        for (double dLat = -0.5; dLat <= 0.5; dLat += 0.02) {
+            def v = (mid % 9 == 0) ? "null" : String.valueOf(mid * 0.5)
+            measValues << "(${mid++}, ${116.40 + dLon}, ${39.90 + dLat}, ${v})"
+        }
+    }
+    measValues << "(${mid++}, null, 40.0, 1.5)"
+    measValues.collate(500).each { chunk ->
+        sql "insert into geo_index_meas_t(id, lon, lat, val) values ${chunk.join(',')}"
+    }
+    sql "sync"
+    [[116.40d, 39.90d, 5000.0d], [116.40d, 39.90d, 30000.0d]].each { q ->
+        def query = """select id from geo_index_meas_t
+                       where st_distance_sphere(lon, lat, ${q[0]}, ${q[1]}) < ${q[2]}
+                       order by id"""
+        sql "set enable_geo_index_query=true;"
+        def on = sql query
+        sql "set enable_geo_index_query=false;"
+        def off = sql query
+        assertEquals(off, on, "[v2b measures table] retrieval mismatch r=${q[2]}")
+    }
+    // sum over the region must agree regardless of geo switches (aggregation still
+    // runs row-wise pre-v2b-query-integration; this pins the baseline it must match)
+    sql "set enable_geo_index_query=true;"
+    def sumOn = sql "select count(val), sum(val), min(val), max(val) from geo_index_meas_t where st_distance_sphere(lon, lat, 116.40, 39.90) < 30000"
+    sql "set enable_geo_index_query=false;"
+    def sumOff = sql "select count(val), sum(val), min(val), max(val) from geo_index_meas_t where st_distance_sphere(lon, lat, 116.40, 39.90) < 30000"
+    assertEquals(sumOff, sumOn, "[v2b measures table] aggregate mismatch")
+    sql "set enable_geo_index_query=true;"
 }

@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <map>
 #include <string>
+#include <vector>
 
 #include "olap/rowset/segment_v2/geo_index/hasi_tree.h"
 
@@ -35,6 +36,34 @@ namespace doris::segment_v2 {
 inline constexpr const char* kGeoIndexPropLngColumn = "lng_column";
 inline constexpr const char* kGeoIndexPropLatColumn = "lat_column";
 inline constexpr const char* kGeoIndexPropLeafRows = "leaf_rows";
+inline constexpr const char* kGeoIndexPropMeasures = "measures";
+
+// Comma-separated measure column names from the index properties (v2b).
+inline std::vector<std::string> geo_index_measures(
+        const std::map<std::string, std::string>& properties) {
+    std::vector<std::string> out;
+    auto it = properties.find(kGeoIndexPropMeasures);
+    if (it == properties.end()) {
+        return out;
+    }
+    size_t pos = 0;
+    const std::string& s = it->second;
+    while (pos <= s.size()) {
+        size_t comma = s.find(',', pos);
+        if (comma == std::string::npos) {
+            comma = s.size();
+        }
+        std::string name = s.substr(pos, comma - pos);
+        // trim spaces
+        size_t b = name.find_first_not_of(" \t");
+        size_t e = name.find_last_not_of(" \t");
+        if (b != std::string::npos) {
+            out.push_back(name.substr(b, e - b + 1));
+        }
+        pos = comma + 1;
+    }
+    return out;
+}
 
 inline uint32_t geo_index_leaf_rows(const std::map<std::string, std::string>& properties) {
     auto it = properties.find(kGeoIndexPropLeafRows);

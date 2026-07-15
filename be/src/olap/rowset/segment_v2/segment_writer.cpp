@@ -49,6 +49,7 @@
 #include "olap/rowset/segment_creator.h"
 #include "olap/rowset/segment_v2/column_writer.h" // ColumnWriter
 #include "olap/rowset/segment_v2/external_col_meta_util.h"
+#include "olap/rowset/segment_v2/geo_index/geo_index_writer.h"
 #include "olap/rowset/segment_v2/index_file_writer.h"
 #include "olap/rowset/segment_v2/index_writer.h"
 #include "olap/rowset/segment_v2/page_io.h"
@@ -795,6 +796,7 @@ Status SegmentWriter::append_block(const vectorized::Block* block, size_t row_po
         }
     }
 
+    RETURN_IF_ERROR(_append_geo_measures(block, row_pos, num_rows, _num_rows_written));
     _num_rows_written += num_rows;
     _olap_data_convertor->clear_source_content();
     return Status::OK();
@@ -1126,6 +1128,15 @@ Status SegmentWriter::_write_geo_index() {
         RETURN_IF_ERROR(column_writer->write_geo_index());
     }
     return Status::OK();
+}
+
+// v2b: stream the geo index's measure columns row-wise (index column writers only
+// ever see their own column, so the block-level view lives at segment-writer level).
+Status SegmentWriter::_append_geo_measures(const vectorized::Block* block, size_t row_pos,
+                                           size_t num_rows, uint32_t rid_base) {
+    return GeoIndexColumnWriter::feed_block_measures(*_tablet_schema, _column_writers,
+                                                     &_geo_measure_state, block, row_pos,
+                                                     num_rows, rid_base);
 }
 
 Status SegmentWriter::_write_bloom_filter_index() {

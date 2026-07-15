@@ -33,6 +33,7 @@
 #include "olap/olap_define.h"
 #include "olap/partial_update_info.h"
 #include "olap/rowset/segment_v2/column_writer.h"
+#include "olap/rowset/segment_v2/geo_index/geo_index_writer.h"
 #include "olap/rowset/segment_v2/index_file_writer.h"
 #include "olap/tablet.h"
 #include "olap/tablet_schema.h"
@@ -226,6 +227,8 @@ private:
     std::unique_ptr<ShortKeyIndexBuilder> _short_key_index_builder;
     std::unique_ptr<PrimaryKeyIndexBuilder> _primary_key_index_builder;
     std::vector<std::unique_ptr<ColumnWriter>> _column_writers;
+    // v2b geo measure feeding state (resolved lazily on the first flush block)
+    GeoMeasureFeedState _geo_measure_state;
     std::unique_ptr<MemTracker> _mem_tracker;
 
     std::unique_ptr<vectorized::OlapBlockDataConvertor> _olap_data_convertor;

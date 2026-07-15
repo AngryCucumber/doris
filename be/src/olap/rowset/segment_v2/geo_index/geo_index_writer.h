@@ -26,11 +26,26 @@
 #include "olap/rowset/segment_v2/inverted_index_fs_directory.h"
 #include "olap/tablet_schema.h"
 
+namespace doris::vectorized {
+class Block;
+} // namespace doris::vectorized
+
 namespace doris::segment_v2 {
+
+class ColumnWriter;
 
 // The single file the HASI structure is stored under inside the per-index directory
 // (compounded into the segment .idx file by IndexFileWriter, same as ann.faiss).
 inline constexpr char geo_index_file_name[] = "geo.hasi";
+
+// Shared v2b measure-feeding state for segment writers (horizontal SegmentWriter and
+// VerticalSegmentWriter's flush path both call GeoIndexColumnWriter::feed_block_measures
+// with their own instance; resolution happens lazily on the first block).
+struct GeoMeasureFeedState {
+    bool resolved = false;
+    class GeoIndexColumnWriter* writer = nullptr;
+    std::vector<int> block_cols;
+};
 
 // Streaming HASI index writer for the __s2 BIGINT column, mounted on
 // ScalarColumnWriter (design doc HASI_POC.md §4.3). Values and null runs arrive
@@ -49,6 +64,26 @@ public:
     int64_t size() const override;
     void close_on_error() override;
 
+    // v2b: measure columns declared via the index property `measures` are streamed
+    // by the segment writer (which sees whole blocks) through this row interface;
+    // rid must match the segment rowid order the cell feed uses. finish() drops the
+    // measures section unless every indexed row was fed (partial-update or missing
+    // column paths then degrade to a v1 file; the aggregation existence gate treats
+    // that as "sketch absent").
+    const std::vector<std::string>& measure_names() const { return _measure_names; }
+    Status add_measure_row(uint32_t rid, const double* values, const uint8_t* nulls) {
+        return _builder->add_measure_row(rid, values, nulls);
+    }
+
+    // Block-level feeder used by both segment writers: resolves the geo writer and
+    // the FLOAT/DOUBLE measure columns lazily (a missing/mistyped column disables
+    // feeding; finish() then degrades the file to v1), then streams rows
+    // [rid_base, rid_base + num_rows) from block[row_pos...].
+    static Status feed_block_measures(const TabletSchema& schema,
+                                      const std::vector<std::unique_ptr<ColumnWriter>>& writers,
+                                      GeoMeasureFeedState* state, const vectorized::Block* block,
+                                      size_t row_pos, size_t num_rows, uint32_t rid_base);
+
     // Array interfaces are meaningless for a BIGINT scalar column.
     Status add_array_values(size_t field_size, const CollectionValue* values,
                             size_t count) override;
@@ -61,6 +96,7 @@ private:
     const TabletIndex* _index_meta;
     std::shared_ptr<DorisFSDirectory> _dir;
     std::unique_ptr<HasiTreeBuilder> _builder;
+    std::vector<std::string> _measure_names;
     int64_t _written_bytes = 0;
 };
 

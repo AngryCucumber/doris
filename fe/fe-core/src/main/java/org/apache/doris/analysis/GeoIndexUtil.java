@@ -45,6 +45,12 @@ public class GeoIndexUtil {
     public static final String PROP_LNG_COLUMN = "lng_column";
     public static final String PROP_LAT_COLUMN = "lat_column";
     public static final String PROP_LEAF_ROWS = "leaf_rows";
+    // v2b: comma-separated FLOAT/DOUBLE column names whose per-leaf sum/min/max/
+    // non_null sketches are built at segment write. Column existence and type are
+    // enforced by the BE feeder (a missing or non-numeric measure simply leaves the
+    // index without a measures section; the aggregation gate treats that as
+    // "sketch absent" and falls back to row folding).
+    public static final String PROP_MEASURES = "measures";
 
     public static final int MIN_LEAF_ROWS = 64;
     public static final int MAX_LEAF_ROWS = 1 << 22;
@@ -75,6 +81,19 @@ public class GeoIndexUtil {
                     break;
                 case PROP_LNG_COLUMN:
                 case PROP_LAT_COLUMN:
+                    break;
+                case PROP_MEASURES:
+                    String measures = properties.get(key);
+                    if (measures == null || measures.trim().isEmpty()) {
+                        throw new AnalysisException("measures of geo index must not be empty");
+                    }
+                    for (String name : measures.split(",")) {
+                        if (name.trim().isEmpty()) {
+                            throw new AnalysisException(
+                                    "measures of geo index contains an empty column name: "
+                                            + measures);
+                        }
+                    }
                     break;
                 default:
                     throw new AnalysisException("unknown geo index property: " + key);

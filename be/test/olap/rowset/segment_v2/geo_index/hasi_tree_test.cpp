@@ -316,12 +316,10 @@ TEST(HasiTreeTest, MeasureSketchAggregate) {
         }
         builder.finish_topology();
         ASSERT_TRUE(builder.attach_measures({"amount"}).ok());
-        // measure = deterministic f(rid); every 7th row NULL; NULL-cell rows fed as
-        // measure-NULL per the sketch contract.
+        // measure = deterministic f(rid); every 7th row NULL. NULL-cell rows are fed
+        // with NON-null values on purpose: the builder must drop them itself.
         auto measure_of = [](uint32_t rid) { return (rid % 1000) * 0.5 - 100.0; };
-        auto measure_null = [&](uint32_t rid) {
-            return rid % 7 == 0 || !data[rid].has_value();
-        };
+        auto measure_null = [&](uint32_t rid) { return rid % 7 == 0; };
         for (uint32_t rid = 0; rid < data.size(); ++rid) {
             double v = measure_of(rid);
             uint8_t is_null = measure_null(rid) ? 1 : 0;

@@ -1042,6 +1042,11 @@ Status VerticalSegmentWriter::write_batch() {
         _olap_data_convertor->set_source_content(data.block, data.row_pos, data.num_rows);
         RETURN_IF_ERROR(_generate_key_index(data, key_columns, seq_column, cid_to_column));
         _olap_data_convertor->clear_source_content();
+        // v2b: flush blocks are full-width, so the geo measure columns are visible
+        // here; feed them in the same rowid order the cell feed used.
+        RETURN_IF_ERROR(GeoIndexColumnWriter::feed_block_measures(
+                *_tablet_schema, _column_writers, &_geo_measure_state, data.block, data.row_pos,
+                data.num_rows, _num_rows_written));
         _num_rows_written += data.num_rows;
     }
 

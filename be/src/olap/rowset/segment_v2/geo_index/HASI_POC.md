@@ -710,9 +710,18 @@ close 时同步等待、load 内存硬限），flush 吞吐低于摄入吞吐时
   measure)`：interior 包含的叶 O(1) 合并 sketch（聚合允许含 NULL-cell 行的叶走 INSIDE——
   它们不在 sketch 里且谓词对其非真），边界叶行回填 boundary_rids 交调用方按行折叠。
   单测以"inside_agg + 边界行折叠 == 全量暴力聚合"逐位对拍（度量取 0.5 的倍数使浮点
-  加法精确、免疫求和顺序）。**尚未接入**：compaction 读回构建钩子、per-rowset sketch
-  存在性 gate、FE `PushDownGeoAgg` 判定矩阵、HLL/t-digest blob 段与金字塔节点层——
-  即 §7 v2b 行的集成部分，属下一批工作。
+  加法精确、免疫求和顺序）。
+- **v2b 写链路（rev2.6，已落地）**：叶为定长 rid 块 ⇒ `leaf = rid / leaf_rows` 先验可算，
+  度量喂入与拓扑构建**解除时序约束**（可同块逐行同步喂）——原"compaction 读回"的动机
+  （跨列不可见）由 **SegmentWriter 块级喂入器**直接解决：索引属性 `measures`（逗号分隔
+  FLOAT/DOUBLE 列名，`GeoIndexUtil` 校验语法）→ `SegmentWriter::_append_geo_measures`
+  在 `append_block` 尾部按行喂 `GeoIndexColumnWriter::add_measure_row`。安全设计三层：
+  ① Builder 自持 null-rid 位图，**cell 为 NULL 的行度量自动丢弃**（无调用方契约）；
+  ② `finish()` 核对喂入行数==索引行数，不齐则**降级写 v1 文件**（缺列/partial update/
+  未接喂入器的路径全部安全）；③ 读侧 `has_measures()` 即 per-rowset 存在性 gate 的底座。
+  **明确未接**：VerticalSegmentWriter（vertical compaction 是 DUP/MOW 默认——compaction
+  输出暂无 sketch，靠存在性 gate 降级，列组 rid 对齐属下一批）；FE `PushDownGeoAgg`
+  查询计划改写与 scan 内折叠回流；HLL/t-digest blob 段与金字塔节点层。
 
 **每阶段性能通过门槛（基线与测法见 §8）**：
 

@@ -21,7 +21,11 @@
 #include <limits>
 
 #include "common/cast_set.h"
+#include "olap/rowset/segment_v2/column_writer.h"
 #include "olap/rowset/segment_v2/geo_index/geo_index_properties.h"
+#include "vec/columns/column_nullable.h"
+#include "vec/columns/column_vector.h"
+#include "vec/core/block.h"
 
 namespace doris::segment_v2 {
 #include "common/compile_check_begin.h"
@@ -43,6 +47,10 @@ Status GeoIndexColumnWriter::init() {
     }
     _dir = dir.value();
     _builder = std::make_unique<HasiTreeBuilder>(geo_index_leaf_rows(_index_meta->properties()));
+    _measure_names = geo_index_measures(_index_meta->properties());
+    if (!_measure_names.empty()) {
+        RETURN_IF_ERROR(_builder->attach_measures(_measure_names));
+    }
     return Status::OK();
 }
 
@@ -61,6 +69,14 @@ Status GeoIndexColumnWriter::add_nulls(uint32_t count) {
 }
 
 Status GeoIndexColumnWriter::finish() {
+    if (_builder->has_measures_attached() &&
+        _builder->measure_rows_fed() != _builder->num_rows()) {
+        // e.g. a write path without the block-level feeder (partial update) or a
+        // measure column missing from this write: correctness first, no sketches.
+        LOG(WARNING) << "geo index measures dropped: fed " << _builder->measure_rows_fed()
+                     << " of " << _builder->num_rows() << " rows";
+        _builder->drop_measures();
+    }
     std::string data;
     RETURN_IF_ERROR(_builder->finish(&data));
     _written_bytes = static_cast<int64_t>(data.size());
@@ -100,6 +116,92 @@ Status GeoIndexColumnWriter::add_array_values(size_t, const void*, const uint8_t
 
 Status GeoIndexColumnWriter::add_array_nulls(const uint8_t*, size_t) {
     return Status::NotSupported("geo index does not accept array nulls");
+}
+
+Status GeoIndexColumnWriter::feed_block_measures(
+        const TabletSchema& schema, const std::vector<std::unique_ptr<ColumnWriter>>& writers,
+        GeoMeasureFeedState* state, const vectorized::Block* block, size_t row_pos,
+        size_t num_rows, uint32_t rid_base) {
+    if (!state->resolved) {
+        state->resolved = true;
+        for (const auto& column_writer : writers) {
+            auto* geo_writer =
+                    dynamic_cast<GeoIndexColumnWriter*>(column_writer->geo_index_writer());
+            if (geo_writer == nullptr || geo_writer->measure_names().empty()) {
+                continue;
+            }
+            std::vector<int> block_cols;
+            for (const auto& name : geo_writer->measure_names()) {
+                int idx = -1;
+                for (size_t i = 0; i < schema.num_columns(); ++i) {
+                    const auto& col = schema.column(i);
+                    if (col.name() == name &&
+                        (col.type() == FieldType::OLAP_FIELD_TYPE_DOUBLE ||
+                         col.type() == FieldType::OLAP_FIELD_TYPE_FLOAT)) {
+                        idx = static_cast<int>(i);
+                        break;
+                    }
+                }
+                if (idx < 0) {
+                    LOG(WARNING) << "geo index measure column '" << name
+                                 << "' not found or not FLOAT/DOUBLE; sketches disabled";
+                    block_cols.clear();
+                    break;
+                }
+                block_cols.push_back(idx);
+            }
+            if (!block_cols.empty()) {
+                state->writer = geo_writer;
+                state->block_cols = std::move(block_cols);
+            }
+            break; // at most one geo index per table in the POC
+        }
+    }
+    // Feed only full-width blocks whose positions line up with the tablet schema.
+    // Vertical compaction initializes segment writers per COLUMN GROUP: its blocks
+    // carry only the group's columns, so schema positions would index out of range
+    // (compaction output then degrades to a v1 file via the completeness check).
+    if (state->writer == nullptr || block->columns() < schema.num_columns()) {
+        return Status::OK();
+    }
+    for (int idx : state->block_cols) {
+        if (static_cast<size_t>(idx) >= block->columns() ||
+            block->get_by_position(idx).column.get() == nullptr) {
+            return Status::OK();
+        }
+    }
+    const size_t m = state->block_cols.size();
+    std::vector<const double*> f64(m, nullptr);
+    std::vector<const float*> f32(m, nullptr);
+    std::vector<const uint8_t*> null_map(m, nullptr);
+    for (size_t j = 0; j < m; ++j) {
+        const auto* col = block->get_by_position(state->block_cols[j]).column.get();
+        if (const auto* nullable =
+                    vectorized::check_and_get_column<vectorized::ColumnNullable>(col)) {
+            null_map[j] = nullable->get_null_map_data().data();
+            col = &nullable->get_nested_column();
+        }
+        if (const auto* c64 = vectorized::check_and_get_column<vectorized::ColumnFloat64>(col)) {
+            f64[j] = c64->get_data().data();
+        } else if (const auto* c32 =
+                           vectorized::check_and_get_column<vectorized::ColumnFloat32>(col)) {
+            f32[j] = c32->get_data().data();
+        } else {
+            return Status::OK(); // unexpected runtime layout: skip, finish() degrades to v1
+        }
+    }
+    std::vector<double> values(m, 0.0);
+    std::vector<uint8_t> nulls(m, 0);
+    for (size_t r = 0; r < num_rows; ++r) {
+        const size_t src = row_pos + r;
+        for (size_t j = 0; j < m; ++j) {
+            nulls[j] = null_map[j] != nullptr ? null_map[j][src] : 0;
+            values[j] = f64[j] != nullptr ? f64[j][src] : static_cast<double>(f32[j][src]);
+        }
+        RETURN_IF_ERROR(state->writer->add_measure_row(rid_base + static_cast<uint32_t>(r),
+                                                       values.data(), nulls.data()));
+    }
+    return Status::OK();
 }
 
 #include "common/compile_check_end.h"
