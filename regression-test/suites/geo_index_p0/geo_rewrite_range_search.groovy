@@ -109,4 +109,43 @@ suite("geo_rewrite_range_search") {
     def outsideText = outsidePlan.collect { it[0] }.join("\n")
     assertFalse(outsideText.contains("`__s2` >="),
             "outside-circle predicate must not get an __s2 envelope:\n" + outsideText)
+
+    // ---- non-key __s2: pure predicate-filter form (design doc §3.3-3) ----
+    // __s2 as a plain generated VALUE column (not in the sort key): the rewrite must
+    // still fire (it matches the generated-column expression, not key-ness) and stay
+    // bit-exact. Benefit here is the cheap BIGINT range pre-filter evaluated at the
+    // storage layer before the expensive spherical distance; no key-range pruning.
+    sql "drop table if exists geo_rewrite_nokey_t"
+    sql """
+    create table geo_rewrite_nokey_t (
+        `id`    bigint not null,
+        `lon`   double null,
+        `lat`   double null,
+        `__s2`  bigint generated always as (st_s2_cellid(`lon`, `lat`)) null
+    ) engine=olap
+    duplicate key(`id`)
+    distributed by hash(`id`) buckets 4
+    properties("replication_num" = "1");
+    """
+    sql "insert into geo_rewrite_nokey_t(id, lon, lat) select id, lon, lat from geo_rewrite_t"
+    sql "sync"
+
+    sql "set enable_geo_predicate_rewrite=true;"
+    def nokeyPlan = sql """explain select count(*) from geo_rewrite_nokey_t
+                           where st_distance_sphere(lon, lat, 116.40, 39.90) < 5000"""
+    def nokeyPlanText = nokeyPlan.collect { it[0] }.join("\n")
+    assertTrue(nokeyPlanText.contains("__s2"),
+            "rewrite must fire for a non-key __s2 generated column:\n" + nokeyPlanText)
+
+    [[116.40d, 39.90d, 5000.0d], [179.95d, 10.0d, 30000.0d], [0.0d, 89.8d, 20000.0d]].each { q ->
+        def query = """select id from geo_rewrite_nokey_t
+                       where st_distance_sphere(lon, lat, ${q[0]}, ${q[1]}) < ${q[2]}
+                       order by id"""
+        sql "set enable_geo_predicate_rewrite=true;"
+        def on = sql query
+        sql "set enable_geo_predicate_rewrite=false;"
+        def off = sql query
+        assertEquals(off, on, "non-key rewrite changed results for center=(${q[0]},${q[1]}) r=${q[2]}")
+    }
+    sql "set enable_geo_predicate_rewrite=true;"
 }

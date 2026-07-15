@@ -193,6 +193,11 @@ if (indexType == IndexType.GEO) {
      （`PushDownVirtualColumnsIntoOlapScan` 之后，`:783` 旁），匹配 `logicalFilter(logicalOlapScan())`；
      `RuleType.java` 加枚举。注意该点之后 `FoldConstantRule` 不再运行——路线 a 直接产 literal 不受影响。
    - session var 三件套（仿 `SHOW_HIDDEN_COLUMNS`）：常量 + `@VariableMgr.VarAttr(name=..., needForward=true)` + 字段。
+   - **非 key `__s2`（纯谓词过滤形态，rev2.2 显式支持并回归锁定）**：规则按生成列表达式匹配、
+     不要求 `__s2` 是 key/cluster key——`__s2` 做普通 value 生成列时改写照常注入、结果 bit-exact。
+     收益结构：无 key-range 剪枝、乱序下 ZoneMap 基本失效，剩"存储层 BIGINT 区间预过滤先行、
+     昂贵球面距离只算幸存行"的 CPU 减负（2–5×，IO 不省）；数据有天然空间局部性时 ZoneMap 可部分生效。
+     适用：不能改排序键的存量/共享表。要数量级收益仍需聚簇（DUP key 前缀 / UNIQUE CLUSTER BY，§2①）。
 4. **`PushDownGeoFilter`（v1 规则）+ Thrift 透传**：`gensrc/thrift/` 增加 `TGeoIndexFilter`
    （仿 `TOlapScanNode.ann_sort_info`，`PlanNodes.thrift:855`），字段：
    **shape WKB + 来源谓词类型 + 比较算子 + 原始阈值**（精算核一致性需要，§4.6）+ **时间区间 `[t_lo, t_hi)`**
