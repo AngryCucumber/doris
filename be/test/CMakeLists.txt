@@ -110,8 +110,14 @@ add_subdirectory(olap/vector_search)
 
 add_executable(doris_be_test ${UT_FILES})
 
-target_link_libraries(doris_be_test ${TEST_LINK_LIBS} 
-    -Wl,--whole-archive vector_search_test -Wl,--no-whole-archive)
+if (OS_MACOSX)
+    # Apple ld64 does not support --whole-archive; use -force_load instead.
+    target_link_libraries(doris_be_test ${TEST_LINK_LIBS}
+        -Wl,-force_load,$<TARGET_FILE:vector_search_test> vector_search_test)
+else()
+    target_link_libraries(doris_be_test ${TEST_LINK_LIBS}
+        -Wl,--whole-archive vector_search_test -Wl,--no-whole-archive)
+endif()
 set_target_properties(doris_be_test PROPERTIES COMPILE_FLAGS "-fno-access-control")
 target_compile_options(doris_be_test PRIVATE -include gtest/gtest.h)
 if (OS_MACOSX AND ARCH_ARM)

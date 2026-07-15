@@ -19,6 +19,18 @@
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -w")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -w")
 
+# Strip sanitizer flags for this contrib subtree (directory-scoped shadow, affects
+# openblas + faiss only). Sanitized third-party code is not needed for Doris debugging,
+# and OpenBLAS's configure-time CPU prober `getarch` (built via try_compile, which
+# inherits CMAKE_C_FLAGS) deadlocks in dyld initializers on macOS when instrumented
+# with ASAN — the ASAN_UT configure step then hangs forever. Uninstrumented libraries
+# linking into a sanitized binary are fully supported by ASAN.
+foreach(_flags_var CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+    string(REGEX REPLACE "-fsanitize=[^ ]+" "" ${_flags_var} "${${_flags_var}}")
+    string(REGEX REPLACE "-fno-sanitize=[^ ]+" "" ${_flags_var} "${${_flags_var}}")
+    string(REGEX REPLACE "-fsanitize-ignorelist=[^ ]+" "" ${_flags_var} "${${_flags_var}}")
+endforeach()
+
 set(BUILD_WITHOUT_LAPACK OFF CACHE BOOL "Disable LAPACK support in OpenBLAS")
 set(NO_SHARED TRUE CACHE BOOL "Disable shared library in OpenBLAS")
 set(C_LAPACK TRUE CACHE BOOL "Enable C interface for LAPACK in OpenBLAS")

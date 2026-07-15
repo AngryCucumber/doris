@@ -505,6 +505,13 @@ if [[ "${BUILD_BE_JAVA_EXTENSIONS}" -eq 1 && "${TARGET_SYSTEM}" == 'Darwin' ]]; 
     fi
 fi
 
+# the cloud module depends on the FoundationDB client library and GNU ld only link
+# flags, neither of which is available on macOS, so it can only be built on Linux
+if [[ "${BUILD_CLOUD}" -eq 1 && "${TARGET_SYSTEM}" == 'Darwin' ]]; then
+    echo -e "\033[33;1mWARNNING: \033[37;1mSkip building the cloud module (doris_cloud) which is not supported on macOS. Build it on Linux if needed.\033[0m"
+    BUILD_CLOUD=0
+fi
+
 if [[ -z "${WITH_TDE_DIR}" ]]; then
     WITH_TDE_DIR=''
 fi

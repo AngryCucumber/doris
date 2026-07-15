@@ -110,7 +110,8 @@ echo "Get params:
 
 ARCH="$(uname -m)"
 
-if [[ "${ARCH}" == "aarch64" ]]; then
+if [[ "${ARCH}" == "aarch64" || "${ARCH}" == "arm64" ]]; then
+    # Linux reports aarch64, macOS reports arm64
     ARCH="arm64"
 elif [[ "${ARCH}" == "x86_64" ]]; then
     ARCH="x64"
@@ -154,7 +155,7 @@ sh build.sh --clean &&
 
 echo "Begin to pack"
 rm -rf "${OUTPUT}"
-mkdir -p "${OUTPUT_FE}" "${OUTPUT_BE}" "${OUTPUT_EXT}" "${OUTPUT_CLOUD}" "${OUTPUT_TOOLS}"
+mkdir -p "${OUTPUT_FE}" "${OUTPUT_BE}" "${OUTPUT_EXT}" "${OUTPUT_TOOLS}"
 
 # FE
 cp -R "${ORI_OUTPUT}"/fe/* "${OUTPUT_FE}"/
@@ -166,22 +167,28 @@ cp -R "${ORI_OUTPUT}"/apache_hdfs_broker "${OUTPUT_EXT}"/apache_hdfs_broker
 cp -R "${ORI_OUTPUT}"/be/* "${OUTPUT_BE}"/
 
 # CLOUD
-cp -R "${ORI_OUTPUT}"/ms/* "${OUTPUT_CLOUD}"/
+# the cloud module is not built on macOS (see build.sh), so output/ms may be absent
+if [[ -d "${ORI_OUTPUT}/ms" ]]; then
+    mkdir -p "${OUTPUT_CLOUD}"
+    cp -R "${ORI_OUTPUT}"/ms/* "${OUTPUT_CLOUD}"/
+fi
+
+# TOOL
+cp -R "${ORI_OUTPUT}"/tools/* "${OUTPUT_TOOLS}"/
 
 if [[ "${TAR}" -eq 1 ]]; then
     echo "Begin to compress"
     cd "${ORI_OUTPUT}"
     # Use pigz (parallel gzip) to compress with all CPU cores; fall back to gzip if unavailable.
     if command -v pigz >/dev/null 2>&1; then
-        tar -cf - "${PACKAGE}" | pigz -p "$(nproc)" >"${PACKAGE}".tar.gz
+        # nproc needs GNU coreutils on macOS; fall back to sysctl
+        NPROC="$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)"
+        tar -cf - "${PACKAGE}" | pigz -p "${NPROC}" >"${PACKAGE}".tar.gz
     else
         tar -czf "${PACKAGE}".tar.gz "${PACKAGE}"
     fi
     cd -
 fi
-
-# TOOL
-cp -R "${ORI_OUTPUT}"/tools/* "${OUTPUT_TOOLS}"/
 
 echo "Output dir: ${OUTPUT}"
 exit 0

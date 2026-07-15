@@ -341,6 +341,15 @@ if [[ " ${TP_ARCHIVES[*]} " =~ " ARROW " ]]; then
         fi
         cd -
     fi
+    if [[ "${ARROW_SOURCE}" == "arrow-apache-arrow-17.0.0" ]]; then
+        cd "${TP_SOURCE_DIR}/${ARROW_SOURCE}"
+        if [[ ! -f "${PATCHED_MARK}" ]]; then
+            # accept the cctools_ld-* version string of the libtool shipped with newer macOS
+            patch -p1 <"${TP_PATCH_DIR}/apache-arrow-17.0.0-macos-libtool.patch"
+            touch "${PATCHED_MARK}"
+        fi
+        cd -
+    fi
     echo "Finished patching ${ARROW_SOURCE}"
 fi
 

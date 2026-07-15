@@ -796,6 +796,9 @@ build_mysql() {
         cxxflags='-pthread'
     fi
 
+    # NOTE: mysql 5.7 requires cmake < 4 (it sets CMP0018/0022/0026 to OLD and reads
+    # target LOCATION properties, whose OLD behavior cmake 4 removed) — on macOS set
+    # CUSTOM_CMAKE to a cmake 3.x binary
     CFLAGS="${cflags}" CXXFLAGS="${cxxflags}" \
         "${CMAKE_CMD}" -G "${GENERATOR}" ../ -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
         -DCMAKE_LINK_SEARCH_END_STATIC=1 \
