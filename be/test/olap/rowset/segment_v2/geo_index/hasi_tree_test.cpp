@@ -29,6 +29,7 @@
 #include <limits>
 #include <optional>
 #include <random>
+#include <set>
 #include <vector>
 
 #include "olap/rowset/segment_v2/geo_index/s2_covering.h"
@@ -388,6 +389,126 @@ TEST(HasiTreeTest, MeasureSketchAggregate) {
             ASSERT_EQ(brute.min, folded.min) << "iter " << iter;
             ASSERT_EQ(brute.max, folded.max) << "iter " << iter;
         }
+    }
+}
+
+// v2b query fold: fold_inside must select exactly the leaves that are (a) fully
+// interior-contained, (b) free of NULL-cell rows and (c) fully present in the
+// caller's bitmap; the merged sketch must equal the brute-force aggregate over the
+// folded rows, and removing a single row from `present` must demote its leaf.
+TEST(HasiTreeTest, FoldInside) {
+    std::mt19937_64 rng(20260715);
+    S2Covering coverer(kMaxLevel, kMaxCells);
+
+    for (int iter = 0; iter < 6; ++iter) {
+        const uint32_t leaf_rows = iter % 2 == 0 ? 64 : 257;
+        Dataset data = make_clustered(rng, 5000, iter % 3 == 0 ? 100 : 0);
+        HasiTreeBuilder builder(leaf_rows);
+        size_t i = 0;
+        while (i < data.size()) {
+            if (!data[i].has_value()) {
+                uint32_t run = 0;
+                while (i < data.size() && !data[i].has_value()) {
+                    ++run;
+                    ++i;
+                }
+                builder.add_nulls(run);
+            } else {
+                builder.add_value(*data[i]);
+                ++i;
+            }
+        }
+        builder.finish_topology();
+        ASSERT_TRUE(builder.attach_measures({"amount"}).ok());
+        auto measure_of = [](uint32_t rid) { return (rid % 1000) * 0.5 - 100.0; };
+        auto measure_null = [&](uint32_t rid) { return rid % 7 == 0; };
+        for (uint32_t rid = 0; rid < data.size(); ++rid) {
+            double v = measure_of(rid);
+            uint8_t is_null = measure_null(rid) ? 1 : 0;
+            ASSERT_TRUE(builder.add_measure_row(rid, &v, &is_null).ok());
+        }
+        std::string blob;
+        ASSERT_TRUE(builder.serialize(&blob).ok());
+        HasiTree tree;
+        ASSERT_TRUE(tree.parse(std::move(blob)).ok());
+
+        S2Point center = S2CellId(s2_cell_from_key(*data[data.size() / 2])).ToPoint();
+        S2Cap cap(center, S1Angle::Radians(1000000.0 / 6371010.0));
+        std::vector<CellRange> covering;
+        std::vector<CellRange> interior;
+        coverer.cover(cap, &covering, &interior);
+
+        roaring::Roaring full;
+        full.addRange(0, data.size());
+        HasiFoldResult fold;
+        ASSERT_TRUE(tree.fold_inside(interior, {0}, full, &fold).ok());
+
+        HasiLeafMeasure brute;
+        uint64_t brute_rows = 0;
+        for (const auto& [begin, end] : fold.folded_ranges) {
+            for (uint32_t rid = begin; rid < end; ++rid) {
+                // every row of a folded leaf has a valid cell inside the interior
+                ASSERT_TRUE(data[rid].has_value()) << "iter " << iter << " rid " << rid;
+                ASSERT_TRUE(cell_ranges_contain(interior, s2_cell_from_key(*data[rid])));
+                ++brute_rows;
+                if (!measure_null(rid)) {
+                    brute.sum += measure_of(rid);
+                    brute.min = std::min(brute.min, measure_of(rid));
+                    brute.max = std::max(brute.max, measure_of(rid));
+                    ++brute.non_null;
+                }
+            }
+        }
+        ASSERT_EQ(fold.folded_ranges.size(), fold.folded_leaves);
+        ASSERT_EQ(brute_rows, fold.folded_rows) << "iter " << iter;
+        ASSERT_EQ(1, fold.measures.size());
+        ASSERT_EQ(brute.non_null, fold.measures[0].non_null) << "iter " << iter;
+        ASSERT_DOUBLE_EQ(brute.sum, fold.measures[0].sum) << "iter " << iter;
+        if (brute.non_null > 0) {
+            ASSERT_EQ(brute.min, fold.measures[0].min) << "iter " << iter;
+            ASSERT_EQ(brute.max, fold.measures[0].max) << "iter " << iter;
+        }
+        // completeness: no interior-contained, null-free leaf may be left unfolded
+        // (reconstruct leaves from the fixed block size)
+        {
+            std::set<uint32_t> folded_begins;
+            for (const auto& [begin, end] : fold.folded_ranges) {
+                folded_begins.insert(begin);
+            }
+            const auto n = static_cast<uint32_t>(data.size());
+            for (uint32_t begin = 0; begin < n; begin += leaf_rows) {
+                const uint32_t end = std::min(begin + leaf_rows, n);
+                bool eligible = true;
+                for (uint32_t rid = begin; rid < end && eligible; ++rid) {
+                    eligible = data[rid].has_value() &&
+                               cell_ranges_contain(interior, s2_cell_from_key(*data[rid]));
+                }
+                // eligible-by-rows is necessary for folding; leaves whose [min,max]
+                // cell span sticks outside the interior may still legitimately stay
+                // unfolded, so only assert the reverse direction.
+                if (folded_begins.contains(begin)) {
+                    ASSERT_TRUE(eligible) << "iter " << iter << " leaf@" << begin;
+                }
+            }
+        }
+        // knocking one row out of `present` must demote exactly its leaf
+        if (!fold.folded_ranges.empty()) {
+            const auto [begin, end] = fold.folded_ranges.front();
+            roaring::Roaring partial = full;
+            partial.remove(begin + (end - begin) / 2);
+            HasiFoldResult fold2;
+            ASSERT_TRUE(tree.fold_inside(interior, {0}, partial, &fold2).ok());
+            ASSERT_EQ(fold.folded_leaves - 1, fold2.folded_leaves);
+            ASSERT_EQ(fold.folded_rows - (end - begin), fold2.folded_rows);
+        }
+        // empty measure list still folds the row count
+        HasiFoldResult fold3;
+        ASSERT_TRUE(tree.fold_inside(interior, {}, full, &fold3).ok());
+        ASSERT_EQ(fold.folded_rows, fold3.folded_rows);
+        ASSERT_TRUE(fold3.measures.empty());
+        // unknown measure index is an error, not a silent wrong answer
+        HasiFoldResult fold4;
+        ASSERT_FALSE(tree.fold_inside(interior, {1}, full, &fold4).ok());
     }
 }
 

@@ -1117,18 +1117,215 @@ Status SegmentIterator::_apply_geo_predicate() {
             }
         }
         size_t before = _row_bitmap.cardinality();
+        // v2b fold gate needs the pre-circle bitmap to prove whole leaves are intact
+        // (delete bitmaps / key pruning never removed a row from them).
+        const bool try_agg_fold = erased && !_virtual_column_exprs.empty();
+        roaring::Roaring pre_geo_bitmap;
+        if (try_agg_fold) {
+            pre_geo_bitmap = _row_bitmap;
+        }
         _row_bitmap &= hit;
         _opts.stats->rows_geo_index_filtered +=
                 static_cast<int64_t>(before - _row_bitmap.cardinality());
         _opts.stats->geo_boundary_recheck_rows += band_rows;
         _opts.stats->geo_boundary_leaves += static_cast<int64_t>(search_stats.leaves_boundary);
         _opts.stats->geo_inside_rows += static_cast<int64_t>(search_stats.rows_inside);
+        if (try_agg_fold && !_row_bitmap.isEmpty()) {
+            RETURN_IF_ERROR(_apply_geo_agg_fold(geo_iterator, interior, pre_geo_bitmap));
+        }
         if (!erased) {
             ++it;
         }
         if (_row_bitmap.isEmpty()) {
             break;
         }
+    }
+    return Status::OK();
+}
+
+Status SegmentIterator::_apply_geo_agg_fold(GeoIndexIterator* geo_iterator,
+                                            const std::vector<CellRange>& interior,
+                                            const roaring::Roaring& pre_geo_bitmap) {
+    // The fold elides rows from the stream, so nothing may re-evaluate per-row
+    // conditions downstream of it:
+    //   - every virtual column must be one of our markers (a foreign virtual column
+    //     would be expression-evaluated over the representative row's placeholders);
+    //   - no residual pushed-down conjuncts, no delete predicates, no order-by /
+    //     rowid-recording / storage-agg contract on this read;
+    //   - column predicates only on the indexed __s2 column and only the GE/LE
+    //     envelope the v0 rewrite injects (a superset of the covering, provably true
+    //     for every row of a folded leaf -- those have null_count == 0).
+    if (_opts.push_down_agg_type_opt != TPushAggOp::NONE ||
+        _opts.read_orderby_key_columns != nullptr || _opts.record_rowids ||
+        !_remaining_conjunct_roots.empty() ||
+        (_opts.delete_condition_predicates != nullptr &&
+         _opts.delete_condition_predicates->num_of_column_predicate() > 0)) {
+        return Status::OK();
+    }
+    std::vector<std::pair<ColumnId, GeoAggFoldSlot>> markers;
+    markers.reserve(_virtual_column_exprs.size());
+    for (const auto& [cid, ctx] : _virtual_column_exprs) {
+        GeoAggFoldSlot slot;
+        if (ctx == nullptr || !extract_geo_agg_partial(ctx->root().get(), &slot)) {
+            return Status::OK();
+        }
+        markers.emplace_back(cid, slot);
+    }
+    if (markers.empty()) {
+        return Status::OK();
+    }
+    const auto& index_meta = geo_iterator->geo_reader()->index_meta();
+    if (index_meta.col_unique_ids().empty()) {
+        return Status::OK();
+    }
+    const int32_t s2_cid = _opts.tablet_schema->field_index(index_meta.col_unique_ids()[0]);
+    for (const auto& pred : _col_predicates) {
+        if (pred == nullptr || static_cast<int32_t>(pred->column_id()) != s2_cid ||
+            (pred->type() != PredicateType::GE && pred->type() != PredicateType::LE)) {
+            return Status::OK();
+        }
+    }
+    // Resolve marker measures to sketch indices; any miss (v1 file, measure not in
+    // the sketch, unknown column) falls back to the row path untouched.
+    const auto& idx_to_cid = _schema->column_ids();
+    std::vector<int> tree_measure_idxs;
+    std::map<int, size_t> block_idx_to_pos; // measure block idx -> pos in tree_measure_idxs
+    std::map<int, ColumnId> block_idx_to_cid;
+    for (const auto& [cid, slot] : markers) {
+        if (!_vir_cid_to_idx_in_block.contains(cid)) {
+            return Status::OK();
+        }
+        if (slot.kind == GeoAggFoldSlot::Kind::ROWS) {
+            continue; // needs only the folded row count
+        }
+        if (slot.measure_idx_in_block < 0 ||
+            static_cast<size_t>(slot.measure_idx_in_block) >= idx_to_cid.size()) {
+            return Status::OK();
+        }
+        const ColumnId mcid = idx_to_cid[slot.measure_idx_in_block];
+        if (block_idx_to_pos.contains(slot.measure_idx_in_block)) {
+            continue;
+        }
+        const int tree_idx =
+                geo_iterator->geo_reader()->measure_index(_opts.tablet_schema->column(mcid).name());
+        if (tree_idx < 0) {
+            return Status::OK();
+        }
+        block_idx_to_pos[slot.measure_idx_in_block] = tree_measure_idxs.size();
+        block_idx_to_cid[slot.measure_idx_in_block] = mcid;
+        tree_measure_idxs.push_back(tree_idx);
+    }
+    HasiFoldResult fold;
+    RETURN_IF_ERROR(
+            geo_iterator->fold_inside(interior, tree_measure_idxs, pre_geo_bitmap, &fold));
+    if (fold.folded_leaves == 0) {
+        return Status::OK();
+    }
+    // Elide the folded leaves, keep one representative row. Every surviving row's
+    // virtual columns stay on the vectorized expression path (row-wise partials over
+    // the sequentially-read measure column); only the representative row's values
+    // get patched to the merged sketch after each output block materializes
+    // (_patch_geo_agg_rep_row) -- O(1) per batch instead of a scan-sized
+    // prepare_materialization, whose per-batch full-column filtering collapses on
+    // million-row boundaries.
+    const uint32_t rep_rid = fold.folded_ranges.front().first;
+    _geo_agg_rep_patches.clear();
+    _geo_agg_rep_patches.reserve(markers.size());
+    for (const auto& [cid, slot] : markers) {
+        GeoAggRepPatch patch;
+        patch.cid = cid;
+        switch (slot.kind) {
+        case GeoAggFoldSlot::Kind::ROWS:
+            patch.is_int = true;
+            patch.ival = static_cast<int64_t>(fold.folded_rows);
+            break;
+        case GeoAggFoldSlot::Kind::CNT:
+            patch.is_int = true;
+            patch.ival = fold.measures.at(block_idx_to_pos.at(slot.measure_idx_in_block)).non_null;
+            break;
+        default: {
+            const HasiLeafMeasure& agg =
+                    fold.measures.at(block_idx_to_pos.at(slot.measure_idx_in_block));
+            if (agg.non_null == 0) {
+                patch.is_null = true;
+            } else {
+                patch.dval = slot.kind == GeoAggFoldSlot::Kind::SUM   ? agg.sum
+                             : slot.kind == GeoAggFoldSlot::Kind::MIN ? agg.min
+                                                                      : agg.max;
+            }
+            break;
+        }
+        }
+        _geo_agg_rep_patches.push_back(patch);
+    }
+    for (const auto& [begin, end] : fold.folded_ranges) {
+        _row_bitmap.removeRange(begin, end);
+    }
+    _row_bitmap.add(rep_rid);
+    _geo_agg_rep_rid = rep_rid;
+    _geo_agg_fold_active = true;
+    _opts.stats->geo_agg_folded_rows += static_cast<int64_t>(fold.folded_rows) - 1;
+    _opts.stats->geo_agg_folded_leaves += static_cast<int64_t>(fold.folded_leaves);
+    return Status::OK();
+}
+
+// Overwrites the representative row's geo_agg virtual-column values with the merged
+// leaf sketches. Runs after virtual-column expression materialization; the batch's
+// row order equals _block_rowids (through _sel_rowid_idx when row-level filtering
+// ran), so the representative row appears in exactly one batch.
+Status SegmentIterator::_patch_geo_agg_rep_row(vectorized::Block* block) {
+    if (!_geo_agg_fold_active || block->rows() == 0 || _selected_size == 0) {
+        return Status::OK();
+    }
+    const bool use_sel = _is_need_vec_eval || _is_need_short_eval || _is_need_expr_eval;
+    const size_t nrows = block->rows();
+    ssize_t rep_row = -1;
+    for (size_t i = 0; i < nrows; ++i) {
+        const rowid_t rid = use_sel ? _block_rowids[_sel_rowid_idx[i]] : _block_rowids[i];
+        if (rid == _geo_agg_rep_rid) {
+            rep_row = static_cast<ssize_t>(i);
+            break;
+        }
+        if (rid > _geo_agg_rep_rid) {
+            break; // rowids ascend within a batch
+        }
+    }
+    if (rep_row < 0) {
+        return Status::OK();
+    }
+    for (const GeoAggRepPatch& patch : _geo_agg_rep_patches) {
+        auto it = _vir_cid_to_idx_in_block.find(patch.cid);
+        if (it == _vir_cid_to_idx_in_block.end() || it->second >= block->columns()) {
+            return Status::InternalError("geo agg fold: virtual column {} missing from block",
+                                         patch.cid);
+        }
+        auto& entry = block->get_by_position(it->second);
+        // COW mutate: geo_agg_partial_val passes its measure argument through, so
+        // sibling marker columns (and the measure column itself) may share this
+        // exact column instance -- an in-place write would corrupt them all.
+        vectorized::MutableColumnPtr mcol = (*std::move(entry.column)).mutate();
+        auto* nullable = dynamic_cast<vectorized::ColumnNullable*>(mcol.get());
+        if (nullable == nullptr || nullable->size() != nrows) {
+            return Status::InternalError("geo agg fold: unexpected virtual column layout at {}",
+                                         it->second);
+        }
+        nullable->get_null_map_data()[rep_row] = patch.is_null ? 1 : 0;
+        if (patch.is_int) {
+            auto* data =
+                    dynamic_cast<vectorized::ColumnInt64*>(&nullable->get_nested_column());
+            if (data == nullptr) {
+                return Status::InternalError("geo agg fold: expected BIGINT virtual column");
+            }
+            data->get_data()[rep_row] = patch.ival;
+        } else {
+            auto* data =
+                    dynamic_cast<vectorized::ColumnFloat64*>(&nullable->get_nested_column());
+            if (data == nullptr) {
+                return Status::InternalError("geo agg fold: expected DOUBLE virtual column");
+            }
+            data->get_data()[rep_row] = patch.dval;
+        }
+        entry.column = std::move(mcol);
     }
     return Status::OK();
 }
@@ -1145,51 +1342,12 @@ Status SegmentIterator::_resolve_geo_exact_rows(const GeoRangeSearchRuntime& run
     const auto& idx_to_cid = _schema->column_ids();
     ColumnId lng_cid = idx_to_cid[runtime.lng_idx_in_block];
     ColumnId lat_cid = idx_to_cid[runtime.lat_idx_in_block];
-    if (_column_iterators[lng_cid] == nullptr || _column_iterators[lat_cid] == nullptr) {
-        return Status::NotSupported("geo exact recheck: lon/lat column iterators missing");
-    }
-    auto read_doubles = [&](ColumnId cid, std::vector<double>* vals,
-                            std::vector<uint8_t>* nulls) -> Status {
-        const auto* field = _schema->column(cid);
-        vectorized::MutableColumnPtr column = Schema::get_data_type_ptr(*field)->create_column();
-        RETURN_IF_ERROR(_column_iterators[cid]->read_by_rowids(rowids.data(), rowids.size(),
-                                                               column));
-        if (column->size() != rowids.size()) {
-            return Status::InternalError("geo exact recheck read {} rows, expected {}",
-                                         column->size(), rowids.size());
-        }
-        vals->resize(rowids.size());
-        nulls->assign(rowids.size(), 0);
-        const vectorized::IColumn* data_col = column.get();
-        if (const auto* nullable =
-                    vectorized::check_and_get_column<vectorized::ColumnNullable>(column.get())) {
-            for (size_t i = 0; i < rowids.size(); ++i) {
-                (*nulls)[i] = nullable->is_null_at(i) ? 1 : 0;
-            }
-            data_col = &nullable->get_nested_column();
-        }
-        if (const auto* f64 =
-                    vectorized::check_and_get_column<vectorized::ColumnFloat64>(data_col)) {
-            for (size_t i = 0; i < rowids.size(); ++i) {
-                (*vals)[i] = f64->get_data()[i];
-            }
-            return Status::OK();
-        }
-        if (const auto* f32 =
-                    vectorized::check_and_get_column<vectorized::ColumnFloat32>(data_col)) {
-            for (size_t i = 0; i < rowids.size(); ++i) {
-                (*vals)[i] = f32->get_data()[i];
-            }
-            return Status::OK();
-        }
-        return Status::NotSupported("geo exact recheck: unsupported lon/lat column type");
-    };
     std::vector<double> lng_vals;
     std::vector<double> lat_vals;
     std::vector<uint8_t> lng_nulls;
     std::vector<uint8_t> lat_nulls;
-    RETURN_IF_ERROR(read_doubles(lng_cid, &lng_vals, &lng_nulls));
-    RETURN_IF_ERROR(read_doubles(lat_cid, &lat_vals, &lat_nulls));
+    RETURN_IF_ERROR(_read_double_column(lng_cid, rowids, &lng_vals, &lng_nulls));
+    RETURN_IF_ERROR(_read_double_column(lat_cid, rowids, &lat_vals, &lat_nulls));
 
     CircleRecheck recheck;
     if (!recheck.init(runtime.lng0, runtime.lat0, runtime.radius_m,
@@ -1205,6 +1363,49 @@ Status SegmentIterator::_resolve_geo_exact_rows(const GeoRangeSearchRuntime& run
         }
     }
     return Status::OK();
+}
+
+Status SegmentIterator::_read_double_column(ColumnId cid, const std::vector<uint32_t>& rowids,
+                                            std::vector<double>* vals,
+                                            std::vector<uint8_t>* nulls) {
+    vals->clear();
+    nulls->clear();
+    if (rowids.empty()) {
+        return Status::OK();
+    }
+    if (_column_iterators[cid] == nullptr) {
+        return Status::NotSupported("geo double read: column iterator missing for cid {}", cid);
+    }
+    const auto* field = _schema->column(cid);
+    vectorized::MutableColumnPtr column = Schema::get_data_type_ptr(*field)->create_column();
+    RETURN_IF_ERROR(_column_iterators[cid]->read_by_rowids(rowids.data(), rowids.size(), column));
+    if (column->size() != rowids.size()) {
+        return Status::InternalError("geo double read {} rows, expected {}", column->size(),
+                                     rowids.size());
+    }
+    vals->resize(rowids.size());
+    nulls->assign(rowids.size(), 0);
+    const vectorized::IColumn* data_col = column.get();
+    if (const auto* nullable =
+                vectorized::check_and_get_column<vectorized::ColumnNullable>(column.get())) {
+        for (size_t i = 0; i < rowids.size(); ++i) {
+            (*nulls)[i] = nullable->is_null_at(i) ? 1 : 0;
+        }
+        data_col = &nullable->get_nested_column();
+    }
+    if (const auto* f64 = vectorized::check_and_get_column<vectorized::ColumnFloat64>(data_col)) {
+        for (size_t i = 0; i < rowids.size(); ++i) {
+            (*vals)[i] = f64->get_data()[i];
+        }
+        return Status::OK();
+    }
+    if (const auto* f32 = vectorized::check_and_get_column<vectorized::ColumnFloat32>(data_col)) {
+        for (size_t i = 0; i < rowids.size(); ++i) {
+            (*vals)[i] = f32->get_data()[i];
+        }
+        return Status::OK();
+    }
+    return Status::NotSupported("geo double read: unsupported column type for cid {}", cid);
 }
 
 // TODO: optimization when all expr can not evaluate by inverted/ann index,
@@ -2732,6 +2933,9 @@ Status SegmentIterator::_next_batch_internal(vectorized::Block* block) {
         _output_index_result_column(vir_ctxs, sel_rowid_idx, _selected_size, block);
     }
     RETURN_IF_ERROR(_materialization_of_virtual_column(block));
+    // v2b geo agg fold: overwrite the representative row's marker columns with the
+    // merged leaf sketches (must run after the expression materialization above).
+    RETURN_IF_ERROR(_patch_geo_agg_rep_row(block));
     // shrink char_type suffix zero data
     block->shrink_char_type_column_suffix_zero(_char_type_idx);
     return _check_output_block(block);

@@ -405,6 +405,10 @@ struct OlapReaderStatistics {
     int64_t geo_boundary_recheck_rows = 0;
     int64_t geo_boundary_leaves = 0;
     int64_t geo_inside_rows = 0;
+    // v2b agg fold: rows elided from the scan (replaced by representative rows) and
+    // the interior leaves whose sketches produced them
+    int64_t geo_agg_folded_rows = 0;
+    int64_t geo_agg_folded_leaves = 0;
 
     int64_t output_index_result_column_timer = 0;
     // number of segment filtered by column stat when creating seg iterator

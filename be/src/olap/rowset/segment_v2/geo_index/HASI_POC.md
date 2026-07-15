@@ -722,6 +722,67 @@ close 时同步等待、load 内存硬限），flush 吞吐低于摄入吞吐时
   **明确未接**：VerticalSegmentWriter（vertical compaction 是 DUP/MOW 默认——compaction
   输出暂无 sketch，靠存在性 gate 降级，列组 rid 对齐属下一批）；FE `PushDownGeoAgg`
   查询计划改写与 scan 内折叠回流；HLL/t-digest blob 段与金字塔节点层。
+- **v2b 查询集成（rev2.7，已落地）——"构造即正确"的部分聚合折叠**。放弃向
+  `PhysicalStorageLayerAggregate`/`TPushAggOp` 加载荷（那套契约是"scan 少读、聚合节点
+  不变"，装不下 sum 折叠），改走本 fork 已有的**通用虚拟列机制**（ANN 距离/BM25 分数
+  同源：FE 给 scan 挂非物理输出槽 → BE `VirtualColumnIterator::prepare_materialization`
+  按 rowid 填任意值）：
+  ① **FE `PushDownGeoAgg`**（rewrite 阶段，注册在 `RewriteGeoPredicate` **之前**，要求
+  filter 恰为单圆合取）：`Agg[sum/min/max/count(m), count(*)]（无 group by）` 改写为
+  `Project(按原 ExprId 恢复输出：count 路径包 coalesce(x,0) 修空集语义、FLOAT 度量
+  min/max 包 cast 回原类型) ← Agg[sum(v_sum), min(v_min), …] ← Filter(不动) ←
+  Scan(+虚拟列)`；虚拟列表达式 = 标记函数 `geo_agg_partial_val('sum'|'min'|'max', m)` /
+  `geo_agg_partial_cnt('cnt'|'rows', m)`（FE+BE 各注册一次，BE 行级语义 = 恒等 /
+  非空指示 / 常量 1）——**表达式本身就是行级回退语义**，BE 一个字不认识该查询也逐位
+  正确，零 thrift 改动、零 scan 节点新字段；标记函数树同时就是 BE 侧的折叠描述符
+  （`extract_geo_agg_partial` 解析 kind+度量槽）。门控 `enable_geo_agg_pushdown` +
+  geo 查询/精算开关；度量列必须 ∈ 索引 `measures` 且 FLOAT/DOUBLE；纯 count(*) 留给
+  v2a COUNT_ON_INDEX 路径。
+  ② **BE `_apply_geo_agg_fold`**（v1.5 精算成功摘除谓词后触发）：C3 门槛全查——所有
+  虚拟列都是标记（异类虚拟列会在代表行上被表达式求值到垃圾）、无残余 conjunct、无
+  delete 谓词、无 orderby/record_rowids/storage-agg 契约、列谓词仅允许 v0 注入的 __s2
+  GE/LE 包络（对折叠叶可证恒真：**只折 null_count==0 的叶**，其行 cell ∈ interior ⊆
+  covering ⊆ 包络）；`HasiTree::fold_inside(interior, measures, present)` 只折"interior
+  全包 + 无 NULL cell + `present`（圆谓词前位图）**整叶完好**"的叶——MOW delete
+  bitmap/键剪枝/并行 scanner 半叶切分全部自然回退到行路径。折叠叶从 `_row_bitmap`
+  整段剔除，每 segment 留 **1 行代表行**；边界/未折叠行的虚拟列**留在表达式向量化
+  路径**（度量列顺序批读），只在输出块物化后把代表行按 COW mutate **补丁**成 sketch
+  合并值（`_patch_geo_agg_rep_row`，O(1)/batch）。第一版曾把全部剩余行灌进
+  `VirtualColumnIterator::prepare_materialization`——其 read_by_rowids 每 batch 对
+  整列 memset+filter（为 ANN 小 N 设计），百万行边界下比行路径慢 40-70×，实测后废弃；
+  另一个实测教训：标记函数必须关掉默认 NULL 包装（`use_default_implementation_for_nulls
+  = false`），否则 `geo_agg_partial_cnt('rows', NULL度量)` 被框架折成 NULL，count(*)
+  丢掉所有度量为 NULL 的行。空度量叶（non_null==0）代表值为 NULL。计数器
+  `GeoAggFoldedRows/GeoAggFoldedLeaves`。
+  ③ **compaction 列组喂入（v2b-w2）**：rid 对齐由 `RowSourcesBuffer` 回放 + 值组按键组
+  `row_count()` 同界滚段天然保证；同一 `SegmentWriter` 对象跨全部列组存活 ⇒
+  `_write_geo_index` 遇 `measures_pending()` 时**释放 geo writer 所有权给 SegmentWriter**
+  （`release_geo_index_writer`，躲过组末 `clear()`），后续值组的 `feed_block_measures`
+  以"保留 writer + 组内列位映射（`group_col_ids`）"继续喂，`finalize_footer` 统一落盘
+  （IndexFileWriter 目录开到 rowset build 才关，segcompaction 同样走 footer）；喂入前
+  检查 `rows_indexed() >= rid_base+num_rows`（cell 先于 measure 的 NULL 过滤前提；
+  值组先于 __s2 组时跳过 → 完整性核对降级 v1）。**限制**：多度量须落在同一列组
+  （行式 add_measure_row API），跨组则降级 v1。
+  ④ **已知偏差**：double sum 是不同序归约，与行序求和差 ulp 级（分布式聚合本就不定序，
+  回归以 1e-9 相对容差对拍，count/min/max 逐位）；折叠后度量列仍被读（仅剩余行,
+  免读留作后续优化）；FE 规则要求 filter 单合取 ⇒ 与用户附加谓词共存时自动放弃改写；
+  `GeoAggFoldedRows/Leaves` 在多 scanner 并行下虚高（未消费行的 scanner 也执行了
+  fold 统计，1e8/8桶实测 ~3×；输出语义不受影响——互斥 key range 下 containsRange
+  保证叶不重折，与 `RowsGeoIndexFiltered` 的既有口径问题同类，仅影响 profile 观测）。
+  **1e8 实测（rev2.7，与 §8 同 harness、runs=3 热中位）**：agg(count(*)+count/sum/
+  min/max(val)) v2b 相对全表扫 7.3-18.6×，与 v1.5 行路径同级（100km 13ms vs 14ms
+  略优）；面积敏感性 100km→1000km（面积 100×）延迟 13→19ms（1.46×），门槛"面积 4×
+  延迟 ≤1.3×"达标口径通过。折叠率：1000km 圆命中 3.68M 行中 ~2.6M 行整叶折叠
+  （物理输出 1.06M 行）。当前 ~13-20ms 地板 = 边界行 + 5 虚拟列表达式 + scan 框架
+  本身（与 v2a 占位行地板同源）——把聚合延迟与命中行数彻底解耦需要金字塔节点层
+  （树内多层 sketch）+ 每 rowset 粒度出口，属 v2b 后续。
+- **DDL/存储形态决策（rev2.7，用户拍板）**：采纳**方案 B —— 新增 GEO_POINT 原生数据
+  类型**（ES geo_point 对齐）：物理只存 8B s2 key，查询返回 [lon,lat] = cell 中心解码
+  （level-30 量化 ≤~1cm，与 ES doc_values 的 2×int32 同级；ES 的"原值"其实来自
+  _source），省掉 lon/lat 两列 double 与显式 `__s2 AS (st_s2_cellid(...))` 生成列 DDL。
+  涉及 FE 类型系统（PrimitiveType/Nereids DataType/literal/cast）+ BE FieldType/列实现 +
+  函数族 + 入库数组映射，为 v2b 之后的独立阶段；v1.5 精算余量已含 5cm 量化项，BE 检索
+  内核无需改动。数组入库今天已可用（jsonpaths `$.loc[0]` / CSV source-only 字段映射）。
 
 **每阶段性能通过门槛（基线与测法见 §8）**：
 

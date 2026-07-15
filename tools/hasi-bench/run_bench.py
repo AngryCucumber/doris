@@ -55,6 +55,22 @@ CONFIGS = [
      "enable_geo_index_exact_filter=true"),
 ]
 
+# sum/min/max/count(col) exercises the v2b sketch-fold path (needs a table with a
+# `val` DOUBLE column and a geo index built with measures="val"; load val as
+# (id % 1000) * 0.5 so every value is an exact half -- sums are then order-free
+# exact doubles and the cross-config comparison can be bit-strict).
+AGG_CONFIGS = [
+    ("agg_off",
+     "enable_sql_cache=false,enable_geo_predicate_rewrite=false,enable_geo_index_query=false,"
+     "enable_geo_agg_pushdown=false"),
+    ("agg_v15",
+     "enable_sql_cache=false,enable_geo_predicate_rewrite=true,enable_geo_index_query=true,"
+     "enable_geo_index_exact_filter=true,enable_geo_agg_pushdown=false"),
+    ("agg_v2b",
+     "enable_sql_cache=false,enable_geo_predicate_rewrite=true,enable_geo_index_query=true,"
+     "enable_geo_index_exact_filter=true,enable_geo_agg_pushdown=true"),
+]
+
 # count(*) exercises the v2a COUNT_ON_INDEX path on top of v1.5 exactness.
 COUNT_CONFIGS = [
     ("count_off",
@@ -89,6 +105,8 @@ def main():
     ap.add_argument("--fe", default="127.0.0.1:8030")
     ap.add_argument("--db", default="hasi_bench")
     ap.add_argument("--table", default="geo_t")
+    ap.add_argument("--meas-table", default="",
+                    help="table with a val measure + measures geo index; enables the v2b agg section")
     ap.add_argument("--user", default="root")
     ap.add_argument("--password", default="")
     args = ap.parse_args()
@@ -153,6 +171,39 @@ def main():
         v2a = medians["count_v2a"]
         print(f"{qname:<20} {counts['count_off']:>9} {base:>8.0f}ms {v15:>8.0f}ms {v2a:>8.0f}ms "
               f"{base / max(v15, 0.001):>5.1f}x {base / max(v2a, 0.001):>5.1f}x")
+
+    if not args.meas_table:
+        return
+    print()
+    print(f"{'agg query (v2b)':<20} {'rows':>9} {'off':>9} {'v1.5':>9} {'v2b':>9} "
+          f"{'v15_x':>6} {'v2b_x':>6}")
+    for qname, _table, lon0, lat0, radius in QUERIES:
+        table = args.meas_table
+        results = {}
+        medians = {}
+        for cname, setvars in AGG_CONFIGS:
+            stmt = (f"select /*+ SET_VAR({setvars}) */ "
+                    f"count(*), count(val), sum(val), min(val), max(val) from {table} "
+                    f"where st_distance_sphere(lon, lat, {lon0}, {lat0}) < {radius}")
+            times = []
+            result = None
+            for i in range(args.runs + 1):
+                data = run_stmt(args.fe, args.db, args.user, args.password, stmt)
+                result = tuple(data["data"][0]) if data.get("data") else None
+                if i > 0:
+                    times.append(data["time"])
+            results[cname] = result
+            medians[cname] = statistics.median(times)
+        if len(set(results.values())) != 1:
+            # val is loaded as exact halves, so even sum must be bit-identical
+            print(f"!! AGG MISMATCH for {qname}: {results}", file=sys.stderr)
+            sys.exit(2)
+        base = medians["agg_off"]
+        v15 = medians["agg_v15"]
+        v2b = medians["agg_v2b"]
+        nrows = results["agg_off"][0] if results["agg_off"] else "?"
+        print(f"{qname:<20} {nrows:>9} {base:>8.0f}ms {v15:>8.0f}ms {v2b:>8.0f}ms "
+              f"{base / max(v15, 0.001):>5.1f}x {base / max(v2b, 0.001):>5.1f}x")
 
 
 if __name__ == "__main__":

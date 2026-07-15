@@ -75,4 +75,16 @@ public:
     }
 };
 
+// Variant that sees NULL arguments instead of the default "any NULL argument
+// nullifies the row" wrapping. Needed by functions whose value on a NULL input is
+// NOT NULL -- e.g. the v2b agg-pushdown markers, where geo_agg_partial_cnt of a
+// NULL measure is 0 ('cnt') or 1 ('rows'). The Impl must handle nullable columns
+// itself (both marker impls do).
+template <typename Impl>
+class GeoFunctionKeepNulls : public GeoFunction<Impl> {
+public:
+    static FunctionPtr create() { return std::make_shared<GeoFunctionKeepNulls<Impl>>(); }
+    bool use_default_implementation_for_nulls() const override { return false; }
+};
+
 } // namespace doris::vectorized

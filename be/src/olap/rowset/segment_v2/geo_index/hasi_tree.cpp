@@ -427,6 +427,42 @@ Status HasiTree::aggregate_inside(const std::vector<CellRange>& covering,
     return Status::OK();
 }
 
+Status HasiTree::fold_inside(const std::vector<CellRange>& interior,
+                             const std::vector<int>& measure_idxs,
+                             const roaring::Roaring& present, HasiFoldResult* out) const {
+    for (int mi : measure_idxs) {
+        if (mi < 0 || static_cast<size_t>(mi) >= _measure_names.size() ||
+            _leaf_measures == nullptr) {
+            return Status::InternalError("hasi fold: measure {} not present", mi);
+        }
+    }
+    out->folded_ranges.clear();
+    out->measures.assign(measure_idxs.size(), HasiLeafMeasure());
+    out->folded_rows = 0;
+    out->folded_leaves = 0;
+    for (uint32_t li = 0; li < _leaves.size(); ++li) {
+        const Leaf& leaf = _leaves[li];
+        // null_count == 0 implies the leaf has rows with valid cells, so the
+        // interior containment test below is meaningful (all-null leaves store an
+        // inverted [max, 0] range that fails it anyway).
+        if (leaf.null_count != 0 ||
+            !ranges_contain_interval(interior, leaf.min_cell, leaf.max_cell)) {
+            continue;
+        }
+        // containsRange treats the second bound as exclusive, matching rid_end.
+        if (!present.containsRange(leaf.rid_begin, leaf.rid_end)) {
+            continue;
+        }
+        for (size_t m = 0; m < measure_idxs.size(); ++m) {
+            out->measures[m].merge(_leaf_measure(li, static_cast<uint32_t>(measure_idxs[m])));
+        }
+        out->folded_ranges.emplace_back(leaf.rid_begin, leaf.rid_end);
+        out->folded_rows += leaf.rid_end - leaf.rid_begin;
+        ++out->folded_leaves;
+    }
+    return Status::OK();
+}
+
 Status HasiTree::_decode_leaf_cells(const Leaf& leaf, std::vector<uint64_t>* cells) const {
     const uint32_t n = leaf.rid_end - leaf.rid_begin;
     cells->resize(n);

@@ -228,6 +228,8 @@ import org.apache.doris.nereids.trees.expressions.functions.scalar.FromSecond;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.FromUnixtime;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.G;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.Gcd;
+import org.apache.doris.nereids.trees.expressions.functions.scalar.GeoAggPartialCnt;
+import org.apache.doris.nereids.trees.expressions.functions.scalar.GeoAggPartialVal;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.GetFormat;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.GetVariantType;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.Greatest;
@@ -789,6 +791,8 @@ public class BuiltinScalarFunctions implements FunctionHelper {
             scalar(FromUnixtime.class, "from_unixtime"),
             scalar(G.class, "g"),
             scalar(Gcd.class, "gcd"),
+            scalar(GeoAggPartialCnt.class, "geo_agg_partial_cnt"),
+            scalar(GeoAggPartialVal.class, "geo_agg_partial_val"),
             scalar(GetFormat.class, "get_format"),
             scalar(GetVariantType.class, "variant_type"),
             scalar(Greatest.class, "greatest"),

@@ -134,6 +134,7 @@ import org.apache.doris.nereids.rules.rewrite.PushDownDistinctThroughJoin;
 import org.apache.doris.nereids.rules.rewrite.PushDownEncodeSlot;
 import org.apache.doris.nereids.rules.rewrite.PushDownFilterIntoSchemaScan;
 import org.apache.doris.nereids.rules.rewrite.PushDownFilterThroughProject;
+import org.apache.doris.nereids.rules.rewrite.PushDownGeoAgg;
 import org.apache.doris.nereids.rules.rewrite.PushDownLimit;
 import org.apache.doris.nereids.rules.rewrite.PushDownLimitDistinctThroughJoin;
 import org.apache.doris.nereids.rules.rewrite.PushDownLimitDistinctThroughUnion;
@@ -782,6 +783,9 @@ public class Rewriter extends AbstractBatchJobExecutor {
                 custom(RuleType.ELIMINATE_UNNECESSARY_PROJECT, EliminateUnnecessaryProject::new),
                 topDown(new PushDownVectorTopNIntoOlapScan()),
                 topDown(new PushDownVirtualColumnsIntoOlapScan()),
+                // HASI geo index v2b: agg-over-circle -> partial-fold virtual columns; must see
+                // the filter BEFORE RewriteGeoPredicate injects the __s2 envelope conjuncts
+                topDown(new PushDownGeoAgg()),
                 // HASI geo index v0: ST_* circle predicate -> __s2 envelope range conjunct (+ ST_* residual)
                 topDown(new RewriteGeoPredicate()),
                 topDown(new PushDownMatchProjectionAsVirtualColumn()),

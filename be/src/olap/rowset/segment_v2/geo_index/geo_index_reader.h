@@ -54,6 +54,17 @@ public:
                         std::vector<std::pair<uint32_t, uint64_t>>* margin_out = nullptr,
                         io::IOContext* io_ctx = nullptr);
 
+    // v2b: measure lookup + whole-leaf fold (see HasiTree). measure_index requires
+    // the index to be loaded (call after a successful range_search); it returns -1
+    // both for unknown names and for v1 files without a measures section.
+    int measure_index(const std::string& name) const { return _tree.measure_index(name); }
+    Status fold_inside(const std::vector<CellRange>& interior,
+                       const std::vector<int>& measure_idxs, const roaring::Roaring& present,
+                       HasiFoldResult* out, io::IOContext* io_ctx = nullptr) {
+        RETURN_IF_ERROR(load_index(io_ctx));
+        return _tree.fold_inside(interior, measure_idxs, present, out);
+    }
+
     const TabletIndex& index_meta() const { return _index_meta; }
 
 private:

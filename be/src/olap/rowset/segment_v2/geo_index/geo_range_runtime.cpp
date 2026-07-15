@@ -100,7 +100,64 @@ bool match_distance_call(const vectorized::VExpr* expr, GeoRangeSearchRuntime* o
     return true;
 }
 
+// Non-nullable string literal.
+bool literal_as_string(const vectorized::VExpr* expr, std::string* out) {
+    expr = strip_casts(expr);
+    const auto* literal = dynamic_cast<const vectorized::VLiteral*>(expr);
+    if (literal == nullptr || literal->is_nullable()) {
+        return false;
+    }
+    auto col = literal->get_column_ptr()->convert_to_full_column_if_const();
+    if (col->size() != 1) {
+        return false;
+    }
+    switch (literal->get_data_type()->get_primitive_type()) {
+    case PrimitiveType::TYPE_VARCHAR:
+    case PrimitiveType::TYPE_CHAR:
+    case PrimitiveType::TYPE_STRING:
+        *out = col->get_data_at(0).to_string();
+        return true;
+    default:
+        return false;
+    }
+}
+
 } // namespace
+
+bool extract_geo_agg_partial(const vectorized::VExpr* root, GeoAggFoldSlot* out) {
+    const auto* call = dynamic_cast<const vectorized::VectorizedFnCall*>(strip_casts(root));
+    if (call == nullptr || call->get_num_children() != 2) {
+        return false;
+    }
+    const bool is_val = call->function_name() == "geo_agg_partial_val";
+    const bool is_cnt = call->function_name() == "geo_agg_partial_cnt";
+    if (!is_val && !is_cnt) {
+        return false;
+    }
+    std::string kind;
+    if (!literal_as_string(call->get_child(0).get(), &kind)) {
+        return false;
+    }
+    const auto* slot = as_slot(call->get_child(1).get());
+    if (slot == nullptr) {
+        return false;
+    }
+    if (is_val && kind == "sum") {
+        out->kind = GeoAggFoldSlot::Kind::SUM;
+    } else if (is_val && kind == "min") {
+        out->kind = GeoAggFoldSlot::Kind::MIN;
+    } else if (is_val && kind == "max") {
+        out->kind = GeoAggFoldSlot::Kind::MAX;
+    } else if (is_cnt && kind == "cnt") {
+        out->kind = GeoAggFoldSlot::Kind::CNT;
+    } else if (is_cnt && kind == "rows") {
+        out->kind = GeoAggFoldSlot::Kind::ROWS;
+    } else {
+        return false;
+    }
+    out->measure_idx_in_block = slot->column_id();
+    return true;
+}
 
 bool extract_geo_range_search(const vectorized::VExpr* root, GeoRangeSearchRuntime* out) {
     if (root == nullptr || root->get_num_children() != 2) {

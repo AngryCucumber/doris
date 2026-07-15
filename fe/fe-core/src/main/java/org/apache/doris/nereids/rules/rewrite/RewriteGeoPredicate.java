@@ -154,8 +154,9 @@ public class RewriteGeoPredicate implements RewriteRuleFactory {
     /**
      * Matches {@code st_distance_sphere(slotLon, slotLat, lonConst, latConst) <[=] rConst} or the mirrored
      * {@code rConst >[=] st_distance_sphere(...)}. Returns null on any deviation from that shape.
+     * Package-private static: PushDownGeoAgg (v2b) reuses the exact same circle shape.
      */
-    private GeoCircle extractCircle(Expression conjunct) {
+    static GeoCircle extractCircle(Expression conjunct) {
         Expression distance;
         Expression bound;
         if (conjunct instanceof LessThan || conjunct instanceof LessThanEqual) {
@@ -281,7 +282,7 @@ public class RewriteGeoPredicate implements RewriteRuleFactory {
         return false;
     }
 
-    private Expression stripCast(Expression expression) {
+    private static Expression stripCast(Expression expression) {
         while (expression instanceof Cast) {
             expression = ((Cast) expression).child();
         }
@@ -296,12 +297,12 @@ public class RewriteGeoPredicate implements RewriteRuleFactory {
     }
 
     /** A "point (lonSlot, latSlot) within radiusMeters of (centerLon, centerLat)" predicate. */
-    private static final class GeoCircle {
-        private final SlotReference lonSlot;
-        private final SlotReference latSlot;
-        private final double centerLon;
-        private final double centerLat;
-        private final double radiusMeters;
+    static final class GeoCircle {
+        final SlotReference lonSlot;
+        final SlotReference latSlot;
+        final double centerLon;
+        final double centerLat;
+        final double radiusMeters;
 
         GeoCircle(SlotReference lonSlot, SlotReference latSlot,
                 double centerLon, double centerLat, double radiusMeters) {

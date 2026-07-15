@@ -244,6 +244,8 @@ import org.apache.doris.nereids.trees.expressions.functions.scalar.FromIso8601Da
 import org.apache.doris.nereids.trees.expressions.functions.scalar.FromUnixtime;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.G;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.Gcd;
+import org.apache.doris.nereids.trees.expressions.functions.scalar.GeoAggPartialCnt;
+import org.apache.doris.nereids.trees.expressions.functions.scalar.GeoAggPartialVal;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.GetFormat;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.GetVariantType;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.Greatest;
@@ -2364,6 +2366,14 @@ public interface ScalarFunctionVisitor<R, C> {
 
     default R visitStDistanceSphere(StDistanceSphere stDistanceSphere, C context) {
         return visitScalarFunction(stDistanceSphere, context);
+    }
+
+    default R visitGeoAggPartialVal(GeoAggPartialVal geoAggPartialVal, C context) {
+        return visitScalarFunction(geoAggPartialVal, context);
+    }
+
+    default R visitGeoAggPartialCnt(GeoAggPartialCnt geoAggPartialCnt, C context) {
+        return visitScalarFunction(geoAggPartialCnt, context);
     }
 
     default R visitStAngleSphere(StAngleSphere stAngleSphere, C context) {

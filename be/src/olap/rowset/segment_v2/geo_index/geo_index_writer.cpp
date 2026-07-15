@@ -120,21 +120,35 @@ Status GeoIndexColumnWriter::add_array_nulls(const uint8_t*, size_t) {
 
 Status GeoIndexColumnWriter::feed_block_measures(
         const TabletSchema& schema, const std::vector<std::unique_ptr<ColumnWriter>>& writers,
+        IndexColumnWriter* retained_geo_writer, const std::vector<uint32_t>* group_col_ids,
         GeoMeasureFeedState* state, const vectorized::Block* block, size_t row_pos,
         size_t num_rows, uint32_t rid_base) {
+    // Block positions map to tablet-schema cids either 1:1 (loads) or through the
+    // column-group id list (vertical compaction re-inits the writer per group).
+    const size_t width = group_col_ids != nullptr ? group_col_ids->size() : schema.num_columns();
     if (!state->resolved) {
         state->resolved = true;
+        GeoIndexColumnWriter* geo_writer = nullptr;
         for (const auto& column_writer : writers) {
-            auto* geo_writer =
+            auto* candidate =
                     dynamic_cast<GeoIndexColumnWriter*>(column_writer->geo_index_writer());
-            if (geo_writer == nullptr || geo_writer->measure_names().empty()) {
-                continue;
+            if (candidate != nullptr) {
+                geo_writer = candidate;
+                break; // at most one geo index per table in the POC
             }
+        }
+        if (geo_writer == nullptr) {
+            // v2b-w2: the indexed column's group already ran and released its writer
+            // to the segment writer; measure groups keep feeding it.
+            geo_writer = dynamic_cast<GeoIndexColumnWriter*>(retained_geo_writer);
+        }
+        if (geo_writer != nullptr && !geo_writer->measure_names().empty()) {
             std::vector<int> block_cols;
             for (const auto& name : geo_writer->measure_names()) {
                 int idx = -1;
-                for (size_t i = 0; i < schema.num_columns(); ++i) {
-                    const auto& col = schema.column(i);
+                for (size_t i = 0; i < width; ++i) {
+                    const size_t cid = group_col_ids != nullptr ? (*group_col_ids)[i] : i;
+                    const auto& col = schema.column(cid);
                     if (col.name() == name &&
                         (col.type() == FieldType::OLAP_FIELD_TYPE_DOUBLE ||
                          col.type() == FieldType::OLAP_FIELD_TYPE_FLOAT)) {
@@ -143,8 +157,13 @@ Status GeoIndexColumnWriter::feed_block_measures(
                     }
                 }
                 if (idx < 0) {
-                    LOG(WARNING) << "geo index measure column '" << name
-                                 << "' not found or not FLOAT/DOUBLE; sketches disabled";
+                    // Full-width view: the column genuinely doesn't exist (or has a
+                    // wrong type) -- worth a warning. A column-group subset simply
+                    // doesn't carry the measure; another group will.
+                    if (width == schema.num_columns()) {
+                        LOG(WARNING) << "geo index measure column '" << name
+                                     << "' not found or not FLOAT/DOUBLE; sketches disabled";
+                    }
                     block_cols.clear();
                     break;
                 }
@@ -154,14 +173,15 @@ Status GeoIndexColumnWriter::feed_block_measures(
                 state->writer = geo_writer;
                 state->block_cols = std::move(block_cols);
             }
-            break; // at most one geo index per table in the POC
         }
     }
-    // Feed only full-width blocks whose positions line up with the tablet schema.
-    // Vertical compaction initializes segment writers per COLUMN GROUP: its blocks
-    // carry only the group's columns, so schema positions would index out of range
-    // (compaction output then degrades to a v1 file via the completeness check).
-    if (state->writer == nullptr || block->columns() < schema.num_columns()) {
+    if (state->writer == nullptr || block->columns() < width) {
+        return Status::OK();
+    }
+    // A row's cell must be indexed before its measures (the builder's NULL-cell
+    // filter depends on it). In vertical compaction a value group can run BEFORE
+    // the indexed column's group; skipping here degrades that segment to v1.
+    if (state->writer->rows_indexed() < rid_base + num_rows) {
         return Status::OK();
     }
     for (int idx : state->block_cols) {

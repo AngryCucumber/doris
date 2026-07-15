@@ -260,6 +260,66 @@ struct StS2CellId {
     }
 };
 
+// HASI v2b agg-pushdown marker functions (geo_index/HASI_POC.md §7 v2b): the FE
+// plants these as olap-scan virtual-column expressions, so the rewritten plan is
+// exact with NO index involvement -- this row-wise execution IS the fallback
+// semantics. The segment iterator recognizes them by name in the virtual column
+// expression tree and overrides the column with per-leaf sketch folds where the
+// contract-C3 gates allow (see segment_iterator geo agg fold).
+struct GeoAggPartialVal {
+    static constexpr auto NAME = "geo_agg_partial_val";
+    static const size_t NUM_ARGS = 2;
+    using Type = DataTypeFloat64;
+    static Status execute(Block& block, const ColumnNumbers& arguments, size_t result) {
+        DCHECK_EQ(arguments.size(), 2);
+        // Row-wise this is the identity on the measure argument; the kind literal
+        // ('sum'/'min'/'max') only tells the fold which sketch value to use.
+        ColumnPtr val =
+                block.get_by_position(arguments[1]).column->convert_to_full_column_if_const();
+        if (val->is_nullable()) {
+            block.replace_by_position(result, val);
+        } else {
+            auto null_map = ColumnUInt8::create(val->size(), 0);
+            block.replace_by_position(result, ColumnNullable::create(val, std::move(null_map)));
+        }
+        return Status::OK();
+    }
+};
+
+struct GeoAggPartialCnt {
+    static constexpr auto NAME = "geo_agg_partial_cnt";
+    static const size_t NUM_ARGS = 2;
+    using Type = DataTypeInt64;
+    static Status execute(Block& block, const ColumnNumbers& arguments, size_t result) {
+        DCHECK_EQ(arguments.size(), 2);
+        const std::string kind =
+                remove_nullable(block.get_by_position(arguments[0])
+                                        .column->convert_to_full_column_if_const())
+                        ->get_data_at(0)
+                        .to_string();
+        ColumnPtr val =
+                block.get_by_position(arguments[1]).column->convert_to_full_column_if_const();
+        const size_t size = val->size();
+        auto res = ColumnInt64::create(size, 1);
+        if (kind == "cnt") {
+            // count(measure): 1 iff the measure is non-NULL on this row
+            if (const auto* nullable = check_and_get_column<ColumnNullable>(val.get())) {
+                const auto& nm = nullable->get_null_map_data();
+                auto& data = res->get_data();
+                for (size_t i = 0; i < size; ++i) {
+                    data[i] = nm[i] != 0 ? 0 : 1;
+                }
+            }
+        } else if (kind != "rows") { // 'rows': count(*), constant 1 per row
+            return Status::InternalError("geo_agg_partial_cnt: unknown kind '{}'", kind);
+        }
+        auto null_map = ColumnUInt8::create(size, 0);
+        block.replace_by_position(result,
+                                  ColumnNullable::create(std::move(res), std::move(null_map)));
+        return Status::OK();
+    }
+};
+
 struct StAngleSphere {
     static constexpr auto NAME = "st_angle_sphere";
     static const size_t NUM_ARGS = 4;
@@ -956,6 +1016,8 @@ void register_function_geo(SimpleFunctionFactory& factory) {
     factory.register_function<GeoFunction<StY>>();
     factory.register_function<GeoFunction<StDistanceSphere>>();
     factory.register_function<GeoFunction<StS2CellId>>();
+    factory.register_function<GeoFunctionKeepNulls<GeoAggPartialVal>>();
+    factory.register_function<GeoFunctionKeepNulls<GeoAggPartialCnt>>();
     factory.register_function<GeoFunction<StAngleSphere>>();
     factory.register_function<GeoFunction<StAngle>>();
     factory.register_function<GeoFunction<StAzimuth>>();

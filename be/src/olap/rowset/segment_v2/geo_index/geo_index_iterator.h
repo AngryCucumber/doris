@@ -63,6 +63,13 @@ public:
                                          _context ? _context->io_ctx : nullptr);
     }
 
+    Status fold_inside(const std::vector<CellRange>& interior,
+                       const std::vector<int>& measure_idxs, const roaring::Roaring& present,
+                       HasiFoldResult* out) {
+        return _geo_reader->fold_inside(interior, measure_idxs, present, out,
+                                        _context ? _context->io_ctx : nullptr);
+    }
+
     GeoIndexReaderPtr geo_reader() const { return _geo_reader; }
 
 private:

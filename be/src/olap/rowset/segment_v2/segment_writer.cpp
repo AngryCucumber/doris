@@ -326,6 +326,9 @@ Status SegmentWriter::_create_column_writer(uint32_t cid, const TabletColumn& co
 Status SegmentWriter::init(const std::vector<uint32_t>& col_ids, bool has_key) {
     DCHECK(_column_writers.empty());
     DCHECK(_column_ids.empty());
+    // v2b: measure-feed resolution is per column-group view (block positions change
+    // with col_ids, and the previous group's writer pointer died with clear()).
+    _geo_measure_state = GeoMeasureFeedState();
     _has_key = has_key;
     _column_writers.reserve(_tablet_schema->columns().size());
     _column_ids.insert(_column_ids.end(), col_ids.begin(), col_ids.end());
@@ -1017,6 +1020,12 @@ Status SegmentWriter::finalize_columns_index(uint64_t* index_size) {
 }
 
 Status SegmentWriter::finalize_footer(uint64_t* segment_file_size) {
+    if (_deferred_geo_writer != nullptr) {
+        // v2b-w2: all column groups have run; write the geo index now (the
+        // IndexFileWriter directory stays open until the rowset build closes it).
+        RETURN_IF_ERROR(_deferred_geo_writer->finish());
+        _deferred_geo_writer.reset();
+    }
     RETURN_IF_ERROR(_write_footer());
     // finish
     RETURN_IF_ERROR(_file_writer->close(true));
@@ -1125,6 +1134,17 @@ Status SegmentWriter::_write_ann_index() {
 
 Status SegmentWriter::_write_geo_index() {
     for (auto& column_writer : _column_writers) {
+        auto* geo_writer = dynamic_cast<GeoIndexColumnWriter*>(column_writer->geo_index_writer());
+        if (geo_writer != nullptr && geo_writer->measures_pending() &&
+            _deferred_geo_writer == nullptr) {
+            // v2b-w2: measures were declared but not fully fed -- in the vertical
+            // compaction column-group flow they live in a LATER group. Keep the
+            // builder alive on this segment writer (the group's column writers are
+            // cleared next) and write the file at footer time; the completeness
+            // check there still degrades to v1 if the measures never arrive.
+            _deferred_geo_writer = column_writer->release_geo_index_writer();
+            continue;
+        }
         RETURN_IF_ERROR(column_writer->write_geo_index());
     }
     return Status::OK();
@@ -1134,9 +1154,9 @@ Status SegmentWriter::_write_geo_index() {
 // ever see their own column, so the block-level view lives at segment-writer level).
 Status SegmentWriter::_append_geo_measures(const vectorized::Block* block, size_t row_pos,
                                            size_t num_rows, uint32_t rid_base) {
-    return GeoIndexColumnWriter::feed_block_measures(*_tablet_schema, _column_writers,
-                                                     &_geo_measure_state, block, row_pos,
-                                                     num_rows, rid_base);
+    return GeoIndexColumnWriter::feed_block_measures(
+            *_tablet_schema, _column_writers, _deferred_geo_writer.get(), &_column_ids,
+            &_geo_measure_state, block, row_pos, num_rows, rid_base);
 }
 
 Status SegmentWriter::_write_bloom_filter_index() {

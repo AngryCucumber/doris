@@ -1045,7 +1045,8 @@ Status VerticalSegmentWriter::write_batch() {
         // v2b: flush blocks are full-width, so the geo measure columns are visible
         // here; feed them in the same rowid order the cell feed used.
         RETURN_IF_ERROR(GeoIndexColumnWriter::feed_block_measures(
-                *_tablet_schema, _column_writers, &_geo_measure_state, data.block, data.row_pos,
+                *_tablet_schema, _column_writers, /*retained_geo_writer=*/nullptr,
+                /*group_col_ids=*/nullptr, &_geo_measure_state, data.block, data.row_pos,
                 data.num_rows, _num_rows_written));
         _num_rows_written += data.num_rows;
     }

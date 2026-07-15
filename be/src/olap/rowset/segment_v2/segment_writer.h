@@ -226,8 +226,12 @@ private:
     std::unique_ptr<ShortKeyIndexBuilder> _short_key_index_builder;
     std::unique_ptr<PrimaryKeyIndexBuilder> _primary_key_index_builder;
     std::vector<std::unique_ptr<ColumnWriter>> _column_writers;
-    // v2b geo measure feeding state (resolved lazily on the first block)
+    // v2b geo measure feeding state (resolved lazily on the first block, reset at
+    // every column-group init)
     GeoMeasureFeedState _geo_measure_state;
+    // v2b-w2: geo index writer released by the indexed column's group so later
+    // measure groups can keep feeding it; finished in finalize_footer
+    std::unique_ptr<IndexColumnWriter> _deferred_geo_writer;
     std::unique_ptr<MemTracker> _mem_tracker;
 
     std::unique_ptr<vectorized::OlapBlockDataConvertor> _olap_data_convertor;

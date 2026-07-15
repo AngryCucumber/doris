@@ -265,7 +265,10 @@ suite("geo_index_range_search") {
         `lon` double null,
         `lat` double null,
         `val` double null,
-        INDEX idx_geo(`__s2`) USING GEO PROPERTIES("leaf_rows" = "1024", "measures" = "val")
+        -- leaf_rows=64: with ~2.5k rows over a ±0.5° grid, wider leaves span the
+        -- Hilbert gaps between interior covering ranges and nothing whole-leaf
+        -- folds; 64-row leaves are narrow enough for the v2b fold to fire
+        INDEX idx_geo(`__s2`) USING GEO PROPERTIES("leaf_rows" = "64", "measures" = "val")
     ) engine=olap
     duplicate key(`__s2`)
     distributed by hash(`id`) buckets 2
@@ -297,9 +300,106 @@ suite("geo_index_range_search") {
     // sum over the region must agree regardless of geo switches (aggregation still
     // runs row-wise pre-v2b-query-integration; this pins the baseline it must match)
     sql "set enable_geo_index_query=true;"
+    sql "set enable_geo_agg_pushdown=false;"
     def sumOn = sql "select count(val), sum(val), min(val), max(val) from geo_index_meas_t where st_distance_sphere(lon, lat, 116.40, 39.90) < 30000"
     sql "set enable_geo_index_query=false;"
     def sumOff = sql "select count(val), sum(val), min(val), max(val) from geo_index_meas_t where st_distance_sphere(lon, lat, 116.40, 39.90) < 30000"
     assertEquals(sumOff, sumOn, "[v2b measures table] aggregate mismatch")
     sql "set enable_geo_index_query=true;"
+    sql "set enable_geo_agg_pushdown=true;"
+
+    // ---- 7. v2b aggregate pushdown: sum/min/max/count answered from leaf sketches.
+    // Three configs must agree on every aggregate shape (fold / row path / full
+    // scan); sums compare with a tiny relative tolerance since a folded double sum
+    // is a differently-ordered reduction. The profile must show GeoAggFoldedLeaves
+    // > 0 both before and after compaction -- the latter proves the cross-column-
+    // group measure feeding kept sketches through the compaction rewrite. ----
+    def aggCompare = { Object a, Object b, String msg ->
+        if (a == null || b == null) {
+            assertEquals(a, b, msg)
+        } else if (a instanceof Double || a instanceof BigDecimal) {
+            double da = ((Number) a).doubleValue()
+            double db = ((Number) b).doubleValue()
+            assertTrue(Math.abs(da - db) <= 1e-9 * Math.max(1.0d, Math.abs(da)),
+                    "${msg}: ${da} vs ${db}")
+        } else {
+            assertEquals(a, b, msg)
+        }
+    }
+    def aggBattery = { String phase ->
+        def aggQueries = [
+            // fold-hot: the circle swallows the whole grid, interior leaves exist
+            "select count(*), count(val), sum(val), min(val), max(val) from geo_index_meas_t where st_distance_sphere(lon, lat, 116.40, 39.90) < 80000",
+            // boundary-dominated shapes
+            "select count(*), count(val), sum(val), min(val), max(val) from geo_index_meas_t where st_distance_sphere(lon, lat, 116.40, 39.90) < 30000",
+            "select sum(val), max(val) from geo_index_meas_t where st_distance_sphere(lon, lat, 116.40, 39.90) <= 5000",
+            // empty result: count must be 0 (not NULL), sum NULL -- the coalesce path
+            "select count(*), count(val), sum(val) from geo_index_meas_t where st_distance_sphere(lon, lat, 10.0, 10.0) < 100",
+            // shapes the rewrite must SKIP but stay correct: unsupported func,
+            // extra conjunct, group by
+            "select avg(val), sum(val) from geo_index_meas_t where st_distance_sphere(lon, lat, 116.40, 39.90) < 80000",
+            "select sum(val) from geo_index_meas_t where st_distance_sphere(lon, lat, 116.40, 39.90) < 80000 and id > 100",
+            "select id % 3, sum(val) from geo_index_meas_t where st_distance_sphere(lon, lat, 116.40, 39.90) < 80000 group by id % 3 order by 1",
+        ]
+        aggQueries.eachWithIndex { q, qi ->
+            sql "set enable_geo_index_query=true; "
+            sql "set enable_geo_index_exact_filter=true;"
+            sql "set enable_geo_agg_pushdown=true;"
+            def fold = sql q
+            sql "set enable_geo_agg_pushdown=false;"
+            def rowPath = sql q
+            sql "set enable_geo_index_query=false;"
+            def fullScan = sql q
+            sql "set enable_geo_index_query=true;"
+            sql "set enable_geo_agg_pushdown=true;"
+            assertEquals(rowPath.size(), fold.size(), "[v2b-agg ${phase} q${qi}] row count")
+            assertEquals(fullScan.size(), fold.size(), "[v2b-agg ${phase} q${qi}] row count vs full scan")
+            for (int r = 0; r < fold.size(); r++) {
+                for (int c = 0; c < fold[r].size(); c++) {
+                    aggCompare(rowPath[r][c], fold[r][c], "[v2b-agg ${phase} q${qi}] cell(${r},${c}) fold vs row-path")
+                    aggCompare(fullScan[r][c], fold[r][c], "[v2b-agg ${phase} q${qi}] cell(${r},${c}) fold vs full-scan")
+                }
+            }
+        }
+    }
+    def assertFolded = { String tag ->
+        sql "set profile_level=2;"
+        sql "set enable_profile=true;"
+        def foldToken = "geo_v2b_fold_${tag}_" + System.currentTimeMillis()
+        sql """select /* ${foldToken} */ count(*), count(val), sum(val), min(val), max(val)
+               from geo_index_meas_t where st_distance_sphere(lon, lat, 116.40, 39.90) < 80000"""
+        String foldProfileId = ""
+        int foldAttempts = 0
+        while (foldAttempts < 10 && (foldProfileId == null || foldProfileId == "")) {
+            List profileData = new JsonSlurper().parseText(getProfileList()).data.rows
+            for (def profileItem in profileData) {
+                if (profileItem["Sql Statement"].toString().contains(foldToken)) {
+                    foldProfileId = profileItem["Profile ID"].toString()
+                    break
+                }
+            }
+            if (foldProfileId == null || foldProfileId == "") {
+                Thread.sleep(300)
+            }
+            foldAttempts++
+        }
+        assertTrue(foldProfileId != null && foldProfileId != "",
+                "profile for tagged geo agg query not found (${tag})")
+        Thread.sleep(800)
+        def foldProfile = getProfile(foldProfileId).toString()
+        def foldLines = foldProfile.split("\n").findAll { it.contains("GeoAggFoldedLeaves") }
+        assertTrue(!foldLines.isEmpty(), "GeoAggFoldedLeaves missing from profile (${tag})")
+        def anyFolded = foldLines.any { line ->
+            def m = (line =~ /GeoAggFoldedLeaves:\s*([0-9.]+)/)
+            m.find() && Double.parseDouble(m.group(1)) > 0
+        }
+        assertTrue(anyFolded,
+                "no leaves folded for a grid-swallowing circle (${tag}): " + foldLines.join(" | "))
+        sql "set enable_profile=false;"
+    }
+    aggBattery("flush")
+    assertFolded("flush")
+    trigger_and_wait_compaction("geo_index_meas_t", "full")
+    aggBattery("compacted")
+    assertFolded("compacted")
 }

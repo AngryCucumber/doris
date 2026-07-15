@@ -790,7 +790,9 @@ Status ScalarColumnWriter::write_inverted_index() {
 }
 
 Status ScalarColumnWriter::write_geo_index() {
-    if (_opts.need_geo_index) {
+    // null after release_geo_index_writer(): the segment writer took ownership and
+    // finishes the index itself at footer time (v2b-w2 deferred write).
+    if (_opts.need_geo_index && _geo_index_writer != nullptr) {
         RETURN_IF_ERROR(_geo_index_writer->finish());
     }
     return Status::OK();

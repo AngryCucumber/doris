@@ -73,7 +73,9 @@ class ColumnIterator;
 class InvertedIndexIterator;
 class RowRanges;
 class IndexIterator;
+class GeoIndexIterator;
 struct GeoRangeSearchRuntime;
+struct CellRange;
 
 struct ColumnPredicateInfo {
     ColumnPredicateInfo() = default;
@@ -200,6 +202,20 @@ private:
     [[nodiscard]] Status _resolve_geo_exact_rows(const GeoRangeSearchRuntime& runtime,
                                                  const std::vector<uint32_t>& rowids,
                                                  roaring::Roaring* hit);
+    // v2b: whole-leaf sketch fold into the geo_agg_partial_* virtual columns; called
+    // after the circle predicate was consumed exactly. pre_geo_bitmap is the row
+    // bitmap BEFORE the circle narrowed it (fold gate: a leaf folds only when fully
+    // present there). No-op when any contract-C3 gate fails -- the marker functions'
+    // own row-wise execution is the correct fallback.
+    [[nodiscard]] Status _apply_geo_agg_fold(GeoIndexIterator* geo_iterator,
+                                             const std::vector<CellRange>& interior,
+                                             const roaring::Roaring& pre_geo_bitmap);
+    // Patches the representative row's geo_agg virtual columns in an output block.
+    [[nodiscard]] Status _patch_geo_agg_rep_row(vectorized::Block* block);
+    // Reads one FLOAT/DOUBLE column at the given rowids (nullable-aware).
+    [[nodiscard]] Status _read_double_column(ColumnId cid, const std::vector<uint32_t>& rowids,
+                                             std::vector<double>* vals,
+                                             std::vector<uint8_t>* nulls);
     [[nodiscard]] Status _apply_index_expr();
 
     bool _column_has_fulltext_index(int32_t cid);
@@ -514,6 +530,20 @@ private:
     // cid to virtual column expr
     std::map<ColumnId, vectorized::VExprContextSPtr> _virtual_column_exprs;
     std::map<ColumnId, size_t> _vir_cid_to_idx_in_block;
+
+    // v2b geo agg fold: merged sketch values to overwrite on the representative
+    // row's marker virtual columns (one entry per marker, set by
+    // _apply_geo_agg_fold, consumed by _patch_geo_agg_rep_row)
+    struct GeoAggRepPatch {
+        ColumnId cid = 0;
+        bool is_int = false;
+        bool is_null = false;
+        int64_t ival = 0;
+        double dval = 0;
+    };
+    std::vector<GeoAggRepPatch> _geo_agg_rep_patches;
+    uint32_t _geo_agg_rep_rid = 0;
+    bool _geo_agg_fold_active = false;
 
     IndexQueryContextPtr _index_query_context;
 

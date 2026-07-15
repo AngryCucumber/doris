@@ -186,6 +186,11 @@ public:
     // ever see their own column.
     virtual IndexColumnWriter* geo_index_writer() const { return nullptr; }
 
+    // v2b-w2: transfers geo index writer ownership to the segment writer so it can
+    // outlive this column writer (vertical compaction destroys the writer set at
+    // each column-group switch, but the measures arrive in a later group).
+    virtual std::unique_ptr<IndexColumnWriter> release_geo_index_writer() { return nullptr; }
+
     virtual Status write_bloom_filter_index() = 0;
 
     virtual ordinal_t get_next_rowid() const = 0;
@@ -244,6 +249,9 @@ public:
     Status write_inverted_index() override;
     Status write_geo_index() override;
     IndexColumnWriter* geo_index_writer() const override { return _geo_index_writer.get(); }
+    std::unique_ptr<IndexColumnWriter> release_geo_index_writer() override {
+        return std::move(_geo_index_writer);
+    }
     Status write_bloom_filter_index() override;
     ordinal_t get_next_rowid() const override { return _next_rowid; }
 

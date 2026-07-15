@@ -71,6 +71,23 @@ struct HasiLeafMeasure {
     double min = std::numeric_limits<double>::infinity();
     double max = -std::numeric_limits<double>::infinity();
     uint32_t non_null = 0;
+
+    void merge(const HasiLeafMeasure& o) {
+        sum += o.sum;
+        min = std::min(min, o.min);
+        max = std::max(max, o.max);
+        non_null += o.non_null;
+    }
+};
+
+// Result of HasiTree::fold_inside (v2b query-side whole-leaf folding).
+struct HasiFoldResult {
+    // rid ranges [begin, end) of folded leaves, ascending; the caller elides them
+    // from its row bitmap and emits one representative row carrying `measures`.
+    std::vector<std::pair<uint32_t, uint32_t>> folded_ranges;
+    std::vector<HasiLeafMeasure> measures; // merged, one entry per requested measure
+    uint64_t folded_rows = 0;              // rows elided == count(*) contribution
+    uint32_t folded_leaves = 0;
 };
 
 // Streaming single-pass builder (O(1) state per open leaf, no row buffering).
@@ -200,6 +217,20 @@ public:
                             const std::vector<CellRange>& interior, int measure_idx,
                             HasiLeafMeasure* inside_agg, uint64_t* inside_rows,
                             std::vector<uint32_t>* boundary_rids, HasiSearchStats* stats) const;
+
+    // v2b query-side whole-leaf fold. Selects the leaves whose EVERY row provably
+    // passes the region predicate and every conjunct the caller may re-evaluate
+    // downstream, and merges their sketches for the requested measures:
+    //   - leaf cell range fully inside the interior covering,
+    //   - null_count == 0 (a NULL-cell row would fail the predicate, and downstream
+    //     __s2 envelope conjuncts could filter a NULL representative row), and
+    //   - `present` contains the whole rid range (nothing was removed by delete
+    //     bitmaps, key pruning, or earlier predicates -- contract C3 is the caller's
+    //     job, this check just makes partial leaves fall back to the row path).
+    // Leaves that fail any gate are left for the caller's per-row path untouched.
+    Status fold_inside(const std::vector<CellRange>& interior,
+                       const std::vector<int>& measure_idxs, const roaring::Roaring& present,
+                       HasiFoldResult* out) const;
 
 private:
     struct Leaf {

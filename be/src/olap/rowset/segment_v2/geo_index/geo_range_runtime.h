@@ -94,6 +94,21 @@ double covering_keyspace_fraction(const std::vector<CellRange>& covering);
 // leaf cell (max leaf diagonal is < 2 cm; 5 cm is comfortably conservative).
 inline constexpr double kGeoCellQuantizationMeters = 0.05;
 
+// ---- v2b aggregate pushdown markers ----
+// One scan virtual column recognized as geo_agg_partial_val('sum'|'min'|'max', m)
+// or geo_agg_partial_cnt('cnt'|'rows', m). The FE plants these so the plan is exact
+// row-wise (the functions' own execution); the segment iterator overrides folded
+// leaves with sketch values keyed by this descriptor.
+struct GeoAggFoldSlot {
+    enum class Kind { SUM, MIN, MAX, CNT, ROWS };
+    Kind kind = Kind::SUM;
+    // VSlotRef::column_id() of the measure argument (position in the read schema).
+    int measure_idx_in_block = -1;
+};
+
+// Matches the marker function tree; returns false on any other shape.
+bool extract_geo_agg_partial(const vectorized::VExpr* root, GeoAggFoldSlot* out);
+
 // v1.5 exact filtering: classify margin rows (cell ∈ C∖I) hierarchically against
 // the circle (see s2_covering.h::classify_margin_cells). Only the ~2 m ambiguity
 // annulus around the circle boundary lands in `need_exact` for a true-coordinate

@@ -75,12 +75,28 @@ public:
         return _builder->add_measure_row(rid, values, nulls);
     }
 
-    // Block-level feeder used by both segment writers: resolves the geo writer and
-    // the FLOAT/DOUBLE measure columns lazily (a missing/mistyped column disables
-    // feeding; finish() then degrades the file to v1), then streams rows
-    // [rid_base, rid_base + num_rows) from block[row_pos...].
+    // v2b-w2: cross-column-group support. Cells indexed so far (the NULL-cell filter
+    // needs a row's cell before its measures), and whether measures were declared
+    // but not completely fed yet (the segment writer then defers finish() past the
+    // remaining column groups instead of degrading to v1 here).
+    uint32_t rows_indexed() const { return _builder == nullptr ? 0 : _builder->num_rows(); }
+    bool measures_pending() const {
+        return _builder != nullptr && _builder->has_measures_attached() &&
+               _builder->measure_rows_fed() != _builder->num_rows();
+    }
+
+    // Block-level feeder used by both segment writers: resolves the geo writer
+    // (from the current writer set or `retained_geo_writer`, the deferred writer a
+    // previous column group released) and the FLOAT/DOUBLE measure columns lazily,
+    // then streams rows [rid_base, rid_base + num_rows) from block[row_pos...].
+    // `group_col_ids` maps block positions to tablet-schema cids (vertical
+    // compaction column groups); nullptr means block positions == schema positions.
+    // A measure column missing from this group's view simply skips feeding here --
+    // finish() degrades the file to v1 unless some group fed every row.
     static Status feed_block_measures(const TabletSchema& schema,
                                       const std::vector<std::unique_ptr<ColumnWriter>>& writers,
+                                      IndexColumnWriter* retained_geo_writer,
+                                      const std::vector<uint32_t>* group_col_ids,
                                       GeoMeasureFeedState* state, const vectorized::Block* block,
                                       size_t row_pos, size_t num_rows, uint32_t rid_base);
 
