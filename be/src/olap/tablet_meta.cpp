@@ -321,6 +321,9 @@ TabletMeta::TabletMeta(int64_t table_id, int64_t partition_id, int64_t tablet_id
             case TIndexType::BLOOMFILTER:
                 index_pb->set_index_type(IndexType::BLOOMFILTER);
                 break;
+            case TIndexType::GEO:
+                index_pb->set_index_type(IndexType::GEO);
+                break;
             case TIndexType::NGRAM_BF:
                 index_pb->set_index_type(IndexType::NGRAM_BF);
                 break;

@@ -324,6 +324,11 @@ Status OlapScanLocalState::_init_profile() {
     */
     _ann_range_search_filter_counter =
             ADD_COUNTER(_segment_profile, "AnnIndexRangeSearchFiltered", TUnit::UNIT);
+    _geo_index_filter_counter = ADD_COUNTER(_segment_profile, "RowsGeoIndexFiltered", TUnit::UNIT);
+    _geo_boundary_recheck_counter =
+            ADD_COUNTER(_segment_profile, "GeoBoundaryRecheckRows", TUnit::UNIT);
+    _geo_boundary_leaves_counter =
+            ADD_COUNTER(_segment_profile, "GeoBoundaryLeaves", TUnit::UNIT);
     _ann_topn_filter_counter = ADD_COUNTER(_segment_profile, "AnnIndexTopNFiltered", TUnit::UNIT);
 
     _ann_topn_search_costs = ADD_TIMER(_segment_profile, "AnnIndexTopNSearchCosts");

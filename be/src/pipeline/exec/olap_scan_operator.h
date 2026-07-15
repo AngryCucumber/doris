@@ -244,6 +244,9 @@ private:
     RuntimeProfile::Counter* _ann_topn_result_convert_costs = nullptr;
 
     RuntimeProfile::Counter* _ann_range_search_filter_counter = nullptr;
+    RuntimeProfile::Counter* _geo_index_filter_counter = nullptr;
+    RuntimeProfile::Counter* _geo_boundary_recheck_counter = nullptr;
+    RuntimeProfile::Counter* _geo_boundary_leaves_counter = nullptr;
     // range_Search_costs = index_load_costs + engine_search_costs + pre_process_costs + post_process_costs
     RuntimeProfile::Counter* _ann_range_search_costs = nullptr;
     RuntimeProfile::Counter* _ann_range_search_cnt = nullptr;

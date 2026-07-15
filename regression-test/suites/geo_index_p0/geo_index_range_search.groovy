@@ -1,0 +1,201 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+// CONDITIONS OF ANY KIND, either express or implied.  See the License
+// for the specific language governing permissions and limitations
+// under the License.
+
+import groovy.json.JsonSlurper
+
+def getProfileList = {
+    def dst = 'http://' + context.config.feHttpAddress
+    def conn = new URL(dst + "/rest/v1/query_profile").openConnection()
+    conn.setRequestMethod("GET")
+    def encoding = Base64.getEncoder().encodeToString((context.config.feHttpUser + ":" +
+            (context.config.feHttpPassword == null ? "" : context.config.feHttpPassword)).getBytes("UTF-8"))
+    conn.setRequestProperty("Authorization", "Basic ${encoding}")
+    return conn.getInputStream().getText()
+}
+
+def getProfile = { id ->
+    def dst = 'http://' + context.config.feHttpAddress
+    def conn = new URL(dst + "/api/profile/text/?query_id=$id").openConnection()
+    conn.setRequestMethod("GET")
+    def encoding = Base64.getEncoder().encodeToString((context.config.feHttpUser + ":" +
+            (context.config.feHttpPassword == null ? "" : context.config.feHttpPassword)).getBytes("UTF-8"))
+    conn.setRequestProperty("Authorization", "Basic ${encoding}")
+    return conn.getInputStream().getText()
+}
+
+// HASI geo index v1 backtest (design doc HASI_POC.md §7 v1 / §8.1): the GEO index must
+// only ever narrow the row bitmap, so enabling/disabling `enable_geo_index_query` must be
+// bit-exact for every query, across multiple segments, after compaction, after MOW
+// deletes, and for the non-key predicate-filter form. Index effectiveness is asserted
+// separately through the RowsGeoIndexFiltered profile counter.
+suite("geo_index_range_search") {
+    sql "SET enable_nereids_planner=true;"
+    sql "SET enable_fallback_to_original_planner=false;"
+
+    def insertGrid = { String table ->
+        def centers = [[116.40d, 39.90d], [179.95d, 10.0d], [0.0d, 89.8d], [45.0d, 0.0d]]
+        long id = 0
+        // several INSERT batches -> several rowsets/segments before compaction
+        centers.each { c ->
+            def insertValues = []
+            for (double dLon = -1.0; dLon <= 1.0; dLon += 0.05) {
+                for (double dLat = -1.0; dLat <= 1.0; dLat += 0.05) {
+                    double lon = c[0] + dLon
+                    if (lon > 180.0) lon -= 360.0
+                    if (lon < -180.0) lon += 360.0
+                    double lat = Math.max(-90.0d, Math.min(90.0d, c[1] + dLat))
+                    insertValues << "(${id++}, ${lon}, ${lat})"
+                }
+            }
+            insertValues << "(${id++}, null, 40.0)"
+            insertValues.collate(500).each { chunk ->
+                sql "insert into ${table}(id, lon, lat) values ${chunk.join(',')}"
+            }
+        }
+        sql "sync"
+    }
+
+    def queries = [
+            [116.40d, 39.90d, 5000.0d],
+            [116.40d, 39.90d, 50000.0d],
+            [179.95d, 10.0d, 30000.0d],     // antimeridian wrap
+            [0.0d, 89.8d, 20000.0d],        // near pole
+            [45.0d, 0.0d, 15000.0d],        // s2 face edge
+            [116.40d, 39.90d, 1.0d],        // near-empty result
+    ]
+
+    def checkOnOff = { String table, String tag ->
+        queries.each { q ->
+            ["<", "<="].each { op ->
+                def query = """select id from ${table}
+                               where st_distance_sphere(lon, lat, ${q[0]}, ${q[1]}) ${op} ${q[2]}
+                               order by id"""
+                sql "set enable_geo_index_query=true;"
+                def withIndex = sql query
+                sql "set enable_geo_index_query=false;"
+                def withoutIndex = sql query
+                assertEquals(withoutIndex, withIndex,
+                        "[${tag}] geo index changed results for center=(${q[0]},${q[1]}) r=${q[2]} op=${op}")
+            }
+        }
+        // mirrored operand order
+        sql "set enable_geo_index_query=true;"
+        def mirroredOn = sql "select count(*) from ${table} where 50000 > st_distance_sphere(lon, lat, 116.40, 39.90)"
+        sql "set enable_geo_index_query=false;"
+        def mirroredOff = sql "select count(*) from ${table} where 50000 > st_distance_sphere(lon, lat, 116.40, 39.90)"
+        assertEquals(mirroredOff, mirroredOn, "[${tag}] mirrored form mismatch")
+        sql "set enable_geo_index_query=true;"
+    }
+
+    // ---- 1. DUP table, __s2 generated column as sort key + GEO index ----
+    sql "drop table if exists geo_index_dup_t"
+    sql """
+    create table geo_index_dup_t (
+        `__s2` bigint generated always as (st_s2_cellid(`lon`, `lat`)) null,
+        `id` bigint not null,
+        `lon` double null,
+        `lat` double null,
+        INDEX idx_geo(`__s2`) USING GEO PROPERTIES("leaf_rows" = "1024")
+    ) engine=olap
+    duplicate key(`__s2`)
+    distributed by hash(`id`) buckets 4
+    properties("replication_num" = "1", "disable_auto_compaction" = "true");
+    """
+    insertGrid("geo_index_dup_t")
+    checkOnOff("geo_index_dup_t", "dup-multi-segment")
+
+    // ---- 2. compaction rebuilds the index through the normal write path ----
+    trigger_and_wait_compaction("geo_index_dup_t", "full")
+    checkOnOff("geo_index_dup_t", "dup-after-compaction")
+
+    // ---- 3. index effectiveness: RowsGeoIndexFiltered > 0 in the profile ----
+    sql "set profile_level=2;"
+    sql "set enable_profile=true;"
+    sql "set enable_geo_index_query=true;"
+    def token = "geo_v1_profile_" + System.currentTimeMillis()
+    sql """select /* ${token} */ count(id) from geo_index_dup_t
+           where st_distance_sphere(lon, lat, 116.40, 39.90) < 5000"""
+    String profileId = ""
+    int attempts = 0
+    while (attempts < 10 && (profileId == null || profileId == "")) {
+        List profileData = new JsonSlurper().parseText(getProfileList()).data.rows
+        for (def profileItem in profileData) {
+            if (profileItem["Sql Statement"].toString().contains(token)) {
+                profileId = profileItem["Profile ID"].toString()
+                break
+            }
+        }
+        if (profileId == null || profileId == "") {
+            Thread.sleep(300)
+        }
+        attempts++
+    }
+    assertTrue(profileId != null && profileId != "", "profile for tagged geo query not found")
+    Thread.sleep(800)
+    def profileText = getProfile(profileId).toString()
+    def filteredLines = profileText.split("\n").findAll { it.contains("RowsGeoIndexFiltered") }
+    assertTrue(!filteredLines.isEmpty(), "RowsGeoIndexFiltered counter missing from profile")
+    // every pipeline instance prints its own counter line; the index is effective if any
+    // instance filtered rows
+    def anyFiltered = filteredLines.any { line ->
+        def m = (line =~ /RowsGeoIndexFiltered:\s*([0-9.]+)/)
+        m.find() && Double.parseDouble(m.group(1)) > 0
+    }
+    assertTrue(anyFiltered,
+            "geo index filtered no rows for a city circle: " + filteredLines.join(" | "))
+    sql "set enable_profile=false;"
+
+    // ---- 4. UNIQUE MOW + CLUSTER BY, upsert + delete, on/off stays bit-exact ----
+    sql "drop table if exists geo_index_mow_t"
+    sql """
+    create table geo_index_mow_t (
+        `id` bigint not null,
+        `__s2` bigint generated always as (st_s2_cellid(`lon`, `lat`)) null,
+        `lon` double null,
+        `lat` double null,
+        INDEX idx_geo(`__s2`) USING GEO PROPERTIES("leaf_rows" = "1024")
+    ) engine=olap
+    unique key(`id`)
+    cluster by(`__s2`)
+    distributed by hash(`id`) buckets 4
+    properties("replication_num" = "1", "enable_unique_key_merge_on_write" = "true");
+    """
+    insertGrid("geo_index_mow_t")
+    // move a batch of points (MOW upsert) and hard-delete another batch
+    sql "insert into geo_index_mow_t(id, lon, lat) select id, lon + 0.5, lat from geo_index_mow_t where id between 100 and 200"
+    sql "delete from geo_index_mow_t where id between 300 and 400"
+    sql "sync"
+    checkOnOff("geo_index_mow_t", "mow-after-upsert-delete")
+
+    // ---- 5. non-key __s2 (pure predicate-filter form): index still only narrows ----
+    sql "drop table if exists geo_index_nokey_t"
+    sql """
+    create table geo_index_nokey_t (
+        `id` bigint not null,
+        `lon` double null,
+        `lat` double null,
+        `__s2` bigint generated always as (st_s2_cellid(`lon`, `lat`)) null,
+        INDEX idx_geo(`__s2`) USING GEO PROPERTIES("leaf_rows" = "1024")
+    ) engine=olap
+    duplicate key(`id`)
+    distributed by hash(`id`) buckets 4
+    properties("replication_num" = "1");
+    """
+    insertGrid("geo_index_nokey_t")
+    checkOnOff("geo_index_nokey_t", "nokey-predicate-filter")
+
+    sql "set enable_geo_index_query=true;"
+}

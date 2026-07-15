@@ -875,6 +875,9 @@ void OlapScanner::_collect_profile_before_close() {
 
     COUNTER_UPDATE(local_state->_ann_range_search_filter_counter,
                    stats.rows_ann_index_range_filtered);
+    COUNTER_UPDATE(local_state->_geo_index_filter_counter, stats.rows_geo_index_filtered);
+    COUNTER_UPDATE(local_state->_geo_boundary_recheck_counter, stats.geo_boundary_recheck_rows);
+    COUNTER_UPDATE(local_state->_geo_boundary_leaves_counter, stats.geo_boundary_leaves);
     COUNTER_UPDATE(local_state->_ann_topn_filter_counter, stats.rows_ann_index_topn_filtered);
     COUNTER_UPDATE(local_state->_ann_index_load_costs, stats.ann_index_load_ns);
     COUNTER_UPDATE(local_state->_ann_range_search_costs, stats.ann_index_range_search_ns);

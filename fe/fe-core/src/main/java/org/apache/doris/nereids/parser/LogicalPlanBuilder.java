@@ -6084,6 +6084,8 @@ public class LogicalPlanBuilder extends DorisParserBaseVisitor<Object> {
             indexType = "INVERTED";
         } else if (ctx.ANN() != null) {
             indexType = "ANN";
+        } else if (ctx.GEO() != null) {
+            indexType = "GEO";
         }
         String comment = ctx.STRING_LITERAL() == null ? "" : stripQuotes(ctx.STRING_LITERAL().getText());
         IndexDefinition indexDefinition = new IndexDefinition(indexName, ifNotExists, indexCols, indexType,

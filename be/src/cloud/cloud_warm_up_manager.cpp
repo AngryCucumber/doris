@@ -318,7 +318,7 @@ void CloudWarmUpManager::handle_jobs() {
                                     });
                         }
                     } else {
-                        if (schema_ptr->has_inverted_index() || schema_ptr->has_ann_index()) {
+                        if (schema_ptr->has_inverted_index() || schema_ptr->has_ann_index() || schema_ptr->has_geo_index()) {
                             auto idx_path =
                                     storage_resource.value()->remote_idx_v2_path(*rs, seg_id);
                             file_size = idx_file_info.has_index_size() ? idx_file_info.index_size()
@@ -662,7 +662,7 @@ Status CloudWarmUpManager::_do_warm_up_rowset(RowsetMeta& rs_meta,
             g_file_cache_event_driven_warm_up_requested_segment_size
                     << rs_meta.segment_file_size(cast_set<int>(segment_id));
 
-            if (schema_ptr->has_inverted_index() || schema_ptr->has_ann_index()) {
+            if (schema_ptr->has_inverted_index() || schema_ptr->has_ann_index() || schema_ptr->has_geo_index()) {
                 if (idx_version == InvertedIndexStorageFormatPB::V1) {
                     auto&& inverted_index_info =
                             rs_meta.inverted_index_file_info(cast_set<int>(segment_id));

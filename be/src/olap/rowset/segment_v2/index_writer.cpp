@@ -18,6 +18,7 @@
 #include "common/exception.h"
 #include "olap/field.h"
 #include "olap/rowset/segment_v2/ann_index/ann_index_writer.h"
+#include "olap/rowset/segment_v2/geo_index/geo_index_writer.h"
 #include "olap/rowset/segment_v2/inverted_index_writer.h"
 
 namespace doris::segment_v2 {
@@ -43,6 +44,11 @@ bool IndexColumnWriter::check_support_inverted_index(const TabletColumn& column)
 bool IndexColumnWriter::check_support_ann_index(const TabletColumn& column) {
     // only array are supported in ann index
     return column.is_array_type();
+}
+
+bool IndexColumnWriter::check_support_geo_index(const TabletColumn& column) {
+    // the geo index is built on the __s2 BIGINT generated column (FE-validated)
+    return column.type() == FieldType::OLAP_FIELD_TYPE_BIGINT;
 }
 
 // create index writer
@@ -128,6 +134,16 @@ Status IndexColumnWriter::create(const Field* field, std::unique_ptr<IndexColumn
     } else if (index_meta->is_ann_index()) {
         DCHECK(type == FieldType::OLAP_FIELD_TYPE_ARRAY);
         *res = std ::make_unique<AnnIndexColumnWriter>(index_file_writer, index_meta);
+        if (*res != nullptr) {
+            auto st = (*res)->init();
+            if (!st.ok()) {
+                (*res)->close_on_error();
+                return st;
+            }
+        }
+    } else if (index_meta->is_geo_index()) {
+        // BIGINT scalar column: deliberately no ARRAY assumption here.
+        *res = std::make_unique<GeoIndexColumnWriter>(index_file_writer, index_meta);
         if (*res != nullptr) {
             auto st = (*res)->init();
             if (!st.ok()) {

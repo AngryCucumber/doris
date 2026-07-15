@@ -336,6 +336,8 @@ public:
 
     bool is_ann_index() const { return _index_type == IndexType::ANN; }
 
+    bool is_geo_index() const { return _index_type == IndexType::GEO; }
+
     void remove_parser_and_analyzer() {
         _properties.erase(INVERTED_INDEX_PARSER_KEY);
         _properties.erase(INVERTED_INDEX_PARSER_KEY_ALIAS);
@@ -522,6 +524,17 @@ public:
         return false;
     }
 
+    bool has_geo_index() const {
+        for (const auto& index : _indexes) {
+            if (index->index_type() == IndexType::GEO) {
+                if (!index->col_unique_ids().empty() && index->col_unique_ids()[0] >= 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     bool has_inverted_index_with_index_id(int64_t index_id) const;
 
     std::vector<const TabletIndex*> inverted_indexs(const TabletColumn& col) const;
@@ -533,6 +546,10 @@ public:
     // Regardless of whether this column supports inverted index
     // TabletIndex information will be returned as long as it exists.
     const TabletIndex* ann_index(int32_t col_unique_id, const std::string& suffix_path = "") const;
+
+    const TabletIndex* geo_index(const TabletColumn& col) const;
+
+    const TabletIndex* geo_index(int32_t col_unique_id, const std::string& suffix_path = "") const;
 
     std::vector<TabletIndexPtr> inverted_index_by_field_pattern(
             int32_t col_unique_id, const std::string& field_pattern) const;

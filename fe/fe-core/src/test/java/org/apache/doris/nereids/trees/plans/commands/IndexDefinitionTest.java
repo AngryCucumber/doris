@@ -17,12 +17,18 @@
 
 package org.apache.doris.nereids.trees.plans.commands;
 
+import org.apache.doris.analysis.ColumnNullableType;
 import org.apache.doris.catalog.AggregateType;
 import org.apache.doris.catalog.KeysType;
+import org.apache.doris.nereids.analyzer.UnboundFunction;
+import org.apache.doris.nereids.analyzer.UnboundSlot;
 import org.apache.doris.nereids.exceptions.AnalysisException;
+import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.plans.commands.info.ColumnDefinition;
+import org.apache.doris.nereids.trees.plans.commands.info.GeneratedColumnDesc;
 import org.apache.doris.nereids.trees.plans.commands.info.IndexDefinition;
 import org.apache.doris.nereids.types.ArrayType;
+import org.apache.doris.nereids.types.BigIntType;
 import org.apache.doris.nereids.types.FloatType;
 import org.apache.doris.nereids.types.IntegerType;
 import org.apache.doris.nereids.types.MapType;
@@ -177,5 +183,84 @@ public class IndexDefinitionTest {
                 def.checkColumn(new ColumnDefinition("col1", StringType.INSTANCE, false, AggregateType.NONE, true, null,
                                                      "comment"),
                                 KeysType.DUP_KEYS, false, null));
+    }
+
+    private ColumnDefinition geoColumn(String name, org.apache.doris.nereids.types.DataType type,
+            Expression generatedExpr) {
+        java.util.Optional<GeneratedColumnDesc> desc = generatedExpr == null
+                ? java.util.Optional.empty()
+                : java.util.Optional.of(new GeneratedColumnDesc("gen", generatedExpr));
+        return new ColumnDefinition(name, type, false, null, ColumnNullableType.NULLABLE, -1,
+                java.util.Optional.empty(), java.util.Optional.empty(), "comment", desc);
+    }
+
+    @Test
+    void testGeoIndex() {
+        Expression s2Expr = new UnboundFunction("st_s2_cellid",
+                Lists.newArrayList(new UnboundSlot("lon"), new UnboundSlot("lat")));
+
+        // valid: BIGINT generated st_s2_cellid column on DUP table; lng/lat column names
+        // must be recorded into the index properties for the BE to match predicates.
+        IndexDefinition def = new IndexDefinition("idx_geo", false, Lists.newArrayList("__s2"),
+                "GEO", new HashMap<>(), "geo test");
+        def.checkColumn(geoColumn("__s2", BigIntType.INSTANCE, s2Expr),
+                KeysType.DUP_KEYS, false, TInvertedIndexFileStorageFormat.V2);
+        Assertions.assertEquals("lon", def.getProperties().get("lng_column"));
+        Assertions.assertEquals("lat", def.getProperties().get("lat_column"));
+
+        // valid: UNIQUE MOW
+        new IndexDefinition("idx_geo", false, Lists.newArrayList("__s2"), "GEO", new HashMap<>(),
+                "geo test").checkColumn(geoColumn("__s2", BigIntType.INSTANCE, s2Expr),
+                KeysType.UNIQUE_KEYS, true, TInvertedIndexFileStorageFormat.V2);
+
+        // invalid: UNIQUE without MOW / AGG
+        Assertions.assertThrows(AnalysisException.class, () ->
+                new IndexDefinition("idx_geo", false, Lists.newArrayList("__s2"), "GEO",
+                        new HashMap<>(), "geo test").checkColumn(
+                        geoColumn("__s2", BigIntType.INSTANCE, s2Expr),
+                        KeysType.UNIQUE_KEYS, false, TInvertedIndexFileStorageFormat.V2));
+        Assertions.assertThrows(AnalysisException.class, () ->
+                new IndexDefinition("idx_geo", false, Lists.newArrayList("__s2"), "GEO",
+                        new HashMap<>(), "geo test").checkColumn(
+                        geoColumn("__s2", BigIntType.INSTANCE, s2Expr),
+                        KeysType.AGG_KEYS, false, TInvertedIndexFileStorageFormat.V2));
+
+        // invalid: not BIGINT
+        Assertions.assertThrows(AnalysisException.class, () ->
+                new IndexDefinition("idx_geo", false, Lists.newArrayList("__s2"), "GEO",
+                        new HashMap<>(), "geo test").checkColumn(
+                        geoColumn("__s2", IntegerType.INSTANCE, s2Expr),
+                        KeysType.DUP_KEYS, false, TInvertedIndexFileStorageFormat.V2));
+
+        // invalid: plain (non-generated) BIGINT column
+        Assertions.assertThrows(AnalysisException.class, () ->
+                new IndexDefinition("idx_geo", false, Lists.newArrayList("__s2"), "GEO",
+                        new HashMap<>(), "geo test").checkColumn(
+                        geoColumn("__s2", BigIntType.INSTANCE, null),
+                        KeysType.DUP_KEYS, false, TInvertedIndexFileStorageFormat.V2));
+
+        // invalid: generated from a different function
+        Assertions.assertThrows(AnalysisException.class, () ->
+                new IndexDefinition("idx_geo", false, Lists.newArrayList("__s2"), "GEO",
+                        new HashMap<>(), "geo test").checkColumn(
+                        geoColumn("__s2", BigIntType.INSTANCE, new UnboundFunction("abs",
+                                Lists.newArrayList((Expression) new UnboundSlot("lon")))),
+                        KeysType.DUP_KEYS, false, TInvertedIndexFileStorageFormat.V2));
+
+        // invalid property
+        Map<String, String> badProps = new HashMap<>();
+        badProps.put("leaf_rows", "not_a_number");
+        Assertions.assertThrows(AnalysisException.class, () ->
+                new IndexDefinition("idx_geo", false, Lists.newArrayList("__s2"), "GEO",
+                        badProps, "geo test").validate());
+        Map<String, String> unknownProps = new HashMap<>();
+        unknownProps.put("no_such_prop", "1");
+        Assertions.assertThrows(AnalysisException.class, () ->
+                new IndexDefinition("idx_geo", false, Lists.newArrayList("__s2"), "GEO",
+                        unknownProps, "geo test").validate());
+        Map<String, String> goodProps = new HashMap<>();
+        goodProps.put("leaf_rows", "8192");
+        new IndexDefinition("idx_geo", false, Lists.newArrayList("__s2"), "GEO", goodProps,
+                "geo test").validate();
     }
 }

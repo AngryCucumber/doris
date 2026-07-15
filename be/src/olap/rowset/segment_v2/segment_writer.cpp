@@ -240,6 +240,11 @@ Status SegmentWriter::_create_column_writer(uint32_t cid, const TabletColumn& co
         opts.need_ann_index = true;
         DCHECK(_index_file_writer != nullptr);
     }
+    if (const auto& index = schema->geo_index(column); index != nullptr) {
+        opts.geo_index = index;
+        opts.need_geo_index = true;
+        DCHECK(_index_file_writer != nullptr);
+    }
 
     opts.index_file_writer = _index_file_writer;
 
@@ -971,6 +976,7 @@ Status SegmentWriter::finalize_columns_index(uint64_t* index_size) {
     RETURN_IF_ERROR(_write_zone_map());
     RETURN_IF_ERROR(_write_inverted_index());
     RETURN_IF_ERROR(_write_ann_index());
+    RETURN_IF_ERROR(_write_geo_index());
     RETURN_IF_ERROR(_write_bloom_filter_index());
 
     *index_size = _file_writer->bytes_appended() - index_start;
@@ -1111,6 +1117,13 @@ Status SegmentWriter::_write_inverted_index() {
 Status SegmentWriter::_write_ann_index() {
     for (auto& column_writer : _column_writers) {
         RETURN_IF_ERROR(column_writer->write_ann_index());
+    }
+    return Status::OK();
+}
+
+Status SegmentWriter::_write_geo_index() {
+    for (auto& column_writer : _column_writers) {
+        RETURN_IF_ERROR(column_writer->write_geo_index());
     }
     return Status::OK();
 }

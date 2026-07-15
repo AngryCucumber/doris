@@ -822,6 +822,12 @@ public class CreateTableInfo {
                         throw new AnalysisException("ANN index is not supported in index format V1");
                     }
                 }
+                if (indexDef.getIndexType() == IndexType.GEO) {
+                    if (invertedIndexFileStorageFormat != null
+                            && invertedIndexFileStorageFormat == TInvertedIndexFileStorageFormat.V1) {
+                        throw new AnalysisException("GEO index is not supported in index format V1");
+                    }
+                }
                 for (String indexColName : indexDef.getColumnNames()) {
                     boolean found = false;
                     for (ColumnDefinition column : columns) {

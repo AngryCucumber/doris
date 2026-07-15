@@ -67,6 +67,7 @@ struct ColumnWriterOptions {
     bool is_ngram_bf_index = false;
     bool need_inverted_index = false;
     bool need_ann_index = false;
+    bool need_geo_index = false;
     uint8_t gram_size;
     uint16_t gram_bf_size;
     BloomFilterOptions bf_options;
@@ -80,6 +81,7 @@ struct ColumnWriterOptions {
     // For collect segment statistics for compaction
     std::vector<RowsetReaderSharedPtr> input_rs_readers;
     const TabletIndex* ann_index = nullptr;
+    const TabletIndex* geo_index = nullptr;
 
     EncodingPreference encoding_preference {};
 
@@ -177,6 +179,8 @@ public:
 
     virtual Status write_ann_index() { return Status::OK(); }
 
+    virtual Status write_geo_index() { return Status::OK(); }
+
     virtual Status write_bloom_filter_index() = 0;
 
     virtual ordinal_t get_next_rowid() const = 0;
@@ -233,6 +237,7 @@ public:
     Status write_ordinal_index() override;
     Status write_zone_map() override;
     Status write_inverted_index() override;
+    Status write_geo_index() override;
     Status write_bloom_filter_index() override;
     ordinal_t get_next_rowid() const override { return _next_rowid; }
 
@@ -323,6 +328,7 @@ private:
     std::unique_ptr<OrdinalIndexWriter> _ordinal_index_builder;
     std::unique_ptr<ZoneMapIndexWriter> _zone_map_index_builder;
     std::vector<std::unique_ptr<IndexColumnWriter>> _inverted_index_builders;
+    std::unique_ptr<IndexColumnWriter> _geo_index_writer;
     std::unique_ptr<BloomFilterIndexWriter> _bloom_filter_index_builder;
 
     // call before flush data page.

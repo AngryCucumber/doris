@@ -106,7 +106,8 @@ public class IndexDef {
 
         if (indexType == IndexDef.IndexType.BITMAP
                 || indexType == IndexDef.IndexType.INVERTED
-                || indexType == IndexDef.IndexType.ANN) {
+                || indexType == IndexDef.IndexType.ANN
+                || indexType == IndexDef.IndexType.GEO) {
             if (columns == null || columns.size() != 1) {
                 throw new AnalysisException(indexType.toString() + " index can only apply to a single column.");
             }
@@ -210,7 +211,8 @@ public class IndexDef {
         INVERTED,
         BLOOMFILTER,
         NGRAM_BF,
-        ANN
+        ANN,
+        GEO
     }
 
     public boolean isInvertedIndex() {
@@ -219,6 +221,10 @@ public class IndexDef {
 
     public boolean isAnnIndex() {
         return (this.indexType == IndexType.ANN);
+    }
+
+    public boolean isGeoIndex() {
+        return (this.indexType == IndexType.GEO);
     }
 
     // Check if the column type is supported for inverted index
@@ -262,6 +268,13 @@ public class IndexDef {
                 throw new AnalysisException("ANN index is not supported in index format V1");
             }
             return;
+        }
+
+        if (indexType == IndexType.GEO) {
+            // The GEO (HASI) index requires data written in __s2 order from day one
+            // ("leaf = contiguous rowid block"); building it on pre-existing unclustered
+            // data is unsupported, so the ALTER/legacy path always rejects it.
+            throw new AnalysisException("GEO index can only be created with CREATE TABLE");
         }
 
         if (indexType == IndexType.BITMAP || indexType == IndexType.INVERTED || indexType == IndexType.BLOOMFILTER

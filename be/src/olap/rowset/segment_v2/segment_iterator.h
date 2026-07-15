@@ -195,6 +195,7 @@ private:
             std::vector<std::shared_ptr<ColumnPredicate>>& remaining_predicates,
             bool* continue_apply);
     [[nodiscard]] Status _apply_ann_topn_predicate();
+    [[nodiscard]] Status _apply_geo_predicate();
     [[nodiscard]] Status _apply_index_expr();
 
     bool _column_has_fulltext_index(int32_t cid);

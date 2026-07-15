@@ -77,6 +77,8 @@ public:
     static bool check_support_inverted_index(const TabletColumn& column);
 
     static bool check_support_ann_index(const TabletColumn& column);
+
+    static bool check_support_geo_index(const TabletColumn& column);
 };
 
 class TmpFileDirs {

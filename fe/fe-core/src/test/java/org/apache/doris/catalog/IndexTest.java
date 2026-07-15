@@ -161,4 +161,26 @@ public class IndexTest {
         Assert.assertEquals(Integer.valueOf(102), reverseUniqueIds.get(1));
         Assert.assertEquals(Integer.valueOf(101), reverseUniqueIds.get(2));
     }
+
+    // Guard: every IndexType value must survive both serialization paths. toThrift is a
+    // name-based TIndexType.valueOf lookup and toPb has an explicit switch, so adding an
+    // enum value while forgetting either side only fails at runtime -- this catches it in CI.
+    @Test
+    public void testAllIndexTypesSerializable() {
+        List<String> cols = new ArrayList<>();
+        cols.add("col1");
+        for (IndexDef.IndexType type : IndexDef.IndexType.values()) {
+            Index index = new Index(42, "idx_" + type.name().toLowerCase(), cols, type, null, null);
+            try {
+                index.toThrift(new ArrayList<>());
+            } catch (Exception e) {
+                Assert.fail("toThrift failed for IndexType." + type + ": " + e.getMessage());
+            }
+            try {
+                index.toPb(new java.util.HashMap<>(), new ArrayList<>());
+            } catch (Exception e) {
+                Assert.fail("toPb failed for IndexType." + type + ": " + e.getMessage());
+            }
+        }
+    }
 }

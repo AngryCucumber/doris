@@ -198,10 +198,22 @@ if (indexType == IndexType.GEO) {
      收益结构：无 key-range 剪枝、乱序下 ZoneMap 基本失效，剩"存储层 BIGINT 区间预过滤先行、
      昂贵球面距离只算幸存行"的 CPU 减负（2–5×，IO 不省）；数据有天然空间局部性时 ZoneMap 可部分生效。
      适用：不能改排序键的存量/共享表。要数量级收益仍需聚簇（DUP key 前缀 / UNIQUE CLUSTER BY，§2①）。
-4. **`PushDownGeoFilter`（v1 规则）+ Thrift 透传**：`gensrc/thrift/` 增加 `TGeoIndexFilter`
-   （仿 `TOlapScanNode.ann_sort_info`，`PlanNodes.thrift:855`），字段：
-   **shape WKB + 来源谓词类型 + 比较算子 + 原始阈值**（精算核一致性需要，§4.6）+ **时间区间 `[t_lo, t_hi)`**
-   （time_bucket 同精度整型，聚合三态判定需要，§5.2）+ 度量列表。
+4. **v1 检索下推的谓词传输（rev2.3 实现修订：不加 plan-node thrift 字段）**。
+   实现期核对 ANN range search 发现其根本没有专用 thrift 字段——谓词作为**普通 conjunct**
+   经 `_common_expr_ctxs_push_down` 下推（`scan_operator.cpp` 通用通道，
+   `PushDownVirtualColumnsIntoOlapScan` 对 ComparisonPredicate 显式跳过 CSE 虚拟列），
+   BE 在表达式树上模式识别。GEO 照搬该模式，v1 无 FE 规则、无 PlanNodes.thrift 改动：
+   - **BE 识别**（`geo_range_runtime.cpp::extract_geo_range_search`）：
+     `st_distance_sphere(lng_slot, lat_slot, lng0_lit, lat0_lit) </<= r_lit` 及镜像
+     `r >/>= st_distance_sphere(...)`；剥 cast；外圆形态（`dist > r`）不可索引、自动拒绝。
+   - **安全对应关系**：BE 无法从谓词推断 `__s2` 生成列的来源列——FE 在 CREATE TABLE 校验
+     （`IndexDefinition.checkColumn`）时把 `st_s2_cellid(lng, lat)` 的实参列名写进索引
+     properties（`lng_column`/`lat_column`，`GeoIndexUtil.java`），BE 按属性匹配谓词 slot
+     对应的 tablet 列名（大小写不敏感），**绝不按列名约定猜**。
+   - **回退开关**：session var `enable_geo_index_query`（needForward，默认 true）→
+     `TQueryOptions.204` → `segment_iterator::_apply_geo_predicate` 入口检查。
+   - 原 TGeoIndexFilter 设计中的时间区间/度量列表字段是聚合（v2）需求，届时再评估载体
+     （届时若仍走 conjunct 识别路线，时间三态可由残余时间谓词在 BE 侧同样模式识别）。
 5. **`PushDownGeoAgg`（v2 规则）+ 可下推判定矩阵**：识别 `SELECT agg(m) ... WHERE <geo region>`，
    计划形态仿 `COUNT_ON_INDEX`（`AggregateStrategies.java:384-394`）：**LogicalFilter（残余时间谓词 + ST_\* 残差）保留在 scan 之上**。
    FE 静态判定（缺一不可，否则不生成 sketch 计划）：
@@ -653,7 +665,8 @@ close 时同步等待、load 内存硬限），flush 吞吐低于摄入吞吐时
 | 阶段 | 目标 | 交付物 | 验证出口 | 回退开关 |
 |---|---|---|---|---|
 | **v0** | S2 聚簇 + 谓词改写基线 | ① BE+FE 标量函数 `st_s2_cellid(lon,lat)`（四文件清单，§3.3-1）；② `__s2` 生成列 + 复合排序键（按表模型，§2①）；③ FE `RewriteGeoPredicate`：ST_* → `__s2` 包络区间 conjunct + 保留 ST_* 残差（§3.3-3）；④ `s2_covering.*` + `geo_recheck_simd.h`（BE 单测级，不接查询链路）；⑤ fe-core 引入 `com.google.geometry:s2-geometry:2.0.0`（Apache-2.0，同步 LICENSE/NOTICE）+ **Java↔C++ cell id/covering 跨语言对拍单测**（随机点 + §8.1 cell 边界/face 交界用例）——③ 的多细化区间依赖此项，单包络区间为保底 | 端到端 SQL：开/关改写两次执行结果 bit-exact；profile `RowsKeyRangeFiltered`/`RowsStatsFiltered` 证明剪枝发生；DDL smoke：DUP 生成列进 DUPLICATE KEY 建表+导入+SHOW CREATE 快照，UNIQUE MOW `CLUSTER BY` 含生成列建表对拍（FE 校验可过但无回归先例，落为被测事实；失败则 UNIQUE 路线降级为 `__s2` 进 unique key 前缀） | `set enable_geo_predicate_rewrite=false` |
-| **v1** | 检索下推（索引全链路） | `IndexType::GEO` 全链路（§3.1 八项）；`geo_index/` writer/reader/iterator + `geo_range_runtime`（三段精算核接入在此阶段）；FE `PushDownGeoFilter` + thrift `TGeoIndexFilter`；`_apply_geo_predicate()` `&=` 收窄 + 代价门槛；profile 计数器 `RowsGeoIndexFiltered`/`GeoBoundaryRecheckRows`；compaction 期索引随写路径**全量重建**（正确性兜底） | 索引开/关对拍 bit-exact；compaction 前后、MOW delete 后对拍；profile 断言索引生效且 recheck 行数 ∝ 边界 | `set enable_geo_index_query=false`（回落 v0） |
+| **v1** | 检索下推（索引全链路） | `IndexType::GEO` 全链路（§3.1 八项）；`geo_index/` writer/reader/iterator + `geo_range_runtime`；BE 侧 conjunct 识别（§3.3-4 rev2.3，无 thrift plan 字段）；`_apply_geo_predicate()` `&=` 收窄 + 代价门槛（covering 占键空间 >50% 放弃）；profile 计数器 `RowsGeoIndexFiltered`/`GeoBoundaryRecheckRows`/`GeoBoundaryLeaves`；compaction 期索引随写路径**全量重建**（零特判，实测通用） | 索引开/关对拍 bit-exact；compaction 前后、MOW upsert+delete 后对拍；非 key 形态对拍；profile 断言 `RowsGeoIndexFiltered>0` | `set enable_geo_index_query=false`（回落 v0） |
+| **v1 已落地形态与偏差（rev2.3 纪要）** | — | ① **候选+残差复检模型**：索引只做 `_row_bitmap &= hit`（`hit ≡ {cell∈C}`，NULL 行不命中），原 ST_\* 谓词保留在计划里做精确过滤——C1/C2 由结构保证；"INSIDE 免几何精算"（识别后从 `_remaining_conjunct_roots` 摘除 + 余量带行读 lon/lat 精算）列为 **v1.5**，是 v1 性能门槛（大 region ≥3×）不达标时的已知抓手。② **v1 树 = 扁平叶目录**（定长行块 + 每叶 min/max cell + 每行 zigzag-varint delta cell 流，~1-3B/行）：不做 distinct-cell 对齐分裂（那是 v2 金字塔 sketch 的不相交前提），叶区间允许重叠——聚簇表得整叶 skip/accept 快路径，**非 key 表退化为逐行三分过滤**（同一格式天然覆盖 §9-7 的"非聚簇降级模式"）；隐式 F 叉金字塔随 v2a 挂 sketch 时落地。③ 索引文件整体 eager 加载（DorisCallOnce），叶 cell 流懒解码在查询内；大 segment 懒加载留 TODO。④ 挂载点在 `_get_row_ranges_by_column_conditions` 的 inverted/ann 块之后（delete bitmap 减除之前——纯 `&=` 下位置无关正确性）。⑤ 依赖 `enable_common_expr_pushdown`（默认开）把谓词送进 segment iterator；关闭时索引静默不生效、结果仍正确。 | 见 `geo_index_range_search.groovy` | 同上 |
 | **v2a** | 聚合下推·count-only | 在 v1 已建 topology 之上增加 count/non_null sketch（仅 `__s2` 列自身可得，零跨列改动）+ `aggregate()` + 全部正确性 gate（时间三态/删除三级/残余谓词/表模型/sketch 存在性，§5.2）；FE `PushDownGeoAgg`（COUNT_ON_INDEX 式计划形态） | count 类聚合与关闭下推 bit-exact（含 delete、多 segment、时间不对齐桶边界场景） | `set enable_geo_agg_pushdown=false` |
 | **v2b** | 聚合金字塔·全度量 | measure sketch（sum/min/max/HLL/t-digest），**构建时机默认 = compaction 读回**（§3.5，flush 同步为可选开关）；per-rowset sketch 存在性 gate（缺失→INSIDE 流式行扫折叠）；sketch 分层挂载 + blob 懒加载；scan 内边界折叠回流（§3.3-5） | sum/min/max bit-exact；HLL 相对误差 ≤2%、t-digest 分位误差 ≤1%（对拍同函数非下推执行）；**“面积倍增、延迟平坦”曲线**（代价∝边界的直接证据）；导入吞吐无回退（±2%，v2b 不在导入关键路径） | 同上（粒度到 rule） |
 | **v3** | 增量与调优 | compaction 子树 roll-up 快路径（检测条件+回退全量重建，§3.5）；学习导航层；多 measure/多分辨率配置；（可选）分桶裁剪方案 A | 增量 roll-up 与全量重建对拍 bit-exact；学习导航开/关结果一致；compaction 索引耗时下降 | BE conf `enable_geo_index_incremental_compaction=false` |
@@ -790,6 +803,13 @@ bbox 同尺度、多边形（凸 6 边/凹 50 边/带洞/跨反子午线）、kN
    不在 POC 范围。UNIQUE MOW 走 cluster key；AGG 不支持。
 9. **枚举链路**：GEO 类型贯穿 proto/thrift/FE 两套枚举/toThrift/toPb/init_from_thrift 共八处（§3.1），
    靠护栏单测防漏，以 ANN 引入 commit 的文件清单为核对基准。
+10. **IndexFileWriter/Reader 门控暗链（v1 实测踩坑）**：§3.1 的八处枚举之外还有一条更隐蔽的链——
+    BE 里 16 处 `has_inverted_index() || has_ann_index()` 门控（segment_creator/beta_rowset_writer/
+    vertical_beta_rowset_writer/beta_rowset 读侧/segcompaction/snapshot_manager/cloud 四处）决定
+    是否创建/打开索引文件 writer/reader。漏掉任何一处，只含 GEO 索引的表在 flush 或查询时对空
+    `IndexFileWriter*` 解引用直接 SIGSEGV（release 版 DCHECK 不生效；v1 首轮回归即触发）。
+    已全部扩展为 `|| has_geo_index()`，并在 `GeoIndexColumnWriter::init` 加了空指针防线;
+    未来新增索引类型时此清单与 §3.1 同级必查。
 
 ---
 
@@ -816,3 +836,4 @@ bbox 同尺度、多边形（凸 6 边/凹 50 边/带洞/跨反子午线）、kN
 | 标量 geo 函数 | `functions_geo.cpp:45/:197/:456/:540`；`BuiltinScalarFunctions.java:1042-1062`；`StDistanceSphere.java:40-47`(4 参签名)；**无 ST_Within** |
 | sketch 体积口径 | `be/src/olap/hll.h`(自适应编码)；`tdigest.h`(~12B/centroid×2×compression)；`aggregate_function_percentile.h:64-76`(compression∈[2048,10000]) |
 | 回归测试先例 | `ann_index_p0/ann_range_search.groovy`、`ann_index_only_scan.groovy`(profile 断言)、`test_count_on_index.groovy`、`opensky_p2/`(数据+st_distance_sphere)、`ddl_p0/test_create_table_generated_column/`、`tools/clickbench-tools/` |
+| **v1 已落地文件清单（rev2.3）** | BE `geo_index/`：`hasi_tree.{h,cpp}`（叶目录+流式构建+三态检索）、`geo_index_writer.{h,cpp}`、`geo_index_reader.{h,cpp}`、`geo_index_iterator.h`（get_reader 类型感知，防 __s2 范围谓词被误路由进倒排求值）、`geo_range_runtime.{h,cpp}`（BE 谓词识别+covering+代价门槛）、`geo_index_properties.h`；挂载改动：`index_writer.{h,cpp}`(工厂+check_support_geo_index)、`column_writer.{h,cpp}`(Scalar 挂载+write_geo_index)、`segment_writer.*`/`vertical_segment_writer.*`、`tablet_schema.*`(geo_index 访问器)、`tablet_meta.cpp`、`column_reader.cpp`、`index_iterator.h`(GeoIndexReaderType)、`segment_iterator.{h,cpp}`(`_apply_geo_predicate` + `_check_apply_by_inverted_index` 非倒排闸门)、`olap_common.h`+`olap_scan_operator.*`+`olap_scanner.cpp`(计数器)；FE：`GeoIndexUtil.java`(属性校验+生成列匹配+lng/lat 回填)、`IndexDef.java`、`IndexDefinition.java`、`Index.java`、`CreateTableInfo.java`、`SchemaChangeHandler.java`(ALTER 拒绝)、`LogicalPlanBuilder.java`、`DorisLexer/Parser.g4`、`SessionVariable.java`；gensrc：`olap_file.proto`(GEO=5)、`Descriptors.thrift`(GEO=5)、`PaloInternalService.thrift`(TQueryOptions.204)；单测：BE `hasi_tree_test.cpp`、FE `IndexTest`(枚举护栏)+`IndexDefinitionTest`(GEO checkColumn)；回归：`geo_index_p0/create_geo_index_test.groovy`、`geo_index_p0/geo_index_range_search.groovy` |

@@ -56,6 +56,9 @@
 #include "olap/rowset/segment_v2/ann_index/ann_topn_runtime.h"
 #include "olap/rowset/segment_v2/column_reader.h"
 #include "olap/rowset/segment_v2/column_reader_cache.h"
+#include "olap/rowset/segment_v2/geo_index/geo_index_iterator.h"
+#include "olap/rowset/segment_v2/geo_index/geo_index_properties.h"
+#include "olap/rowset/segment_v2/geo_index/geo_range_runtime.h"
 #include "olap/rowset/segment_v2/index_file_reader.h"
 #include "olap/rowset/segment_v2/index_iterator.h"
 #include "olap/rowset/segment_v2/index_query_context.h"
@@ -641,6 +644,8 @@ Status SegmentIterator::_get_row_ranges_by_column_conditions() {
         }
     }
 
+    RETURN_IF_ERROR(_apply_geo_predicate());
+
     DBUG_EXECUTE_IF("segment_iterator.inverted_index.filtered_rows", {
         LOG(INFO) << "Debug Point: segment_iterator.inverted_index.filtered_rows: "
                   << _opts.stats->rows_inverted_index_filtered;
@@ -947,6 +952,14 @@ bool SegmentIterator::_check_apply_by_inverted_index(std::shared_ptr<ColumnPredi
         return false;
     }
 
+    // The iterator slot may hold a non-inverted index (e.g. GEO on the __s2 column,
+    // which does carry ordinary range predicates injected by the geo rewrite); such
+    // an index cannot evaluate column predicates, so fall back to normal evaluation.
+    if (!IndexReaderHelper::has_string_or_bkd_index(_index_iterators[pred_column_id].get()) &&
+        !_column_has_fulltext_index(pred_column_id)) {
+        return false;
+    }
+
     if (_inverted_index_not_support_pred_type(pred->type())) {
         return false;
     }
@@ -980,6 +993,87 @@ bool SegmentIterator::_check_apply_by_inverted_index(std::shared_ptr<ColumnPredi
     }
 
     return true;
+}
+
+// HASI geo index retrieval pushdown (HASI_POC.md §4.5). Recognizes pushed-down
+// `st_distance_sphere(lng, lat, lng0, lat0) < r` conjuncts and narrows _row_bitmap
+// with the geo index of a matching __s2 generated column. Contract C1: the only
+// bitmap operation is `&=`; the original predicate always stays in
+// _remaining_conjunct_roots / _common_expr_ctxs_push_down as the exact residual
+// filter, so a skipped or partial index application can never change results.
+Status SegmentIterator::_apply_geo_predicate() {
+    if (_row_bitmap.isEmpty() || _common_expr_ctxs_push_down.empty()) {
+        return Status::OK();
+    }
+    if (_opts.runtime_state != nullptr &&
+        !_opts.runtime_state->query_options().enable_geo_index_query) {
+        return Status::OK();
+    }
+    const auto& idx_to_cid = _schema->column_ids();
+    for (const auto& expr_ctx : _common_expr_ctxs_push_down) {
+        GeoRangeSearchRuntime runtime;
+        if (!extract_geo_range_search(expr_ctx->root().get(), &runtime)) {
+            continue;
+        }
+        if (runtime.lng_idx_in_block < 0 || runtime.lat_idx_in_block < 0 ||
+            static_cast<size_t>(runtime.lng_idx_in_block) >= idx_to_cid.size() ||
+            static_cast<size_t>(runtime.lat_idx_in_block) >= idx_to_cid.size()) {
+            continue;
+        }
+        const std::string& lng_name =
+                _opts.tablet_schema->column(idx_to_cid[runtime.lng_idx_in_block]).name();
+        const std::string& lat_name =
+                _opts.tablet_schema->column(idx_to_cid[runtime.lat_idx_in_block]).name();
+        auto iequals = [](const std::string& a, const std::string& b) {
+            return a.size() == b.size() &&
+                   std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+                       return std::tolower(static_cast<unsigned char>(x)) ==
+                              std::tolower(static_cast<unsigned char>(y));
+                   });
+        };
+        // Find a geo index whose FE-recorded source columns are exactly the
+        // predicate's lng/lat slots; never match on column naming conventions.
+        GeoIndexIterator* geo_iterator = nullptr;
+        for (auto cid : _schema->column_ids()) {
+            auto* candidate = dynamic_cast<GeoIndexIterator*>(_index_iterators[cid].get());
+            if (candidate == nullptr) {
+                continue;
+            }
+            const auto& props = candidate->geo_reader()->index_meta().properties();
+            if (iequals(geo_index_property(props, kGeoIndexPropLngColumn), lng_name) &&
+                iequals(geo_index_property(props, kGeoIndexPropLatColumn), lat_name)) {
+                geo_iterator = candidate;
+                break;
+            }
+        }
+        if (geo_iterator == nullptr) {
+            continue;
+        }
+        std::vector<CellRange> covering;
+        std::vector<CellRange> interior;
+        if (!compute_circle_covering(runtime, &covering, &interior)) {
+            continue;
+        }
+        // Cost gate: a covering spanning most of the keyspace cannot reject much.
+        if (covering_keyspace_fraction(covering) > kGeoIndexMaxCoveringFraction) {
+            continue;
+        }
+        roaring::Roaring hit;
+        HasiSearchStats search_stats;
+        RETURN_IF_ERROR(geo_iterator->range_search(covering, interior, &hit, &search_stats));
+        size_t before = _row_bitmap.cardinality();
+        _row_bitmap &= hit;
+        _opts.stats->rows_geo_index_filtered +=
+                static_cast<int64_t>(before - _row_bitmap.cardinality());
+        _opts.stats->geo_boundary_recheck_rows +=
+                static_cast<int64_t>(search_stats.rows_margin);
+        _opts.stats->geo_boundary_leaves += static_cast<int64_t>(search_stats.leaves_boundary);
+        _opts.stats->geo_inside_rows += static_cast<int64_t>(search_stats.rows_inside);
+        if (_row_bitmap.isEmpty()) {
+            break;
+        }
+    }
+    return Status::OK();
 }
 
 // TODO: optimization when all expr can not evaluate by inverted/ann index,
@@ -1394,6 +1488,22 @@ Status SegmentIterator::_init_index_iterators() {
         if (_index_iterators[cid] == nullptr) {
             const auto& column = _opts.tablet_schema->column(cid);
             const auto* index_meta = _segment->_tablet_schema->ann_index(column);
+            if (index_meta) {
+                RETURN_IF_ERROR(_segment->new_index_iterator(column, index_meta, _opts,
+                                                             &_index_iterators[cid]));
+
+                if (_index_iterators[cid] != nullptr) {
+                    _index_iterators[cid]->set_context(_index_query_context);
+                }
+            }
+        }
+    }
+
+    // Geo index iterators
+    for (auto cid : _schema->column_ids()) {
+        if (_index_iterators[cid] == nullptr) {
+            const auto& column = _opts.tablet_schema->column(cid);
+            const auto* index_meta = _segment->_tablet_schema->geo_index(column);
             if (index_meta) {
                 RETURN_IF_ERROR(_segment->new_index_iterator(column, index_meta, _opts,
                                                              &_index_iterators[cid]));

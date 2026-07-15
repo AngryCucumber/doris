@@ -2784,6 +2784,12 @@ public class SchemaChangeHandler extends AlterHandler {
             AnnIndexPropertiesChecker.checkProperties(indexDef.getProperties());
         }
 
+        if (indexDef.isGeoIndex()) {
+            // Existing data is not clustered by __s2, so the HASI "leaf = contiguous rowid
+            // block" premise does not hold for ALTER-added indexes (HASI_POC.md §9-7).
+            throw new AnalysisException("GEO index can only be created with CREATE TABLE");
+        }
+
         for (String col : indexDef.getColumns()) {
             Column column = olapTable.getColumn(col);
             if (column != null) {

@@ -551,6 +551,10 @@ Status ScalarColumnWriter::init() {
             }
         } while (false);
     }
+    if (_opts.need_geo_index) {
+        RETURN_IF_ERROR(IndexColumnWriter::create(get_field(), &_geo_index_writer,
+                                                  _opts.index_file_writer, _opts.geo_index));
+    }
     if (_opts.need_bloom_filter) {
         if (_opts.is_ngram_bf_index) {
             RETURN_IF_ERROR(NGramBloomFilterIndexWriterImpl::create(
@@ -574,6 +578,9 @@ Status ScalarColumnWriter::append_nulls(size_t num_rows) {
         for (const auto& builder : _inverted_index_builders) {
             RETURN_IF_ERROR(builder->add_nulls(cast_set<uint32_t>(num_rows)));
         }
+    }
+    if (_opts.need_geo_index) {
+        RETURN_IF_ERROR(_geo_index_writer->add_nulls(cast_set<uint32_t>(num_rows)));
     }
     if (_opts.need_bloom_filter) {
         _bloom_filter_index_builder->add_nulls(cast_set<uint32_t>(num_rows));
@@ -609,6 +616,9 @@ Status ScalarColumnWriter::_internal_append_data_in_current_page(const uint8_t* 
         for (const auto& builder : _inverted_index_builders) {
             RETURN_IF_ERROR(builder->add_values(get_field()->name(), data, *num_written));
         }
+    }
+    if (_opts.need_geo_index) {
+        RETURN_IF_ERROR(_geo_index_writer->add_values(get_field()->name(), data, *num_written));
     }
     if (_opts.need_bloom_filter) {
         RETURN_IF_ERROR(_bloom_filter_index_builder->add_values(data, *num_written));
@@ -775,6 +785,13 @@ Status ScalarColumnWriter::write_inverted_index() {
         for (const auto& builder : _inverted_index_builders) {
             RETURN_IF_ERROR(builder->finish());
         }
+    }
+    return Status::OK();
+}
+
+Status ScalarColumnWriter::write_geo_index() {
+    if (_opts.need_geo_index) {
+        RETURN_IF_ERROR(_geo_index_writer->finish());
     }
     return Status::OK();
 }

@@ -18,6 +18,7 @@
 package org.apache.doris.nereids.trees.plans.commands.info;
 
 import org.apache.doris.analysis.AnnIndexPropertiesChecker;
+import org.apache.doris.analysis.GeoIndexUtil;
 import org.apache.doris.analysis.IndexDef;
 import org.apache.doris.analysis.IndexDef.IndexType;
 import org.apache.doris.analysis.InvertedIndexUtil;
@@ -79,6 +80,10 @@ public class IndexDefinition {
                 }
                 case "ANN": {
                     this.indexType = IndexType.ANN;
+                    break;
+                }
+                case "GEO": {
+                    this.indexType = IndexType.GEO;
                     break;
                 }
                 default:
@@ -150,6 +155,34 @@ public class IndexDefinition {
             if (keysType != KeysType.DUP_KEYS) {
                 throw new AnalysisException("ANN index can only be used in DUP_KEYS table");
             }
+            return;
+        }
+
+        if (indexType == IndexType.GEO) {
+            String indexColName = column.getName();
+            caseSensitivityCols.add(indexColName);
+            if (!column.getType().isBigIntType()) {
+                throw new AnalysisException(
+                        "GEO index column must be BIGINT, invalid index: " + name);
+            }
+            if (keysType != KeysType.DUP_KEYS
+                    && !(keysType == KeysType.UNIQUE_KEYS && enableUniqueKeyMergeOnWrite)) {
+                throw new AnalysisException(
+                        "GEO index can only be used in DUP_KEYS or UNIQUE MOW table");
+            }
+            // The index answers ST_* predicates over (lng, lat), so the indexed cells must
+            // provably derive from those columns: only st_s2_cellid(lng, lat) generated
+            // columns qualify. Record the source column names into the index properties;
+            // the BE matches pushed-down predicates against them (never against names).
+            List<String> lngLat = column.getGeneratedColumnDesc()
+                    .map(desc -> GeoIndexUtil.extractS2CellIdArgs(desc.getExpression()))
+                    .orElse(null);
+            if (lngLat == null) {
+                throw new AnalysisException("GEO index column must be a generated column of"
+                        + " st_s2_cellid(lng_col, lat_col), invalid index: " + name);
+            }
+            properties.put(GeoIndexUtil.PROP_LNG_COLUMN, lngLat.get(0));
+            properties.put(GeoIndexUtil.PROP_LAT_COLUMN, lngLat.get(1));
             return;
         }
 
@@ -247,7 +280,12 @@ public class IndexDefinition {
             AnnIndexPropertiesChecker.checkProperties(this.properties);
         }
 
-        if (indexType == IndexDef.IndexType.BITMAP || indexType == IndexDef.IndexType.INVERTED) {
+        if (indexType == IndexDef.IndexType.GEO) {
+            GeoIndexUtil.checkProperties(this.properties);
+        }
+
+        if (indexType == IndexDef.IndexType.BITMAP || indexType == IndexDef.IndexType.INVERTED
+                || indexType == IndexDef.IndexType.GEO) {
             if (cols == null || cols.size() != 1) {
                 throw new AnalysisException(
                         indexType.toString() + " index can only apply to a single column.");

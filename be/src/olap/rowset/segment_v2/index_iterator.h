@@ -44,7 +44,12 @@ enum class AnnIndexReaderType {
     ANN = 0,
 };
 
-using IndexReaderType = std::variant<InvertedIndexReaderType, AnnIndexReaderType>;
+enum class GeoIndexReaderType {
+    GEO = 0,
+};
+
+using IndexReaderType =
+        std::variant<InvertedIndexReaderType, AnnIndexReaderType, GeoIndexReaderType>;
 class IndexIterator {
 public:
     IndexIterator() = default;

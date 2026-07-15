@@ -203,6 +203,7 @@ public class SessionVariable implements Serializable, Writable {
     public static final String SHOW_HIDDEN_COLUMNS = "show_hidden_columns";
     // HASI geo index v0: rewrite ST_* circle predicates into sargable __s2 envelope range conjuncts
     public static final String ENABLE_GEO_PREDICATE_REWRITE = "enable_geo_predicate_rewrite";
+    public static final String ENABLE_GEO_INDEX_QUERY = "enable_geo_index_query";
     public static final String USE_V2_ROLLUP = "use_v2_rollup";
     public static final String REWRITE_COUNT_DISTINCT_TO_BITMAP_HLL = "rewrite_count_distinct_to_bitmap_hll";
     public static final String EVENT_SCHEDULER = "event_scheduler";
@@ -1416,6 +1417,9 @@ public class SessionVariable implements Serializable, Writable {
 
     @VariableMgr.VarAttr(name = ENABLE_GEO_PREDICATE_REWRITE, needForward = true)
     public boolean enableGeoPredicateRewrite = true;
+
+    @VariableMgr.VarAttr(name = ENABLE_GEO_INDEX_QUERY, needForward = true)
+    public boolean enableGeoIndexQuery = true;
 
     @VariableMgr.VarAttr(name = ALLOW_PARTITION_COLUMN_NULLABLE, description = {
             "是否允许 NULLABLE 列作为 PARTITION 列。开启后，RANGE PARTITION 允许 NULLABLE PARTITION 列"
@@ -5046,6 +5050,8 @@ public class SessionVariable implements Serializable, Writable {
         tResult.setInvertedIndexSkipThreshold(invertedIndexSkipThreshold);
 
         tResult.setInvertedIndexCompatibleRead(invertedIndexCompatibleRead);
+
+        tResult.setEnableGeoIndexQuery(enableGeoIndexQuery);
         tResult.setEnableInvertedIndexWandQuery(enableInvertedIndexWandQuery);
 
         tResult.setEnableParallelScan(enableParallelScan);

@@ -342,6 +342,10 @@ public class Index implements Writable {
                 builder.setIndexType(OlapFile.IndexType.ANN);
                 break;
 
+            case GEO:
+                builder.setIndexType(OlapFile.IndexType.GEO);
+                break;
+
             default:
                 throw new RuntimeException("indexType " + indexType + " is not processed in toPb");
         }

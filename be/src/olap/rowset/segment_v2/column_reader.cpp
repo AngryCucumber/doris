@@ -37,6 +37,7 @@
 #include "olap/iterators.h"
 #include "olap/olap_common.h"
 #include "olap/rowset/segment_v2/ann_index/ann_index_reader.h"
+#include "olap/rowset/segment_v2/geo_index/geo_index_reader.h"
 #include "olap/rowset/segment_v2/binary_dict_page.h" // for BinaryDictPageDecoder
 #include "olap/rowset/segment_v2/binary_plain_page.h"
 #include "olap/rowset/segment_v2/bloom_filter.h"
@@ -696,6 +697,12 @@ Status ColumnReader::_load_index(const std::shared_ptr<IndexFileReader>& index_f
     if (index_meta->index_type() == IndexType::ANN) {
         _index_readers[index_meta->index_id()] =
                 std::make_shared<AnnIndexReader>(index_meta, index_file_reader);
+        return Status::OK();
+    }
+
+    if (index_meta->index_type() == IndexType::GEO) {
+        _index_readers[index_meta->index_id()] =
+                std::make_shared<GeoIndexReader>(index_meta, index_file_reader);
         return Status::OK();
     }
 
