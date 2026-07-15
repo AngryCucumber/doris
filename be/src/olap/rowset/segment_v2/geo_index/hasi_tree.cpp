@@ -18,6 +18,7 @@
 #include "olap/rowset/segment_v2/geo_index/hasi_tree.h"
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
 #include <limits>
 
@@ -26,9 +27,11 @@ namespace doris::segment_v2 {
 namespace {
 
 constexpr uint32_t kMagic = 0x48415349; // "HASI"
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersionV1 = 1;
+constexpr uint32_t kVersionV2 = 2; // adds the trailing measures section
 constexpr size_t kHeaderSize = 24;
 constexpr size_t kDirEntrySize = 36;
+constexpr size_t kLeafMeasureSize = 28; // f64 sum, f64 min, f64 max, u32 non_null
 
 void put_u32(std::string* out, uint32_t v) {
     char buf[4];
@@ -158,24 +161,104 @@ void HasiTreeBuilder::_seal_leaf() {
     put_u32(&_dir, rid_end);
     put_u32(&_dir, _cur.null_count);
     put_u64(&_dir, _cur_cells_offset);
+    _leaf_rid_ends.push_back(rid_end);
     ++_num_leaves;
     _cur = LeafAccum();
     _cur_cells_offset = _cells.size();
 }
 
-Status HasiTreeBuilder::finish(std::string* out) {
+void HasiTreeBuilder::finish_topology() {
+    if (_topology_done) {
+        return;
+    }
     _seal_leaf();
+    _topology_done = true;
+}
+
+Status HasiTreeBuilder::attach_measures(const std::vector<std::string>& measure_names) {
+    if (!_topology_done) {
+        return Status::InternalError("attach_measures before finish_topology");
+    }
+    if (_measure_seen || !_measure_names.empty()) {
+        return Status::InternalError("measures already attached");
+    }
+    if (measure_names.empty() || measure_names.size() > kMaxMeasures) {
+        return Status::InvalidArgument("invalid measure count {}", measure_names.size());
+    }
+    _measure_names = measure_names;
+    _measures.assign(static_cast<size_t>(_num_leaves) * measure_names.size(),
+                     HasiLeafMeasure());
+    return Status::OK();
+}
+
+Status HasiTreeBuilder::add_measure_row(uint32_t rid, const double* values,
+                                        const uint8_t* nulls) {
+    if (_measure_names.empty()) {
+        return Status::InternalError("add_measure_row without attach_measures");
+    }
+    if (_measure_seen && rid <= _last_measure_rid) {
+        return Status::InternalError("measure rid {} not increasing (last {})", rid,
+                                     _last_measure_rid);
+    }
+    _measure_seen = true;
+    _last_measure_rid = rid;
+    while (_measure_leaf_cursor < _leaf_rid_ends.size() &&
+           rid >= _leaf_rid_ends[_measure_leaf_cursor]) {
+        ++_measure_leaf_cursor;
+    }
+    if (_measure_leaf_cursor >= _leaf_rid_ends.size()) {
+        return Status::InternalError("measure rid {} beyond {} indexed rows", rid, _num_rows);
+    }
+    HasiLeafMeasure* leaf_measures =
+            &_measures[static_cast<size_t>(_measure_leaf_cursor) * _measure_names.size()];
+    for (size_t m = 0; m < _measure_names.size(); ++m) {
+        if (nulls != nullptr && nulls[m] != 0) {
+            continue;
+        }
+        HasiLeafMeasure& agg = leaf_measures[m];
+        agg.sum += values[m];
+        agg.min = std::min(agg.min, values[m]);
+        agg.max = std::max(agg.max, values[m]);
+        ++agg.non_null;
+    }
+    return Status::OK();
+}
+
+Status HasiTreeBuilder::serialize(std::string* out) {
+    finish_topology();
     out->clear();
-    out->reserve(kHeaderSize + _dir.size() + _cells.size());
+    out->reserve(kHeaderSize + _dir.size() + _cells.size() +
+                 _measures.size() * kLeafMeasureSize);
     put_u32(out, kMagic);
-    put_u32(out, kVersion);
-    put_u32(out, 0); // flags, reserved for measure sketches
+    put_u32(out, _measure_names.empty() ? kVersionV1 : kVersionV2);
+    put_u32(out, 0); // flags, reserved
     put_u32(out, _leaf_rows);
     put_u32(out, _num_rows);
     put_u32(out, _num_leaves);
     out->append(_dir);
     out->append(_cells);
+    if (!_measure_names.empty()) {
+        // trailer: measures section + its start offset. Written at the end so the
+        // cells section keeps its v1 layout and offsets.
+        const uint64_t measures_offset = out->size();
+        put_u32(out, static_cast<uint32_t>(_measure_names.size()));
+        for (const auto& name : _measure_names) {
+            put_u32(out, static_cast<uint32_t>(name.size()));
+            out->append(name);
+        }
+        for (const auto& m : _measures) {
+            put_u64(out, std::bit_cast<uint64_t>(m.sum));
+            put_u64(out, std::bit_cast<uint64_t>(m.min));
+            put_u64(out, std::bit_cast<uint64_t>(m.max));
+            put_u32(out, m.non_null);
+        }
+        put_u64(out, measures_offset);
+    }
     return Status::OK();
+}
+
+Status HasiTreeBuilder::finish(std::string* out) {
+    return serialize(out);
 }
 
 Status HasiTree::parse(std::string&& data) {
@@ -188,7 +271,7 @@ Status HasiTree::parse(std::string&& data) {
         return Status::Corruption("hasi index bad magic");
     }
     const uint32_t version = get_u32(base + 4);
-    if (version != kVersion) {
+    if (version != kVersionV1 && version != kVersionV2) {
         return Status::Corruption("hasi index unsupported version {}", version);
     }
     _leaf_rows = get_u32(base + 12);
@@ -201,6 +284,45 @@ Status HasiTree::parse(std::string&& data) {
     }
     _cells_base = base + dir_end;
     _cells_len = _data.size() - dir_end;
+    _measure_names.clear();
+    _leaf_measures = nullptr;
+    if (version == kVersionV2) {
+        // trailer: ... [measures section] [u64 measures_offset]
+        if (_data.size() < dir_end + 8) {
+            return Status::Corruption("hasi v2 index missing measures trailer");
+        }
+        const uint64_t measures_offset =
+                get_u64(base + _data.size() - 8);
+        if (measures_offset < dir_end || measures_offset + 4 > _data.size() - 8) {
+            return Status::Corruption("hasi v2 bad measures offset {}", measures_offset);
+        }
+        _cells_len = measures_offset - dir_end;
+        const uint8_t* p = base + measures_offset;
+        const uint8_t* end = base + _data.size() - 8;
+        const uint32_t num_measures = get_u32(p);
+        p += 4;
+        if (num_measures == 0 || num_measures > HasiTreeBuilder::kMaxMeasures) {
+            return Status::Corruption("hasi v2 bad measure count {}", num_measures);
+        }
+        for (uint32_t m = 0; m < num_measures; ++m) {
+            if (p + 4 > end) {
+                return Status::Corruption("hasi v2 truncated measure names");
+            }
+            const uint32_t len = get_u32(p);
+            p += 4;
+            if (len > 256 || p + len > end) {
+                return Status::Corruption("hasi v2 bad measure name length {}", len);
+            }
+            _measure_names.emplace_back(reinterpret_cast<const char*>(p), len);
+            p += len;
+        }
+        const size_t sketch_bytes =
+                static_cast<size_t>(num_leaves) * num_measures * kLeafMeasureSize;
+        if (p + sketch_bytes != end) {
+            return Status::Corruption("hasi v2 sketch section size mismatch");
+        }
+        _leaf_measures = p;
+    }
     _leaves.clear();
     _leaves.reserve(num_leaves);
     uint32_t expect_rid = 0;
@@ -225,6 +347,81 @@ Status HasiTree::parse(std::string&& data) {
     if (expect_rid != _num_rows) {
         return Status::Corruption("hasi index leaf coverage {} != num_rows {}", expect_rid,
                                   _num_rows);
+    }
+    return Status::OK();
+}
+
+int HasiTree::measure_index(const std::string& name) const {
+    for (size_t i = 0; i < _measure_names.size(); ++i) {
+        if (_measure_names[i] == name) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+HasiLeafMeasure HasiTree::_leaf_measure(uint32_t leaf_idx, uint32_t measure_idx) const {
+    const uint8_t* p = _leaf_measures +
+                       (static_cast<size_t>(leaf_idx) * _measure_names.size() + measure_idx) *
+                               kLeafMeasureSize;
+    HasiLeafMeasure m;
+    m.sum = std::bit_cast<double>(get_u64(p));
+    m.min = std::bit_cast<double>(get_u64(p + 8));
+    m.max = std::bit_cast<double>(get_u64(p + 16));
+    m.non_null = get_u32(p + 24);
+    return m;
+}
+
+Status HasiTree::aggregate_inside(const std::vector<CellRange>& covering,
+                                  const std::vector<CellRange>& interior, int measure_idx,
+                                  HasiLeafMeasure* inside_agg, uint64_t* inside_rows,
+                                  std::vector<uint32_t>* boundary_rids,
+                                  HasiSearchStats* stats) const {
+    if (measure_idx < 0 || static_cast<size_t>(measure_idx) >= _measure_names.size() ||
+        _leaf_measures == nullptr) {
+        return Status::InternalError("hasi aggregate: measure {} not present", measure_idx);
+    }
+    *inside_agg = HasiLeafMeasure();
+    *inside_rows = 0;
+    boundary_rids->clear();
+    std::vector<uint64_t> cells;
+    for (uint32_t li = 0; li < _leaves.size(); ++li) {
+        const Leaf& leaf = _leaves[li];
+        const uint32_t leaf_row_count = leaf.rid_end - leaf.rid_begin;
+        const uint32_t value_rows = leaf_row_count - leaf.null_count;
+        if (value_rows == 0 || !ranges_overlap_interval(covering, leaf.min_cell, leaf.max_cell)) {
+            ++stats->leaves_skipped;
+            stats->rows_rejected += value_rows;
+            continue;
+        }
+        // Unlike whole-leaf retrieval accept, aggregation tolerates NULL-cell rows in
+        // an interior leaf: they never entered the sketch, and the region predicate is
+        // non-true for them anyway.
+        if (ranges_contain_interval(interior, leaf.min_cell, leaf.max_cell)) {
+            const HasiLeafMeasure m = _leaf_measure(li, static_cast<uint32_t>(measure_idx));
+            inside_agg->sum += m.sum;
+            inside_agg->min = std::min(inside_agg->min, m.min);
+            inside_agg->max = std::max(inside_agg->max, m.max);
+            inside_agg->non_null += m.non_null;
+            *inside_rows += value_rows;
+            ++stats->leaves_inside;
+            stats->rows_inside += value_rows;
+            continue;
+        }
+        RETURN_IF_ERROR(_decode_leaf_cells(leaf, &cells));
+        for (uint32_t i = 0; i < leaf_row_count; ++i) {
+            const uint64_t cell = cells[i];
+            if (cell == 0) {
+                continue;
+            }
+            if (cell_ranges_contain(covering, cell)) {
+                boundary_rids->push_back(leaf.rid_begin + i);
+                ++stats->rows_margin;
+            } else {
+                ++stats->rows_rejected;
+            }
+        }
+        ++stats->leaves_boundary;
     }
     return Status::OK();
 }

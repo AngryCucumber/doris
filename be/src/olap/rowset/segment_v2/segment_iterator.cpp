@@ -3151,7 +3151,20 @@ bool SegmentIterator::_no_need_read_key_data(ColumnId cid, vectorized::MutableCo
         return false;
     }
 
-    if (!_check_all_conditions_passed_inverted_index_for_column(cid)) {
+    // A key column with no registered per-row condition at all (predicates fully
+    // consumed into scan key ranges, or none to begin with -- e.g. the __s2 sort key
+    // after the geo index answered the circle predicate exactly) is never evaluated
+    // row-wise, so placeholder defaults are safe. This shortcut requires
+    // enable_common_expr_pushdown: with pushdown off, slot-referencing conjuncts stay
+    // at the scan operator, would be evaluated on the emitted block, and are not
+    // visible in the exec-status maps.
+    const bool common_expr_pushdown =
+            _opts.runtime_state == nullptr ||
+            _opts.runtime_state->query_options().enable_common_expr_pushdown;
+    const bool has_registered_condition = _column_predicate_index_exec_status.contains(cid) ||
+                                          _common_expr_index_exec_status.contains(cid);
+    if (!(common_expr_pushdown && !has_registered_condition) &&
+        !_check_all_conditions_passed_inverted_index_for_column(cid)) {
         return false;
     }
 

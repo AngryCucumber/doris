@@ -178,29 +178,6 @@ bool compute_circle_covering(const GeoRangeSearchRuntime& runtime,
     return true;
 }
 
-void classify_margin_cells(const GeoRangeSearchRuntime& runtime,
-                           const std::vector<std::pair<uint32_t, uint64_t>>& margin,
-                           roaring::Roaring* hit, std::vector<uint32_t>* need_exact) {
-    if (margin.empty()) {
-        return;
-    }
-    const S2Point center = S2LatLng::FromDegrees(runtime.lat0, runtime.lng0).ToPoint();
-    const double wide_margin = kGeoIndexMarginMeters + kGeoCellQuantizationMeters;
-    const double accept_below = runtime.radius_m - wide_margin;
-    const double reject_above = runtime.radius_m + wide_margin;
-    for (const auto& [rid, cell] : margin) {
-        const S2Point p = S2CellId(cell).ToPoint();
-        const double dist_m = S1Angle(p, center).radians() * kGeoEarthRadiusMeters;
-        if (dist_m < accept_below) {
-            hit->add(rid);
-        } else if (dist_m > reject_above) {
-            // definite miss; conservative under both < and <= forms
-        } else {
-            need_exact->push_back(rid);
-        }
-    }
-}
-
 double covering_keyspace_fraction(const std::vector<CellRange>& covering) {
     const uint64_t lo = S2CellId::FromFace(0).range_min().id();
     const uint64_t hi = S2CellId::FromFace(5).range_max().id();

@@ -19,14 +19,18 @@
 
 #include <gtest/gtest.h>
 #include <s2/s1angle.h>
+#include <s2/s1chord_angle.h>
 #include <s2/s2cap.h>
+#include <s2/s2cell.h>
 #include <s2/s2cell_id.h>
 #include <s2/s2latlng.h>
 #include <s2/s2point.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <random>
+#include <set>
 
 #include "geo/geo_types.h"
 
@@ -206,6 +210,83 @@ TEST(S2CoveringTest, SignedKeyTransform) {
     int64_t unused = 0;
     EXPECT_FALSE(GeoPoint::ComputeS2CellKey(0.0, 91.0, &unused));
     EXPECT_FALSE(GeoPoint::ComputeS2CellKey(181.0, 0.0, &unused));
+}
+
+// Hierarchical margin classification (v1.5): whatever grouping path decided a row,
+// the verdict must be safe for ANY true point inside the row's leaf cell -- hits
+// must satisfy leaf.GetMaxDistance < radius, drops leaf.GetDistance > radius, and
+// the three outcome sets must partition the input. The ambiguity set must shrink to
+// (roughly) the annulus around the circle boundary, not the whole margin band.
+TEST(S2CoveringTest, MarginClassification) {
+    std::mt19937_64 rng(20260717);
+    constexpr double kEarth = 6371010.0;
+    constexpr double kFormulaMargin = 1.0;
+    constexpr double kQuant = 0.05;
+    std::uniform_real_distribution<double> radius_log(std::log(2000.0), std::log(2000000.0));
+
+    for (int iter = 0; iter < 20; ++iter) {
+        S2Point center = random_point(rng);
+        double radius_m = std::exp(radius_log(rng));
+        S1Angle radius = S1Angle::Radians(radius_m / kEarth);
+
+        // Margin rows: points hugging the circle boundary (the hard band) plus points
+        // clearly inside/outside, all expressed as leaf cells like the index stores.
+        std::vector<std::pair<uint32_t, uint64_t>> margin;
+        std::uniform_real_distribution<double> f(0.0, 2.0);
+        for (uint32_t rid = 0; rid < 4000; ++rid) {
+            S2Point q = random_point(rng);
+            S2Point p = point_at_distance(center, q, radius * f(rng));
+            margin.emplace_back(rid, S2CellId(p).id());
+        }
+        std::sort(margin.begin(), margin.end(),
+                  [](const auto& a, const auto& b) { return a.second < b.second; });
+
+        roaring::Roaring hit;
+        std::vector<uint32_t> need_exact;
+        double lng0 = S2LatLng(center).lng().degrees();
+        double lat0 = S2LatLng(center).lat().degrees();
+        classify_margin_cells(lng0, lat0, radius_m, kFormulaMargin, kQuant, margin, &hit,
+                              &need_exact);
+
+        std::set<uint32_t> exact_set(need_exact.begin(), need_exact.end());
+        ASSERT_EQ(need_exact.size(), exact_set.size());
+        // The classifier recomputes the center from rounded degrees; bound the
+        // resulting slack generously when checking verdict safety.
+        S2Point used_center = S2LatLng::FromDegrees(lat0, lng0).ToPoint();
+        size_t hits = 0;
+        for (const auto& [rid, cell] : margin) {
+            bool in_hit = hit.contains(rid);
+            bool in_exact = exact_set.count(rid) > 0;
+            ASSERT_FALSE(in_hit && in_exact) << "row in both sets, rid=" << rid;
+            S2Cell leaf((S2CellId(cell)));
+            double min_d = S1ChordAngle(leaf.GetDistance(used_center)).ToAngle().radians() * kEarth;
+            double max_d =
+                    S1ChordAngle(leaf.GetMaxDistance(used_center)).ToAngle().radians() * kEarth;
+            if (in_hit) {
+                ++hits;
+                ASSERT_LT(max_d, radius_m + 0.01)
+                        << "accepted a row whose leaf may lie outside, rid=" << rid;
+            } else if (!in_exact) {
+                ASSERT_GT(min_d, radius_m - 0.01)
+                        << "dropped a row whose leaf may lie inside, rid=" << rid;
+            }
+        }
+        ASSERT_GT(hits, 0u);
+        // Rows sent to the exact recheck must hug the boundary: their leaf cells
+        // intersect the annulus radius ± (margins + leaf size).
+        for (uint32_t rid : need_exact) {
+            auto it = std::find_if(margin.begin(), margin.end(),
+                                   [rid](const auto& m) { return m.first == rid; });
+            S2Cell leaf((S2CellId(it->second)));
+            double min_d = S1ChordAngle(leaf.GetDistance(used_center)).ToAngle().radians() * kEarth;
+            double max_d =
+                    S1ChordAngle(leaf.GetMaxDistance(used_center)).ToAngle().radians() * kEarth;
+            double slack = kFormulaMargin + kQuant + 0.5;
+            ASSERT_TRUE(min_d < radius_m + slack && max_d > radius_m - slack)
+                    << "need_exact row far from the boundary annulus, rid=" << rid
+                    << " min_d=" << min_d << " max_d=" << max_d << " r=" << radius_m;
+        }
+    }
 }
 
 } // namespace doris::segment_v2

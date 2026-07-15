@@ -288,6 +288,111 @@ TEST(HasiTreeTest, MarginModeInvariants) {
     }
 }
 
+// v2b measure sketches: attach -> stream -> serialize -> parse roundtrip, and
+// aggregate_inside + row-wise folding of boundary_rids must reproduce the brute-force
+// aggregate over all rows whose cell lies in the interior, exactly (sum/min/max/count
+// are plain double/int ops on both paths, so bit-exact equality is required).
+TEST(HasiTreeTest, MeasureSketchAggregate) {
+    std::mt19937_64 rng(20260718);
+    S2Covering coverer(kMaxLevel, kMaxCells);
+    std::uniform_real_distribution<double> radius_log(std::log(50000.0), std::log(5000000.0));
+
+    for (int iter = 0; iter < 10; ++iter) {
+        Dataset data = make_clustered(rng, 5000, iter % 2 == 0 ? 100 : 0);
+        HasiTreeBuilder builder(iter % 2 == 0 ? 64 : 257);
+        size_t i = 0;
+        while (i < data.size()) {
+            if (!data[i].has_value()) {
+                uint32_t run = 0;
+                while (i < data.size() && !data[i].has_value()) {
+                    ++run;
+                    ++i;
+                }
+                builder.add_nulls(run);
+            } else {
+                builder.add_value(*data[i]);
+                ++i;
+            }
+        }
+        builder.finish_topology();
+        ASSERT_TRUE(builder.attach_measures({"amount"}).ok());
+        // measure = deterministic f(rid); every 7th row NULL; NULL-cell rows fed as
+        // measure-NULL per the sketch contract.
+        auto measure_of = [](uint32_t rid) { return (rid % 1000) * 0.5 - 100.0; };
+        auto measure_null = [&](uint32_t rid) {
+            return rid % 7 == 0 || !data[rid].has_value();
+        };
+        for (uint32_t rid = 0; rid < data.size(); ++rid) {
+            double v = measure_of(rid);
+            uint8_t is_null = measure_null(rid) ? 1 : 0;
+            ASSERT_TRUE(builder.add_measure_row(rid, &v, &is_null).ok());
+        }
+        std::string blob;
+        ASSERT_TRUE(builder.serialize(&blob).ok());
+
+        HasiTree tree;
+        ASSERT_TRUE(tree.parse(std::move(blob)).ok());
+        ASSERT_TRUE(tree.has_measures());
+        ASSERT_EQ(0, tree.measure_index("amount"));
+        ASSERT_EQ(-1, tree.measure_index("nope"));
+
+        S2Point center = S2CellId(s2_cell_from_key(*data[data.size() / 2])).ToPoint();
+        S2Cap cap(center, S1Angle::Radians(std::exp(radius_log(rng)) / 6371010.0));
+        std::vector<CellRange> covering;
+        std::vector<CellRange> interior;
+        coverer.cover(cap, &covering, &interior);
+
+        HasiLeafMeasure inside;
+        uint64_t inside_rows = 0;
+        std::vector<uint32_t> boundary;
+        HasiSearchStats stats;
+        ASSERT_TRUE(tree.aggregate_inside(covering, interior, 0, &inside, &inside_rows,
+                                          &boundary, &stats)
+                            .ok());
+
+        // Fold boundary rows the way the caller would (restricting to cell ∈ I so the
+        // combined result is comparable to the brute-force interior aggregate).
+        HasiLeafMeasure folded = inside;
+        uint64_t folded_rows = inside_rows;
+        for (uint32_t rid : boundary) {
+            if (!cell_ranges_contain(interior, s2_cell_from_key(*data[rid]))) {
+                continue;
+            }
+            ++folded_rows;
+            if (!measure_null(rid)) {
+                folded.sum += measure_of(rid);
+                folded.min = std::min(folded.min, measure_of(rid));
+                folded.max = std::max(folded.max, measure_of(rid));
+                ++folded.non_null;
+            }
+        }
+        // Brute force over all rows with cell in the interior.
+        HasiLeafMeasure brute;
+        uint64_t brute_rows = 0;
+        for (uint32_t rid = 0; rid < data.size(); ++rid) {
+            if (!data[rid].has_value() ||
+                !cell_ranges_contain(interior, s2_cell_from_key(*data[rid]))) {
+                continue;
+            }
+            // every interior row must be sketch-covered or listed as boundary
+            ++brute_rows;
+            if (!measure_null(rid)) {
+                brute.sum += measure_of(rid);
+                brute.min = std::min(brute.min, measure_of(rid));
+                brute.max = std::max(brute.max, measure_of(rid));
+                ++brute.non_null;
+            }
+        }
+        ASSERT_EQ(brute_rows, folded_rows) << "iter " << iter;
+        ASSERT_EQ(brute.non_null, folded.non_null) << "iter " << iter;
+        ASSERT_DOUBLE_EQ(brute.sum, folded.sum) << "iter " << iter;
+        if (brute.non_null > 0) {
+            ASSERT_EQ(brute.min, folded.min) << "iter " << iter;
+            ASSERT_EQ(brute.max, folded.max) << "iter " << iter;
+        }
+    }
+}
+
 // Corrupted/truncated buffers must fail cleanly, never crash.
 TEST(HasiTreeTest, ParseRejectsCorruption) {
     std::mt19937_64 rng(11);

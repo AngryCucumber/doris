@@ -94,14 +94,15 @@ double covering_keyspace_fraction(const std::vector<CellRange>& covering);
 // leaf cell (max leaf diagonal is < 2 cm; 5 cm is comfortably conservative).
 inline constexpr double kGeoCellQuantizationMeters = 0.05;
 
-// v1.5 exact filtering: classify margin rows (cell ∈ C∖I) by their cell-derived
-// position. Rows whose cell center is more than margin+quantization inside the
-// circle are definite hits (added to `hit`); more than that outside are definite
-// misses (dropped); the remaining ambiguity band -- typically empty, it is a
-// ~2 m annulus around the circle boundary -- goes to `need_exact` for a
-// true-coordinate recheck with the same scalar kernel the full scan runs.
-void classify_margin_cells(const GeoRangeSearchRuntime& runtime,
-                           const std::vector<std::pair<uint32_t, uint64_t>>& margin,
-                           roaring::Roaring* hit, std::vector<uint32_t>* need_exact);
+// v1.5 exact filtering: classify margin rows (cell ∈ C∖I) hierarchically against
+// the circle (see s2_covering.h::classify_margin_cells). Only the ~2 m ambiguity
+// annulus around the circle boundary lands in `need_exact` for a true-coordinate
+// recheck with the same scalar kernel the full scan runs.
+inline void classify_margin_cells(const GeoRangeSearchRuntime& runtime,
+                                  const std::vector<std::pair<uint32_t, uint64_t>>& margin,
+                                  roaring::Roaring* hit, std::vector<uint32_t>* need_exact) {
+    classify_margin_cells(runtime.lng0, runtime.lat0, runtime.radius_m, kGeoIndexMarginMeters,
+                          kGeoCellQuantizationMeters, margin, hit, need_exact);
+}
 
 } // namespace doris::segment_v2

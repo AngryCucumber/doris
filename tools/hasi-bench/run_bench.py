@@ -88,12 +88,14 @@ def main():
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--fe", default="127.0.0.1:8030")
     ap.add_argument("--db", default="hasi_bench")
+    ap.add_argument("--table", default="geo_t")
     ap.add_argument("--user", default="root")
     ap.add_argument("--password", default="")
     args = ap.parse_args()
 
     rows = []
-    for qname, table, lon0, lat0, radius in QUERIES:
+    for qname, _table, lon0, lat0, radius in QUERIES:
+        table = args.table
         counts = {}
         medians = {}
         for cname, setvars in CONFIGS:
@@ -127,7 +129,8 @@ def main():
     print()
     print(f"{'count(*) query':<20} {'rows':>9} {'off':>9} {'v1.5':>9} {'v2a':>9} "
           f"{'v15_x':>6} {'v2a_x':>6}")
-    for qname, table, lon0, lat0, radius in QUERIES:
+    for qname, _table, lon0, lat0, radius in QUERIES:
+        table = args.table
         counts = {}
         medians = {}
         for cname, setvars in COUNT_CONFIGS:

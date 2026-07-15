@@ -18,6 +18,8 @@
 #pragma once
 
 #include <cstdint>
+#include <roaring/roaring.hh>
+#include <utility>
 #include <vector>
 
 class S2Region;
@@ -50,6 +52,21 @@ inline uint64_t s2_cell_from_key(int64_t cell_key) {
 
 // True if `leaf_id` falls into one of the sorted, disjoint `ranges`.
 bool cell_ranges_contain(const std::vector<CellRange>& ranges, uint64_t leaf_id);
+
+// v1.5 margin resolution (design doc §7 v1.5): classify (rid, raw leaf cell) rows
+// against the circle (lng0, lat0, radius_m in ST_Distance_Sphere's 6371010 m domain)
+// hierarchically -- consecutive rows sharing an ancestor cell are decided as one
+// group via the ancestor's min/max distance to the center (the true point lies
+// inside its ancestor, so group verdicts only need `formula_margin_m` slack for the
+// haversine-vs-chord/float gap). Only groups straddling the r±margin annulus split
+// into finer runs; leftover rows are decided from their leaf-cell center, which
+// additionally needs `quantization_m` slack (point-to-own-leaf-center offset).
+// Rows definitely inside go to `hit`; rows in the residual ambiguity annulus go to
+// `need_exact`; definite misses are dropped.
+void classify_margin_cells(double lng0, double lat0, double radius_m, double formula_margin_m,
+                           double quantization_m,
+                           const std::vector<std::pair<uint32_t, uint64_t>>& margin,
+                           roaring::Roaring* hit, std::vector<uint32_t>* need_exact);
 
 // Adaptive multi-resolution covering of a query region:
 //   covering C = S2RegionCoverer::GetCovering  (C ⊇ region: outside C is a safe reject)

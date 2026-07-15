@@ -688,9 +688,31 @@ close 时同步等待、load 内存硬限），flush 吞吐低于摄入吞吐时
   整条链路（`PhysicalStorageLayerAggregate(COUNT_ON_MATCH)` → `TPushAggOp::COUNT_ON_INDEX` →
   BE 普通 SegmentIterator 占位行短路），FE 仅把 `AggregateStrategies` 的索引门槛扩展为
   inverted/bitmap **或 GEO**（且三个 geo 开关全开）。正确性不依赖该门槛：BE 回答不了就正常
-  读行评谓词。已知未收口优化：__s2 键列在 count 路径仍被实际读取（其执行状态图为空时
-  `_check_all_conditions...` 保守返回 false）；lon/lat 已免读。原 §3.3-5 的完整判定矩阵
-  （时间三态/度量集/残余谓词吸收）属 v2b 范畴。
+  读行评谓词。原 §3.3-5 的完整判定矩阵（时间三态/度量集/残余谓词吸收）属 v2b 范畴。
+- **v2a 补全（rev2.5）**：① `_no_need_read_key_data` 对**零登记条件**的键列
+  （执行状态图无该 cid 条目 = 谓词已全部进 scan key range 或本就没有；delete predicate
+  仍单独硬拒；`enable_common_expr_pushdown` 关闭时保留硬拒——算子层残留 conjunct 会评到
+  占位值）放行占位默认值 → geo count 路径 `__s2` 免读。② margin 分类改**层级分组**
+  （`s2_covering.cpp::classify_margin_cells`）：按祖先 cell（顶层 level 8，+4 递进）对
+  连续行分 run，`S2Cell::GetDistance/GetMaxDistance` 整组判定（真点在祖先 cell 内，组判定
+  只需公式余量），仅跨 r±margin 环带的组下钻，叶级回落才用 cell 中心 + 量化余量——
+  HASI 的聚合原理反哺自身的边界消解。③ **隐式 F 叉金字塔正式推迟到 v2b**：当前 segment
+  规模（≤~4M 行，默认 leaf_rows=65536 下 ≤61 叶/segment）叶目录遍历本身即近 O(1)，
+  金字塔对检索/count 无可测收益；其真实价值是 v2b 的节点级重 sketch（HLL/t-digest 只挂
+  ≥sketch_min_rows 的内部节点），届时随格式 v2 一起落地。
+- **v2b 基础（rev2.5，BE 核心已落地，未接查询链路）**：HasiTree 格式 **version 2** ——
+  v1 布局不变，尾部追加 measures 段（度量名表 + 每叶 × 每度量定长 28B sketch：
+  f64 sum/min/max + u32 non_null）+ 段偏移 trailer；无度量时仍写 version 1（逐位兼容）。
+  Builder 生命周期按 §4.2 拆分：`finish_topology()` 封叶驻留内存 →
+  `attach_measures(names)` → `add_measure_row(rid, values, nulls)` 按 rid 严格递增流式
+  路由到叶（**契约：geo cell 为 NULL 的行由调用方喂 measure-NULL**，compaction 读回时
+  同时读 `__s2` 判空即可）→ `serialize()` 一次写盘。查询内核 `aggregate_inside(C, I,
+  measure)`：interior 包含的叶 O(1) 合并 sketch（聚合允许含 NULL-cell 行的叶走 INSIDE——
+  它们不在 sketch 里且谓词对其非真），边界叶行回填 boundary_rids 交调用方按行折叠。
+  单测以"inside_agg + 边界行折叠 == 全量暴力聚合"逐位对拍（度量取 0.5 的倍数使浮点
+  加法精确、免疫求和顺序）。**尚未接入**：compaction 读回构建钩子、per-rowset sketch
+  存在性 gate、FE `PushDownGeoAgg` 判定矩阵、HLL/t-digest blob 段与金字塔节点层——
+  即 §7 v2b 行的集成部分，属下一批工作。
 
 **每阶段性能通过门槛（基线与测法见 §8）**：
 

@@ -18,6 +18,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <roaring/roaring.hh>
 #include <string>
 #include <vector>
@@ -61,14 +62,33 @@ struct HasiSearchStats {
     uint64_t rows_rejected = 0;   // dropped because cell ∉ covering
 };
 
+// Per-leaf fixed-size sketch of one numeric measure (v2b core, format version 2).
+// NULL semantics follow NodeAgg (§4.2): sum/min/max skip NULL measure values,
+// non_null counts the rest; rows whose GEO cell is NULL never reach the sketch
+// (they are fed as measure-NULL by the caller).
+struct HasiLeafMeasure {
+    double sum = 0;
+    double min = std::numeric_limits<double>::infinity();
+    double max = -std::numeric_limits<double>::infinity();
+    uint32_t non_null = 0;
+};
+
 // Streaming single-pass builder (O(1) state per open leaf, no row buffering).
 // Feed rows strictly in rowid order; add_value takes the __s2 column value
 // (sign-flipped BIGINT domain, see s2_key_from_cell).
+//
+// v2b measure flow (default build site = compaction read-back, §3.5): after all
+// cells are fed, finish_topology() seals the leaf directory in memory,
+// attach_measures() declares the measure set, add_measure_row() streams measure
+// values in rid order, and serialize() writes the whole structure once. The v1
+// finish(out) remains as finish_topology()+serialize() and emits format version 1
+// when no measures were attached (bit-identical to pre-v2b files).
 class HasiTreeBuilder {
 public:
     static constexpr uint32_t kMinLeafRows = 64;
     static constexpr uint32_t kMaxLeafRows = 1 << 22;
     static constexpr uint32_t kDefaultLeafRows = 65536;
+    static constexpr uint32_t kMaxMeasures = 64;
 
     explicit HasiTreeBuilder(uint32_t leaf_rows);
 
@@ -77,8 +97,21 @@ public:
 
     uint32_t num_rows() const { return _num_rows; }
 
-    // Seals the last leaf and serializes the whole structure. The builder must not
-    // be reused afterwards.
+    // Seals the last leaf; the topology stays in memory for measure attachment.
+    void finish_topology();
+
+    // Declares the measures that will be streamed; only callable between
+    // finish_topology() and the first add_measure_row().
+    Status attach_measures(const std::vector<std::string>& measure_names);
+
+    // Streams one row's measure values (values[i] valid iff nulls[i] == 0), rid
+    // strictly increasing; rids may be skipped (skipped rows count as all-NULL).
+    Status add_measure_row(uint32_t rid, const double* values, const uint8_t* nulls);
+
+    // Serializes everything. The builder must not be reused afterwards.
+    Status serialize(std::string* out);
+
+    // v1 convenience: finish_topology() + serialize().
     Status finish(std::string* out);
 
 private:
@@ -101,6 +134,13 @@ private:
     std::string _cells; // serialized per-row cell streams
     uint32_t _num_leaves = 0;
     uint64_t _cur_cells_offset = 0; // offset of the open leaf's stream within _cells
+    bool _topology_done = false;
+    std::vector<uint32_t> _leaf_rid_ends; // rid_end per sealed leaf, for measure routing
+    std::vector<std::string> _measure_names;
+    std::vector<HasiLeafMeasure> _measures; // [leaf][measure], row-major per leaf
+    uint32_t _measure_leaf_cursor = 0;
+    uint32_t _last_measure_rid = 0;
+    bool _measure_seen = false;
 };
 
 // Loaded, immutable index. parse() takes ownership of the serialized buffer; the
@@ -128,6 +168,26 @@ public:
     uint32_t num_leaves() const { return static_cast<uint32_t>(_leaves.size()); }
     uint32_t leaf_rows() const { return _leaf_rows; }
 
+    // ---- v2b measure sketches (format version 2) ----
+    bool has_measures() const { return !_measure_names.empty(); }
+    // Index of a measure by (case-sensitive) name, -1 if absent.
+    int measure_index(const std::string& name) const;
+
+    // Aggregates one measure over the region (contract C3 gates are the CALLER's
+    // job -- delete bitmaps, residual predicates, table model):
+    //   - leaves fully inside the interior contribute their sketch O(1) (all their
+    //     value rows are provably in the region; leaf NULL-cell rows never entered
+    //     the sketch);
+    //   - value rows of leaves overlapping the covering but not fully inside are
+    //     appended to boundary_rids (cells ∈ C; the caller folds them row-wise with
+    //     exact geometry + real measure values);
+    //   - rows outside the covering contribute nothing.
+    // inside_rows counts the sketch-covered rows (count(*) contribution).
+    Status aggregate_inside(const std::vector<CellRange>& covering,
+                            const std::vector<CellRange>& interior, int measure_idx,
+                            HasiLeafMeasure* inside_agg, uint64_t* inside_rows,
+                            std::vector<uint32_t>* boundary_rids, HasiSearchStats* stats) const;
+
 private:
     struct Leaf {
         uint64_t min_cell;
@@ -140,12 +200,16 @@ private:
 
     Status _decode_leaf_cells(const Leaf& leaf, std::vector<uint64_t>* cells) const;
 
+    HasiLeafMeasure _leaf_measure(uint32_t leaf_idx, uint32_t measure_idx) const;
+
     std::string _data;
     uint32_t _leaf_rows = 0;
     uint32_t _num_rows = 0;
     std::vector<Leaf> _leaves;
     const uint8_t* _cells_base = nullptr;
     size_t _cells_len = 0;
+    std::vector<std::string> _measure_names;
+    const uint8_t* _leaf_measures = nullptr; // [leaf][measure], kLeafMeasureSize each
 };
 
 } // namespace doris::segment_v2
