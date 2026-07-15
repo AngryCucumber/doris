@@ -229,6 +229,37 @@ struct StDistanceSphere {
     }
 };
 
+struct StS2CellId {
+    static constexpr auto NAME = "st_s2_cellid";
+    static const size_t NUM_ARGS = 2;
+    using Type = DataTypeInt64;
+    static Status execute(Block& block, const ColumnNumbers& arguments, size_t result) {
+        DCHECK_EQ(arguments.size(), 2);
+
+        auto lng = ColumnView<TYPE_DOUBLE>::create(block.get_by_position(arguments[0]).column);
+        auto lat = ColumnView<TYPE_DOUBLE>::create(block.get_by_position(arguments[1]).column);
+
+        const auto size = lng.size();
+        auto res = ColumnInt64::create();
+        res->reserve(size);
+        auto null_map = ColumnUInt8::create(size, 0);
+        auto& null_map_data = null_map->get_data();
+        for (int row = 0; row < size; ++row) {
+            int64_t cell_key = 0;
+            if (!GeoPoint::ComputeS2CellKey(lng.value_at(row), lat.value_at(row), &cell_key)) {
+                null_map_data[row] = 1;
+                res->insert_default();
+                continue;
+            }
+            res->insert_value(cell_key);
+        }
+
+        block.replace_by_position(result,
+                                  ColumnNullable::create(std::move(res), std::move(null_map)));
+        return Status::OK();
+    }
+};
+
 struct StAngleSphere {
     static constexpr auto NAME = "st_angle_sphere";
     static const size_t NUM_ARGS = 4;
@@ -924,6 +955,7 @@ void register_function_geo(SimpleFunctionFactory& factory) {
     factory.register_function<GeoFunction<StX>>();
     factory.register_function<GeoFunction<StY>>();
     factory.register_function<GeoFunction<StDistanceSphere>>();
+    factory.register_function<GeoFunction<StS2CellId>>();
     factory.register_function<GeoFunction<StAngleSphere>>();
     factory.register_function<GeoFunction<StAngle>>();
     factory.register_function<GeoFunction<StAzimuth>>();

@@ -486,6 +486,7 @@ import org.apache.doris.nereids.trees.expressions.functions.scalar.StPoint;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.StPolyfromtext;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.StPolygon;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.StPolygonfromtext;
+import org.apache.doris.nereids.trees.expressions.functions.scalar.StS2CellId;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.StTouches;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.StX;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.StY;
@@ -1063,6 +1064,7 @@ public class BuiltinScalarFunctions implements FunctionHelper {
             scalar(StPolyfromtext.class, "st_polyfromtext"),
             scalar(StPolygon.class, "st_polygon"),
             scalar(StPolygonfromtext.class, "st_polygonfromtext"),
+            scalar(StS2CellId.class, "st_s2_cellid"),
             scalar(StX.class, "st_x"),
             scalar(StY.class, "st_y"),
             scalar(StartsWith.class, "starts_with"),

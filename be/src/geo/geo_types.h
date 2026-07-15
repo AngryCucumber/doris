@@ -109,6 +109,13 @@ public:
     static bool ComputeDistance(double x_lng, double x_lat, double y_lng, double y_lat,
                                 double* distance);
 
+    // S2 leaf cell id of (lng, lat) mapped to an order-preserving signed key:
+    // raw cell ids are uint64 and faces 4/5 have the top bit set, so a plain bit-cast
+    // to BIGINT would sort those faces before faces 0-3 and break Hilbert-order range
+    // scans on the __s2 sort key; flipping the sign bit (id ^ 2^63) keeps int64 order
+    // identical to uint64 order. XOR again to recover the raw cell id.
+    static bool ComputeS2CellKey(double lng, double lat, int64_t* cell_key);
+
     static bool ComputeAngleSphere(double x_lng, double x_lat, double y_lng, double y_lat,
                                    double* angle);
     static bool ComputeAngle(GeoPoint* p1, GeoPoint* p2, GeoPoint* p3, double* angle);

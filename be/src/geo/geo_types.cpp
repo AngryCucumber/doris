@@ -23,6 +23,7 @@
 #include <s2/s2builderutil_s2polygon_layer.h>
 #include <s2/s2builderutil_s2polyline_vector_layer.h>
 #include <s2/s2cap.h>
+#include <s2/s2cell_id.h>
 #include <s2/s2earth.h>
 #include <s2/s2edge_crosser.h>
 #include <s2/s2edge_distances.h>
@@ -632,6 +633,15 @@ bool GeoPoint::ComputeDistance(double x_lng, double x_lat, double y_lng, double 
         return false;
     }
     *distance = S2Earth::GetDistanceMeters(x, y);
+    return true;
+}
+
+bool GeoPoint::ComputeS2CellKey(double lng, double lat, int64_t* cell_key) {
+    S2LatLng ll = S2LatLng::FromDegrees(lat, lng);
+    if (!ll.is_valid()) {
+        return false;
+    }
+    *cell_key = static_cast<int64_t>(S2CellId(ll).id() ^ (uint64_t(1) << 63));
     return true;
 }
 

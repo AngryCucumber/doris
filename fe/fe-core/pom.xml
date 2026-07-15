@@ -156,6 +156,15 @@ under the License.
             <groupId>com.google.code.gson</groupId>
             <artifactId>gson</artifactId>
         </dependency>
+        <!-- https://mvnrepository.com/artifact/com.google.geometry/s2-geometry
+             Google official Java port of S2; Apache-2.0. Used by the HASI geo index
+             (RewriteGeoPredicate covering -> __s2 ranges); must stay bit-compatible
+             with the BE C++ s2geometry cell ids (guarded by cross-language tests). -->
+        <dependency>
+            <groupId>com.google.geometry</groupId>
+            <artifactId>s2-geometry</artifactId>
+            <version>2.0.0</version>
+        </dependency>
         <!-- https://mvnrepository.com/artifact/com.google.guava/guava -->
         <dependency>
             <groupId>com.google.guava</groupId>

@@ -154,6 +154,7 @@ import org.apache.doris.nereids.rules.rewrite.RecordPlanForMvPreRewrite;
 import org.apache.doris.nereids.rules.rewrite.ReduceAggregateChildOutputRows;
 import org.apache.doris.nereids.rules.rewrite.ReorderJoin;
 import org.apache.doris.nereids.rules.rewrite.RewriteCteChildren;
+import org.apache.doris.nereids.rules.rewrite.RewriteGeoPredicate;
 import org.apache.doris.nereids.rules.rewrite.RewriteSearchToSlots;
 import org.apache.doris.nereids.rules.rewrite.SaltJoin;
 import org.apache.doris.nereids.rules.rewrite.SetPreAggStatus;
@@ -781,6 +782,8 @@ public class Rewriter extends AbstractBatchJobExecutor {
                 custom(RuleType.ELIMINATE_UNNECESSARY_PROJECT, EliminateUnnecessaryProject::new),
                 topDown(new PushDownVectorTopNIntoOlapScan()),
                 topDown(new PushDownVirtualColumnsIntoOlapScan()),
+                // HASI geo index v0: ST_* circle predicate -> __s2 envelope range conjunct (+ ST_* residual)
+                topDown(new RewriteGeoPredicate()),
                 topDown(new PushDownMatchProjectionAsVirtualColumn()),
                 topic("score optimize",
                         topDown(new PushDownScoreTopNIntoOlapScan(),
