@@ -180,6 +180,62 @@ suite("geo_index_range_search") {
     sql "sync"
     checkOnOff("geo_index_mow_t", "mow-after-upsert-delete")
 
+    // ---- 4b. v1.5 exact filter: dropping the residual predicate must stay bit-exact
+    // in every mode combination (off / superset / exact), incl. after upsert+delete ----
+    queries.each { q ->
+        ["<", "<="].each { op ->
+            def query = """select id from geo_index_dup_t
+                           where st_distance_sphere(lon, lat, ${q[0]}, ${q[1]}) ${op} ${q[2]}
+                           order by id"""
+            sql "set enable_geo_index_query=false;"
+            def off = sql query
+            sql "set enable_geo_index_query=true;"
+            sql "set enable_geo_index_exact_filter=false;"
+            def superset = sql query
+            sql "set enable_geo_index_exact_filter=true;"
+            def exact = sql query
+            assertEquals(off, superset,
+                    "[v1 superset] mismatch center=(${q[0]},${q[1]}) r=${q[2]} op=${op}")
+            assertEquals(off, exact,
+                    "[v1.5 exact] mismatch center=(${q[0]},${q[1]}) r=${q[2]} op=${op}")
+        }
+    }
+    // same three-way check on the MOW table after upsert+delete
+    [[116.40d, 39.90d, 50000.0d], [179.95d, 10.0d, 30000.0d]].each { q ->
+        def query = """select id from geo_index_mow_t
+                       where st_distance_sphere(lon, lat, ${q[0]}, ${q[1]}) < ${q[2]}
+                       order by id"""
+        sql "set enable_geo_index_query=false;"
+        def off = sql query
+        sql "set enable_geo_index_query=true;"
+        sql "set enable_geo_index_exact_filter=true;"
+        def exact = sql query
+        assertEquals(off, exact, "[v1.5 exact mow] mismatch center=(${q[0]},${q[1]}) r=${q[2]}")
+    }
+
+    // ---- 4c. v2a count pushdown: plan shape + bit-exact counts ----
+    sql "set enable_geo_index_query=true;"
+    sql "set enable_geo_index_exact_filter=true;"
+    sql "set enable_geo_agg_pushdown=true;"
+    def countPlan = sql """explain select count(*) from geo_index_dup_t
+                           where st_distance_sphere(lon, lat, 116.40, 39.90) < 50000"""
+    def countPlanText = countPlan.collect { it[0] }.join("\n")
+    assertTrue(countPlanText.contains("COUNT_ON_INDEX"),
+            "geo count pushdown plan missing COUNT_ON_INDEX:\n" + countPlanText)
+
+    [["geo_index_dup_t", 5000.0d], ["geo_index_dup_t", 50000.0d],
+     ["geo_index_mow_t", 50000.0d]].each { t ->
+        def query = """select count(*) from ${t[0]}
+                       where st_distance_sphere(lon, lat, 116.40, 39.90) < ${t[1]}"""
+        sql "set enable_geo_agg_pushdown=false;"
+        sql "set enable_geo_index_query=false;"
+        def plain = sql query
+        sql "set enable_geo_agg_pushdown=true;"
+        sql "set enable_geo_index_query=true;"
+        def pushed = sql query
+        assertEquals(plain, pushed, "[v2a count] mismatch on ${t[0]} r=${t[1]}")
+    }
+
     // ---- 5. non-key __s2 (pure predicate-filter form): index still only narrows ----
     sql "drop table if exists geo_index_nokey_t"
     sql """

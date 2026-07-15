@@ -73,6 +73,7 @@ class ColumnIterator;
 class InvertedIndexIterator;
 class RowRanges;
 class IndexIterator;
+struct GeoRangeSearchRuntime;
 
 struct ColumnPredicateInfo {
     ColumnPredicateInfo() = default;
@@ -196,6 +197,9 @@ private:
             bool* continue_apply);
     [[nodiscard]] Status _apply_ann_topn_predicate();
     [[nodiscard]] Status _apply_geo_predicate();
+    [[nodiscard]] Status _resolve_geo_exact_rows(const GeoRangeSearchRuntime& runtime,
+                                                 const std::vector<uint32_t>& rowids,
+                                                 roaring::Roaring* hit);
     [[nodiscard]] Status _apply_index_expr();
 
     bool _column_has_fulltext_index(int32_t cid);

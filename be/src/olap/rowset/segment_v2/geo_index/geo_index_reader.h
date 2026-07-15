@@ -46,12 +46,13 @@ public:
 
     Status load_index(io::IOContext* io_ctx);
 
-    // Contract C1: `hit` is exactly { rid : cell(rid) != NULL && cell(rid) ∈ covering };
-    // the caller intersects it into its own row bitmap and keeps the original ST_*
-    // predicate as the exact residual filter.
+    // Contract C1: the caller only ever intersects `hit` into its own row bitmap.
+    // margin_out selects the result mode -- see HasiTree::search.
     Status range_search(const std::vector<CellRange>& covering,
                         const std::vector<CellRange>& interior, roaring::Roaring* hit,
-                        HasiSearchStats* stats, io::IOContext* io_ctx = nullptr);
+                        HasiSearchStats* stats,
+                        std::vector<std::pair<uint32_t, uint64_t>>* margin_out = nullptr,
+                        io::IOContext* io_ctx = nullptr);
 
     const TabletIndex& index_meta() const { return _index_meta; }
 

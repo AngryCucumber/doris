@@ -57,8 +57,9 @@ public:
 
     Status range_search(const std::vector<CellRange>& covering,
                         const std::vector<CellRange>& interior, roaring::Roaring* hit,
-                        HasiSearchStats* stats) {
-        return _geo_reader->range_search(covering, interior, hit, stats,
+                        HasiSearchStats* stats,
+                        std::vector<std::pair<uint32_t, uint64_t>>* margin_out = nullptr) {
+        return _geo_reader->range_search(covering, interior, hit, stats, margin_out,
                                          _context ? _context->io_ctx : nullptr);
     }
 

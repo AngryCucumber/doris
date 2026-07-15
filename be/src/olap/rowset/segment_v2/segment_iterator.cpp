@@ -59,6 +59,7 @@
 #include "olap/rowset/segment_v2/geo_index/geo_index_iterator.h"
 #include "olap/rowset/segment_v2/geo_index/geo_index_properties.h"
 #include "olap/rowset/segment_v2/geo_index/geo_range_runtime.h"
+#include "olap/rowset/segment_v2/geo_index/geo_recheck_simd.h"
 #include "olap/rowset/segment_v2/index_file_reader.h"
 #include "olap/rowset/segment_v2/index_iterator.h"
 #include "olap/rowset/segment_v2/index_query_context.h"
@@ -998,9 +999,18 @@ bool SegmentIterator::_check_apply_by_inverted_index(std::shared_ptr<ColumnPredi
 // HASI geo index retrieval pushdown (HASI_POC.md §4.5). Recognizes pushed-down
 // `st_distance_sphere(lng, lat, lng0, lat0) < r` conjuncts and narrows _row_bitmap
 // with the geo index of a matching __s2 generated column. Contract C1: the only
-// bitmap operation is `&=`; the original predicate always stays in
-// _remaining_conjunct_roots / _common_expr_ctxs_push_down as the exact residual
-// filter, so a skipped or partial index application can never change results.
+// bitmap operation is `&=`.
+//
+// Two result modes:
+//  - superset (v1): hit = { cell ∈ covering }; the original predicate stays in
+//    _remaining_conjunct_roots / _common_expr_ctxs_push_down as the exact residual
+//    filter, so a skipped or partial index application can never change results.
+//  - exact (v1.5, enable_geo_index_exact_filter): interior rows accept without any
+//    geometric recheck, margin cells classify by their cell-derived position, and
+//    only the ~2 m ambiguity band around the circle boundary reads true lon/lat and
+//    runs the same scalar kernel the full scan runs (contract C2). The verdict is
+//    then exact for every row, so the residual predicate is dropped -- rows no
+//    longer pay the haversine, and lon/lat are not materialized unless selected.
 Status SegmentIterator::_apply_geo_predicate() {
     if (_row_bitmap.isEmpty() || _common_expr_ctxs_push_down.empty()) {
         return Status::OK();
@@ -1009,28 +1019,28 @@ Status SegmentIterator::_apply_geo_predicate() {
         !_opts.runtime_state->query_options().enable_geo_index_query) {
         return Status::OK();
     }
+    const bool exact_mode = _opts.runtime_state == nullptr ||
+                            _opts.runtime_state->query_options().enable_geo_index_exact_filter;
     const auto& idx_to_cid = _schema->column_ids();
-    for (const auto& expr_ctx : _common_expr_ctxs_push_down) {
+    auto iequals = [](const std::string& a, const std::string& b) {
+        return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+                   return std::tolower(static_cast<unsigned char>(x)) ==
+                          std::tolower(static_cast<unsigned char>(y));
+               });
+    };
+    for (auto it = _common_expr_ctxs_push_down.begin(); it != _common_expr_ctxs_push_down.end();) {
         GeoRangeSearchRuntime runtime;
-        if (!extract_geo_range_search(expr_ctx->root().get(), &runtime)) {
-            continue;
-        }
-        if (runtime.lng_idx_in_block < 0 || runtime.lat_idx_in_block < 0 ||
+        if (!extract_geo_range_search((*it)->root().get(), &runtime) ||
+            runtime.lng_idx_in_block < 0 || runtime.lat_idx_in_block < 0 ||
             static_cast<size_t>(runtime.lng_idx_in_block) >= idx_to_cid.size() ||
             static_cast<size_t>(runtime.lat_idx_in_block) >= idx_to_cid.size()) {
+            ++it;
             continue;
         }
         const std::string& lng_name =
                 _opts.tablet_schema->column(idx_to_cid[runtime.lng_idx_in_block]).name();
         const std::string& lat_name =
                 _opts.tablet_schema->column(idx_to_cid[runtime.lat_idx_in_block]).name();
-        auto iequals = [](const std::string& a, const std::string& b) {
-            return a.size() == b.size() &&
-                   std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
-                       return std::tolower(static_cast<unsigned char>(x)) ==
-                              std::tolower(static_cast<unsigned char>(y));
-                   });
-        };
         // Find a geo index whose FE-recorded source columns are exactly the
         // predicate's lng/lat slots; never match on column naming conventions.
         GeoIndexIterator* geo_iterator = nullptr;
@@ -1046,31 +1056,152 @@ Status SegmentIterator::_apply_geo_predicate() {
                 break;
             }
         }
-        if (geo_iterator == nullptr) {
-            continue;
-        }
         std::vector<CellRange> covering;
         std::vector<CellRange> interior;
-        if (!compute_circle_covering(runtime, &covering, &interior)) {
-            continue;
-        }
-        // Cost gate: a covering spanning most of the keyspace cannot reject much.
-        if (covering_keyspace_fraction(covering) > kGeoIndexMaxCoveringFraction) {
+        if (geo_iterator == nullptr || !compute_circle_covering(runtime, &covering, &interior) ||
+            // Cost gate: a covering spanning most of the keyspace cannot reject much.
+            covering_keyspace_fraction(covering) > kGeoIndexMaxCoveringFraction) {
+            ++it;
             continue;
         }
         roaring::Roaring hit;
         HasiSearchStats search_stats;
-        RETURN_IF_ERROR(geo_iterator->range_search(covering, interior, &hit, &search_stats));
+        std::vector<std::pair<uint32_t, uint64_t>> margin;
+        RETURN_IF_ERROR(geo_iterator->range_search(covering, interior, &hit, &search_stats,
+                                                   exact_mode ? &margin : nullptr));
+        bool erased = false;
+        int64_t band_rows = static_cast<int64_t>(search_stats.rows_margin);
+        if (exact_mode) {
+            std::vector<uint32_t> need_exact;
+            classify_margin_cells(runtime, margin, &hit, &need_exact);
+            band_rows = static_cast<int64_t>(need_exact.size());
+            Status st = _resolve_geo_exact_rows(runtime, need_exact, &hit);
+            if (st.ok()) {
+                // The verdict is exact for every row: the residual predicate is
+                // redundant and gets dropped (same mechanism as a fully-evaluated
+                // inverted index conjunct).
+                auto root = (*it)->root();
+                auto found = std::find(_remaining_conjunct_roots.begin(),
+                                       _remaining_conjunct_roots.end(), root);
+                if (found != _remaining_conjunct_roots.end()) {
+                    _remaining_conjunct_roots.erase(found);
+                }
+                it = _common_expr_ctxs_push_down.erase(it);
+                erased = true;
+                // Mark the expression index-answered for its lng/lat slots, then let
+                // the standard all-conditions check decide whether those columns can
+                // skip materialization (they still read when another predicate or the
+                // SELECT list needs them). This is what makes `where geo_pred` stop
+                // paying lon/lat IO and enables the COUNT_ON_INDEX placeholder path.
+                for (ColumnId c : {idx_to_cid[runtime.lng_idx_in_block],
+                                   idx_to_cid[runtime.lat_idx_in_block]}) {
+                    auto status_it = _common_expr_index_exec_status.find(c);
+                    if (status_it != _common_expr_index_exec_status.end()) {
+                        auto expr_entry = status_it->second.find(runtime.distance_expr);
+                        if (expr_entry != status_it->second.end()) {
+                            expr_entry->second = true;
+                        }
+                    }
+                    if (_check_all_conditions_passed_inverted_index_for_column(c)) {
+                        _need_read_data_indices[c] = false;
+                    }
+                }
+            } else if (st.is<ErrorCode::NOT_IMPLEMENTED_ERROR>()) {
+                // Fall back to the superset mode: keep unresolved band rows in the
+                // bitmap and let the residual predicate decide them.
+                for (uint32_t rid : need_exact) {
+                    hit.add(rid);
+                }
+            } else {
+                return st;
+            }
+        }
         size_t before = _row_bitmap.cardinality();
         _row_bitmap &= hit;
         _opts.stats->rows_geo_index_filtered +=
                 static_cast<int64_t>(before - _row_bitmap.cardinality());
-        _opts.stats->geo_boundary_recheck_rows +=
-                static_cast<int64_t>(search_stats.rows_margin);
+        _opts.stats->geo_boundary_recheck_rows += band_rows;
         _opts.stats->geo_boundary_leaves += static_cast<int64_t>(search_stats.leaves_boundary);
         _opts.stats->geo_inside_rows += static_cast<int64_t>(search_stats.rows_inside);
+        if (!erased) {
+            ++it;
+        }
         if (_row_bitmap.isEmpty()) {
             break;
+        }
+    }
+    return Status::OK();
+}
+
+// Reads true lon/lat for the ambiguity-band rows and runs the exact circle kernel
+// (the very same scalar code ST_Distance_Sphere executes, contract C2). Rows that
+// satisfy the predicate are added to `hit`; NULLs never satisfy it.
+Status SegmentIterator::_resolve_geo_exact_rows(const GeoRangeSearchRuntime& runtime,
+                                                const std::vector<uint32_t>& rowids,
+                                                roaring::Roaring* hit) {
+    if (rowids.empty()) {
+        return Status::OK();
+    }
+    const auto& idx_to_cid = _schema->column_ids();
+    ColumnId lng_cid = idx_to_cid[runtime.lng_idx_in_block];
+    ColumnId lat_cid = idx_to_cid[runtime.lat_idx_in_block];
+    if (_column_iterators[lng_cid] == nullptr || _column_iterators[lat_cid] == nullptr) {
+        return Status::NotSupported("geo exact recheck: lon/lat column iterators missing");
+    }
+    auto read_doubles = [&](ColumnId cid, std::vector<double>* vals,
+                            std::vector<uint8_t>* nulls) -> Status {
+        const auto* field = _schema->column(cid);
+        vectorized::MutableColumnPtr column = Schema::get_data_type_ptr(*field)->create_column();
+        RETURN_IF_ERROR(_column_iterators[cid]->read_by_rowids(rowids.data(), rowids.size(),
+                                                               column));
+        if (column->size() != rowids.size()) {
+            return Status::InternalError("geo exact recheck read {} rows, expected {}",
+                                         column->size(), rowids.size());
+        }
+        vals->resize(rowids.size());
+        nulls->assign(rowids.size(), 0);
+        const vectorized::IColumn* data_col = column.get();
+        if (const auto* nullable =
+                    vectorized::check_and_get_column<vectorized::ColumnNullable>(column.get())) {
+            for (size_t i = 0; i < rowids.size(); ++i) {
+                (*nulls)[i] = nullable->is_null_at(i) ? 1 : 0;
+            }
+            data_col = &nullable->get_nested_column();
+        }
+        if (const auto* f64 =
+                    vectorized::check_and_get_column<vectorized::ColumnFloat64>(data_col)) {
+            for (size_t i = 0; i < rowids.size(); ++i) {
+                (*vals)[i] = f64->get_data()[i];
+            }
+            return Status::OK();
+        }
+        if (const auto* f32 =
+                    vectorized::check_and_get_column<vectorized::ColumnFloat32>(data_col)) {
+            for (size_t i = 0; i < rowids.size(); ++i) {
+                (*vals)[i] = f32->get_data()[i];
+            }
+            return Status::OK();
+        }
+        return Status::NotSupported("geo exact recheck: unsupported lon/lat column type");
+    };
+    std::vector<double> lng_vals;
+    std::vector<double> lat_vals;
+    std::vector<uint8_t> lng_nulls;
+    std::vector<uint8_t> lat_nulls;
+    RETURN_IF_ERROR(read_doubles(lng_cid, &lng_vals, &lng_nulls));
+    RETURN_IF_ERROR(read_doubles(lat_cid, &lat_vals, &lat_nulls));
+
+    CircleRecheck recheck;
+    if (!recheck.init(runtime.lng0, runtime.lat0, runtime.radius_m,
+                      runtime.is_strict ? GeoCirclePredicate::DISTANCE_LT
+                                        : GeoCirclePredicate::DISTANCE_LE)) {
+        return Status::NotSupported("geo exact recheck: invalid circle");
+    }
+    std::vector<uint8_t> keep(rowids.size(), 0);
+    recheck.recheck(lng_vals.data(), lat_vals.data(), rowids.size(), keep.data());
+    for (size_t i = 0; i < rowids.size(); ++i) {
+        if (keep[i] != 0 && lng_nulls[i] == 0 && lat_nulls[i] == 0) {
+            hit->add(rowids[i]);
         }
     }
     return Status::OK();

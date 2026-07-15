@@ -246,6 +246,48 @@ TEST(HasiTreeTest, NullHandling) {
     ASSERT_EQ(0, hit.cardinality());
 }
 
+// Exact mode (margin_out non-null): definite hits carry only interior cells, margin
+// rows carry exactly the covering-minus-interior cells, and their union equals the
+// superset-mode hit bit for bit.
+TEST(HasiTreeTest, MarginModeInvariants) {
+    std::mt19937_64 rng(20260716);
+    S2Covering coverer(kMaxLevel, kMaxCells);
+    std::uniform_real_distribution<double> radius_log(std::log(500.0), std::log(5000000.0));
+
+    for (int iter = 0; iter < 10; ++iter) {
+        Dataset data = (iter % 2 == 0) ? make_clustered(rng, 3000, 60)
+                                       : make_unsorted(rng, 3000, 0.05);
+        HasiTree tree;
+        ASSERT_TRUE(tree.parse(build(data, 128)).ok());
+
+        S2Cap cap(random_point(rng), S1Angle::Radians(std::exp(radius_log(rng)) / 6371010.0));
+        std::vector<CellRange> covering;
+        std::vector<CellRange> interior;
+        coverer.cover(cap, &covering, &interior);
+
+        roaring::Roaring superset_hit;
+        HasiSearchStats stats;
+        ASSERT_TRUE(tree.search(covering, interior, &superset_hit, &stats).ok());
+
+        roaring::Roaring definite_hit;
+        std::vector<std::pair<uint32_t, uint64_t>> margin;
+        HasiSearchStats stats2;
+        ASSERT_TRUE(tree.search(covering, interior, &definite_hit, &stats2, &margin).ok());
+
+        roaring::Roaring recombined = definite_hit;
+        for (const auto& [rid, cell] : margin) {
+            ASSERT_TRUE(data[rid].has_value());
+            ASSERT_EQ(s2_cell_from_key(*data[rid]), cell) << "margin cell mismatch at rid " << rid;
+            ASSERT_TRUE(cell_ranges_contain(covering, cell));
+            ASSERT_FALSE(cell_ranges_contain(interior, cell));
+            ASSERT_FALSE(definite_hit.contains(rid));
+            recombined.add(rid);
+        }
+        ASSERT_EQ(superset_hit, recombined);
+        ASSERT_EQ(stats.rows_margin, stats2.rows_margin);
+    }
+}
+
 // Corrupted/truncated buffers must fail cleanly, never crash.
 TEST(HasiTreeTest, ParseRejectsCorruption) {
     std::mt19937_64 rng(11);

@@ -47,6 +47,10 @@ struct GeoRangeSearchRuntime {
     // segment read schema; map to ColumnId via Schema::column_ids().
     int lng_idx_in_block = -1;
     int lat_idx_in_block = -1;
+    // The st_distance_sphere call node: the key _calculate_expr_in_remaining_conjunct_root
+    // registered the lng/lat slots under in _common_expr_index_exec_status, needed to mark
+    // the expression index-answered after v1.5 exact filtering.
+    const vectorized::VExpr* distance_expr = nullptr;
 };
 
 // Absolute conservative margin added to the covering cap / subtracted from the
@@ -85,5 +89,19 @@ bool compute_circle_covering(const GeoRangeSearchRuntime& runtime,
 
 // Fraction of the leaf keyspace the covering spans, for the cost gate.
 double covering_keyspace_fraction(const std::vector<CellRange>& covering);
+
+// Upper bound on the distance between a point and the center of its own level-30
+// leaf cell (max leaf diagonal is < 2 cm; 5 cm is comfortably conservative).
+inline constexpr double kGeoCellQuantizationMeters = 0.05;
+
+// v1.5 exact filtering: classify margin rows (cell ∈ C∖I) by their cell-derived
+// position. Rows whose cell center is more than margin+quantization inside the
+// circle are definite hits (added to `hit`); more than that outside are definite
+// misses (dropped); the remaining ambiguity band -- typically empty, it is a
+// ~2 m annulus around the circle boundary -- goes to `need_exact` for a
+// true-coordinate recheck with the same scalar kernel the full scan runs.
+void classify_margin_cells(const GeoRangeSearchRuntime& runtime,
+                           const std::vector<std::pair<uint32_t, uint64_t>>& margin,
+                           roaring::Roaring* hit, std::vector<uint32_t>* need_exact);
 
 } // namespace doris::segment_v2

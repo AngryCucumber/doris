@@ -672,7 +672,25 @@ close 时同步等待、load 内存硬限），flush 吞吐低于摄入吞吐时
 | **v3** | 增量与调优 | compaction 子树 roll-up 快路径（检测条件+回退全量重建，§3.5）；学习导航层；多 measure/多分辨率配置；（可选）分桶裁剪方案 A | 增量 roll-up 与全量重建对拍 bit-exact；学习导航开/关结果一致；compaction 索引耗时下降 | BE conf `enable_geo_index_incremental_compaction=false` |
 | **v4** | kNN（R3 收口） | FE `PushDownGeoTopNIntoOlapScan`（仿 `PushDownVectorTopNIntoOlapScan.java`）+ thrift `geo_sort_info`；BE 树上 best-first（§5.4） | 与 `ORDER BY ST_Distance_Sphere(...), id LIMIT k` 全排序对拍 bit-exact（加 id 消除并列距离不确定性） | `set enable_geo_knn_pushdown=false` |
 
-**阶段依赖**：v0→v1→{v2a→v2b, v4 并行}→v3。v2a 与 v4 都只依赖 v1。
+**阶段依赖**：v0→v1→v1.5→{v2a→v2b, v4 并行}→v3。v2a 依赖 v1.5 的精确判定。
+
+**v1.5 / v2a 落地纪要（rev2.4）**：
+- **v1.5 免精算**（`enable_geo_index_exact_filter`，默认开）：`HasiTree::search` 增加 margin 输出模式
+  （hit=仅 interior 确定命中，C∖I 行以 (rid, cell) 列出）；`classify_margin_cells` 用 cell 中心
+  推导距离做三分（加宽余量 = 1m + 5cm 叶量化上界），真正的 ~2m 歧义环带行经
+  `read_by_rowids` 读真 lon/lat 调 `CircleRecheck`（与全表同一标量核，C2）；判定全精确后
+  仿 inverted 从 `_remaining_conjunct_roots`/`_common_expr_ctxs_push_down` 摘除谓词，并把
+  `_common_expr_index_exec_status` 中该表达式在 lng/lat cid 下的条目标 true →
+  `_check_all_conditions_passed_inverted_index_for_column` 通过后 `_need_read_data_indices`
+  置 false——lon/lat 非输出时整列免物化（IO 主收益）。读列失败(NotSupported)自动回落
+  superset 模式（歧义行留给残差），正确性不依赖 v1.5 成功。
+- **v2a count 下推**（`enable_geo_agg_pushdown`，FE-only 开关）：复用现有 COUNT_ON_INDEX 机制
+  整条链路（`PhysicalStorageLayerAggregate(COUNT_ON_MATCH)` → `TPushAggOp::COUNT_ON_INDEX` →
+  BE 普通 SegmentIterator 占位行短路），FE 仅把 `AggregateStrategies` 的索引门槛扩展为
+  inverted/bitmap **或 GEO**（且三个 geo 开关全开）。正确性不依赖该门槛：BE 回答不了就正常
+  读行评谓词。已知未收口优化：__s2 键列在 count 路径仍被实际读取（其执行状态图为空时
+  `_check_all_conditions...` 保守返回 false）；lon/lat 已免读。原 §3.3-5 的完整判定矩阵
+  （时间三态/度量集/残余谓词吸收）属 v2b 范畴。
 
 **每阶段性能通过门槛（基线与测法见 §8）**：
 

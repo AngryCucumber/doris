@@ -89,9 +89,11 @@ Status GeoIndexReader::load_index(io::IOContext* io_ctx) {
 
 Status GeoIndexReader::range_search(const std::vector<CellRange>& covering,
                                     const std::vector<CellRange>& interior, roaring::Roaring* hit,
-                                    HasiSearchStats* stats, io::IOContext* io_ctx) {
+                                    HasiSearchStats* stats,
+                                    std::vector<std::pair<uint32_t, uint64_t>>* margin_out,
+                                    io::IOContext* io_ctx) {
     RETURN_IF_ERROR(load_index(io_ctx));
-    return _tree.search(covering, interior, hit, stats);
+    return _tree.search(covering, interior, hit, stats, margin_out);
 }
 
 #include "common/compile_check_end.h"

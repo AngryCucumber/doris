@@ -82,7 +82,7 @@ public class AggregateStrategies implements ImplementationRuleFactory {
             RuleType.COUNT_ON_INDEX_WITHOUT_PROJECT.build(
                 logicalAggregate(
                     logicalFilter(
-                        logicalOlapScan().when(this::isDupOrMowKeyTable).when(this::isInvertedIndexEnabledOnTable)
+                        logicalOlapScan().when(this::isDupOrMowKeyTable).when(this::isCountOnIndexCapableTable)
                     )
                 )
                 .when(agg -> enablePushDownCountOnIndex())
@@ -115,7 +115,7 @@ public class AggregateStrategies implements ImplementationRuleFactory {
                 logicalAggregate(
                     logicalProject(
                         logicalFilter(
-                            logicalOlapScan().when(this::isDupOrMowKeyTable).when(this::isInvertedIndexEnabledOnTable)
+                            logicalOlapScan().when(this::isDupOrMowKeyTable).when(this::isCountOnIndexCapableTable)
                         )
                     )
                 )
@@ -347,6 +347,40 @@ public class AggregateStrategies implements ImplementationRuleFactory {
             KeysType keysType = logicalScan.getTable().getKeysType();
             return (keysType == KeysType.DUP_KEYS)
                     || (keysType == KeysType.UNIQUE_KEYS && logicalScan.getTable().getEnableUniqueKeyMergeOnWrite());
+        }
+        return false;
+    }
+
+    // COUNT_ON_INDEX is legal when some index can answer the WHERE predicates at the
+    // storage layer: inverted/bitmap indexes (the original path), or a GEO (HASI)
+    // index whose exact filtering (enable_geo_index_exact_filter) fully answers
+    // st_distance_sphere circle predicates at segment level. Correctness never
+    // depends on this gate -- if the BE cannot answer a predicate by index it reads
+    // the rows and evaluates it normally; the gate only decides whether the
+    // count-shortcut plan shape is worth emitting.
+    private boolean isCountOnIndexCapableTable(LogicalOlapScan logicalScan) {
+        if (isInvertedIndexEnabledOnTable(logicalScan)) {
+            return true;
+        }
+        ConnectContext ctx = ConnectContext.get();
+        if (ctx == null || !ctx.getSessionVariable().enableGeoAggPushdown
+                || !ctx.getSessionVariable().enableGeoIndexQuery
+                || !ctx.getSessionVariable().enableGeoIndexExactFilter) {
+            return false;
+        }
+        return isGeoIndexEnabledOnTable(logicalScan);
+    }
+
+    private boolean isGeoIndexEnabledOnTable(LogicalOlapScan logicalScan) {
+        if (logicalScan == null) {
+            return false;
+        }
+        for (MaterializedIndexMeta indexMeta : logicalScan.getTable().getIndexIdToMeta().values()) {
+            for (Index index : indexMeta.getIndexes()) {
+                if (index.getIndexType() == IndexType.GEO) {
+                    return true;
+                }
+            }
         }
         return false;
     }

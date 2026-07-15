@@ -96,6 +96,7 @@ bool match_distance_call(const vectorized::VExpr* expr, GeoRangeSearchRuntime* o
     out->lat_idx_in_block = lat_slot->column_id();
     out->lng0 = lng0;
     out->lat0 = lat0;
+    out->distance_expr = call;
     return true;
 }
 
@@ -175,6 +176,29 @@ bool compute_circle_covering(const GeoRangeSearchRuntime& runtime,
                       interior);
     }
     return true;
+}
+
+void classify_margin_cells(const GeoRangeSearchRuntime& runtime,
+                           const std::vector<std::pair<uint32_t, uint64_t>>& margin,
+                           roaring::Roaring* hit, std::vector<uint32_t>* need_exact) {
+    if (margin.empty()) {
+        return;
+    }
+    const S2Point center = S2LatLng::FromDegrees(runtime.lat0, runtime.lng0).ToPoint();
+    const double wide_margin = kGeoIndexMarginMeters + kGeoCellQuantizationMeters;
+    const double accept_below = runtime.radius_m - wide_margin;
+    const double reject_above = runtime.radius_m + wide_margin;
+    for (const auto& [rid, cell] : margin) {
+        const S2Point p = S2CellId(cell).ToPoint();
+        const double dist_m = S1Angle(p, center).radians() * kGeoEarthRadiusMeters;
+        if (dist_m < accept_below) {
+            hit->add(rid);
+        } else if (dist_m > reject_above) {
+            // definite miss; conservative under both < and <= forms
+        } else {
+            need_exact->push_back(rid);
+        }
+    }
 }
 
 double covering_keyspace_fraction(const std::vector<CellRange>& covering) {

@@ -113,8 +113,16 @@ public:
     // covering/interior: sorted, disjoint, closed ranges in the RAW uint64 leaf-cell
     // keyspace (S2Covering::cover output). hit is overwritten, not narrowed -- the
     // caller intersects it into its own bitmap (contract C1).
+    //
+    // margin_out selects the result mode (v1.5 exact filtering, HASI_POC.md §7 v1.5):
+    //   nullptr:  hit == { rid : cell != NULL && cell ∈ C }  (superset; margin rows
+    //             included, the residual predicate decides them)
+    //   non-null: hit == { rid : cell ∈ I } (definite hits only); rows with
+    //             cell ∈ C∖I are appended to margin_out as (rid, raw cell) for the
+    //             caller to resolve with the exact kernel.
     Status search(const std::vector<CellRange>& covering, const std::vector<CellRange>& interior,
-                  roaring::Roaring* hit, HasiSearchStats* stats) const;
+                  roaring::Roaring* hit, HasiSearchStats* stats,
+                  std::vector<std::pair<uint32_t, uint64_t>>* margin_out = nullptr) const;
 
     uint32_t num_rows() const { return _num_rows; }
     uint32_t num_leaves() const { return static_cast<uint32_t>(_leaves.size()); }

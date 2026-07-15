@@ -251,8 +251,12 @@ Status HasiTree::_decode_leaf_cells(const Leaf& leaf, std::vector<uint64_t>* cel
 
 Status HasiTree::search(const std::vector<CellRange>& covering,
                         const std::vector<CellRange>& interior, roaring::Roaring* hit,
-                        HasiSearchStats* stats) const {
+                        HasiSearchStats* stats,
+                        std::vector<std::pair<uint32_t, uint64_t>>* margin_out) const {
     *hit = roaring::Roaring();
+    if (margin_out != nullptr) {
+        margin_out->clear();
+    }
     std::vector<uint64_t> cells;
     for (const auto& leaf : _leaves) {
         const uint32_t leaf_row_count = leaf.rid_end - leaf.rid_begin;
@@ -279,7 +283,11 @@ Status HasiTree::search(const std::vector<CellRange>& covering,
                 hit->add(leaf.rid_begin + i);
                 ++stats->rows_inside;
             } else if (cell_ranges_contain(covering, cell)) {
-                hit->add(leaf.rid_begin + i);
+                if (margin_out != nullptr) {
+                    margin_out->emplace_back(leaf.rid_begin + i, cell);
+                } else {
+                    hit->add(leaf.rid_begin + i);
+                }
                 ++stats->rows_margin;
             } else {
                 ++stats->rows_rejected;
