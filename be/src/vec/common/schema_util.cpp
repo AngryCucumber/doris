@@ -415,6 +415,7 @@ bool is_bf_supported_by_fe_for_variant_subcolumn(FieldType type) {
     case FieldType::OLAP_FIELD_TYPE_DECIMAL256:
     case FieldType::OLAP_FIELD_TYPE_IPV4:
     case FieldType::OLAP_FIELD_TYPE_IPV6:
+    case FieldType::OLAP_FIELD_TYPE_GEO_POINT:
         return true;
     default:
         return false;

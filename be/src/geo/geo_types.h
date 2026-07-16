@@ -116,6 +116,12 @@ public:
     // identical to uint64 order. XOR again to recover the raw cell id.
     static bool ComputeS2CellKey(double lng, double lat, int64_t* cell_key);
 
+    // Inverse of ComputeS2CellKey: decodes a flipped cell key to the CENTER of the
+    // cell it denotes (level-30 keys from the encoder decode within ~1cm of the
+    // original point). Returns false when the key is not a valid S2 cell id — such
+    // values cannot come from the encoder, only from a raw BIGINT cast.
+    static bool DecodeS2CellKey(int64_t cell_key, double* lng, double* lat);
+
     static bool ComputeAngleSphere(double x_lng, double x_lat, double y_lng, double y_lat,
                                    double* angle);
     static bool ComputeAngle(GeoPoint* p1, GeoPoint* p2, GeoPoint* p3, double* angle);

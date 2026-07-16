@@ -246,6 +246,9 @@ import org.apache.doris.nereids.trees.expressions.functions.scalar.G;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.Gcd;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.GeoAggPartialCnt;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.GeoAggPartialVal;
+import org.apache.doris.nereids.trees.expressions.functions.scalar.GeoLat;
+import org.apache.doris.nereids.trees.expressions.functions.scalar.GeoLon;
+import org.apache.doris.nereids.trees.expressions.functions.scalar.GeoPoint;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.GetFormat;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.GetVariantType;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.Greatest;
@@ -2374,6 +2377,18 @@ public interface ScalarFunctionVisitor<R, C> {
 
     default R visitGeoAggPartialCnt(GeoAggPartialCnt geoAggPartialCnt, C context) {
         return visitScalarFunction(geoAggPartialCnt, context);
+    }
+
+    default R visitGeoPoint(GeoPoint geoPoint, C context) {
+        return visitScalarFunction(geoPoint, context);
+    }
+
+    default R visitGeoLon(GeoLon geoLon, C context) {
+        return visitScalarFunction(geoLon, context);
+    }
+
+    default R visitGeoLat(GeoLat geoLat, C context) {
+        return visitScalarFunction(geoLat, context);
     }
 
     default R visitStAngleSphere(StAngleSphere stAngleSphere, C context) {

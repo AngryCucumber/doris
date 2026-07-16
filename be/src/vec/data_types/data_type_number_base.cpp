@@ -264,6 +264,7 @@ template class DataTypeNumberBase<TYPE_DATETIME>;
 template class DataTypeNumberBase<TYPE_DATETIMEV2>;
 template class DataTypeNumberBase<TYPE_IPV4>;
 template class DataTypeNumberBase<TYPE_IPV6>;
+template class DataTypeNumberBase<TYPE_GEO_POINT>;
 template class DataTypeNumberBase<TYPE_TIME>;
 template class DataTypeNumberBase<TYPE_TIMEV2>;
 template class DataTypeNumberBase<TYPE_TIMESTAMPTZ>;

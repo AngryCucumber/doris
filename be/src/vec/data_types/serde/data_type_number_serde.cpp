@@ -338,7 +338,7 @@ constexpr bool can_write_to_jsonb_from_number() {
     return T == TYPE_BOOLEAN || T == TYPE_TINYINT || T == TYPE_SMALLINT || T == TYPE_INT ||
            T == TYPE_BIGINT || T == TYPE_LARGEINT || T == TYPE_FLOAT || T == TYPE_DOUBLE ||
            T == TYPE_DATEV2 || T == TYPE_DATETIMEV2 || T == TYPE_TIMESTAMPTZ || T == TYPE_IPV4 ||
-           T == TYPE_IPV6 || T == TYPE_TIMEV2;
+           T == TYPE_IPV6 || T == TYPE_TIMEV2 || T == TYPE_GEO_POINT;
 }
 
 template <PrimitiveType T>
@@ -382,6 +382,8 @@ bool write_to_jsonb_from_number(auto& data, JsonbWriter& writer, int scale) {
         return jsonb_writer_string(writer, CastToString::from_ip(data));
     } else if constexpr (T == TYPE_IPV6) {
         return jsonb_writer_string(writer, CastToString::from_ip(data));
+    } else if constexpr (T == TYPE_GEO_POINT) {
+        return jsonb_writer_string(writer, CastToString::from_geo_point(data));
     } else if constexpr (T == TYPE_TIMEV2) {
         return jsonb_writer_string(writer, CastToString::from_time(data, scale));
     } else {
@@ -623,7 +625,8 @@ Status DataTypeNumberSerDe<T>::write_column_to_orc(const std::string& timezone,
         WRITE_INTEGRAL_COLUMN_TO_ORC(orc::ShortVectorBatch)
     } else if constexpr (T == TYPE_INT) { // int
         WRITE_INTEGRAL_COLUMN_TO_ORC(orc::IntVectorBatch)
-    } else if constexpr (T == TYPE_BIGINT || T == TYPE_DATE || T == TYPE_DATETIME) { // bigint
+    } else if constexpr (T == TYPE_BIGINT || T == TYPE_DATE || T == TYPE_DATETIME ||
+                         T == TYPE_GEO_POINT) { // bigint (geo_point: raw flipped cell key)
         WRITE_INTEGRAL_COLUMN_TO_ORC(orc::LongVectorBatch)
     } else if constexpr (T == TYPE_FLOAT) { // float
         WRITE_INTEGRAL_COLUMN_TO_ORC(orc::FloatVectorBatch)
@@ -645,6 +648,8 @@ void DataTypeNumberSerDe<T>::read_one_cell_from_jsonb(IColumn& column,
         col.insert_value(arg->unpack<JsonbInt16Val>()->val());
     } else if constexpr (T == TYPE_INT || T == TYPE_IPV4) {
         col.insert_value(arg->unpack<JsonbInt32Val>()->val());
+    } else if constexpr (T == TYPE_GEO_POINT) {
+        col.insert_value(arg->unpack<JsonbInt64Val>()->val());
     } else if constexpr (T == TYPE_DATEV2) {
         col.insert_value(binary_cast<UInt32, DateV2Value<DateV2ValueType>>(
                 (UInt32)arg->unpack<JsonbInt32Val>()->val()));
@@ -691,7 +696,7 @@ void DataTypeNumberSerDe<T>::write_one_cell_to_jsonb(const IColumn& column,
         int32_t val = *reinterpret_cast<const int32_t*>(data_ref.data);
         result.writeInt32(val);
     } else if constexpr (T == TYPE_BIGINT || T == TYPE_DATE || T == TYPE_DATETIME ||
-                         T == TYPE_DATETIMEV2 || T == TYPE_TIMESTAMPTZ) {
+                         T == TYPE_DATETIMEV2 || T == TYPE_TIMESTAMPTZ || T == TYPE_GEO_POINT) {
         int64_t val = *reinterpret_cast<const int64_t*>(data_ref.data);
         result.writeInt64(val);
     } else if constexpr (T == TYPE_LARGEINT) {
@@ -874,6 +879,9 @@ const uint8_t* DataTypeNumberSerDe<T>::deserialize_binary_to_column(const uint8_
     } else if constexpr (T == TYPE_IPV6) {
         col.insert_value(unaligned_load<Int128>(data));
         data += sizeof(Int128);
+    } else if constexpr (T == TYPE_GEO_POINT) {
+        col.insert_value(unaligned_load<Int64>(data));
+        data += sizeof(Int64);
     } else if constexpr (T == TYPE_DATEV2) {
         col.insert_value(unaligned_load<UInt32>(data));
         data += sizeof(UInt32);
@@ -932,6 +940,10 @@ const uint8_t* DataTypeNumberSerDe<T>::deserialize_binary_to_field(const uint8_t
         IPv4 v = unaligned_load<IPv4>(data);
         field = Field::create_field<TYPE_IPV4>(v);
         data += sizeof(IPv4);
+    } else if constexpr (T == TYPE_GEO_POINT) {
+        Int64 v = unaligned_load<Int64>(data);
+        field = Field::create_field<TYPE_GEO_POINT>(v);
+        data += sizeof(Int64);
     } else if constexpr (T == TYPE_IPV6) {
         PackedUInt128 pack;
         memcpy(&pack, data, sizeof(PackedUInt128));
@@ -974,6 +986,8 @@ void value_to_string(const typename PrimitiveTypeTraits<T>::CppType value, Buffe
         CastToString::push_time(value, scale, bw);
     } else if constexpr (T == TYPE_IPV4 || T == TYPE_IPV6) {
         CastToString::push_ip(value, bw);
+    } else if constexpr (T == TYPE_GEO_POINT) {
+        CastToString::push_geo_point(value, bw);
     } else {
         throw doris::Exception(ErrorCode::NOT_IMPLEMENTED_ERROR,
                                "value_to_string not implemented for type: {}", type_to_string(T));
@@ -984,7 +998,8 @@ template <PrimitiveType T>
 void DataTypeNumberSerDe<T>::to_string(const IColumn& column, size_t row_num, BufferWritable& bw,
                                        const FormatOptions& options) const {
     auto& data = assert_cast<const ColumnType&, TypeCheckOnRelease::DISABLE>(column).get_data();
-    if constexpr (is_timestamptz_type(T) || is_date_type(T) || is_time_type(T) || is_ip(T)) {
+    if constexpr (is_timestamptz_type(T) || is_date_type(T) || is_time_type(T) || is_ip(T) ||
+                  T == TYPE_GEO_POINT) {
         if (_nesting_level > 1) {
             bw.write('"');
         }
@@ -1060,6 +1075,7 @@ template class DataTypeNumberSerDe<TYPE_DATETIME>;
 template class DataTypeNumberSerDe<TYPE_DATETIMEV2>;
 template class DataTypeNumberSerDe<TYPE_IPV4>;
 template class DataTypeNumberSerDe<TYPE_IPV6>;
+template class DataTypeNumberSerDe<TYPE_GEO_POINT>;
 template class DataTypeNumberSerDe<TYPE_TIME>;
 template class DataTypeNumberSerDe<TYPE_TIMEV2>;
 template class DataTypeNumberSerDe<TYPE_TIMESTAMPTZ>;

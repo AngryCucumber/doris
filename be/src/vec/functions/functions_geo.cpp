@@ -34,6 +34,7 @@
 #include "vec/common/string_ref.h"
 #include "vec/core/block.h"
 #include "vec/core/column_with_type_and_name.h"
+#include "vec/data_types/data_type_geo_point.h"
 #include "vec/data_types/data_type_nullable.h"
 #include "vec/data_types/data_type_number.h"
 #include "vec/data_types/data_type_string.h"
@@ -194,6 +195,76 @@ struct StY {
     }
 };
 
+// GEO_POINT constructor: same cell computation as st_s2_cellid, typed GEO_POINT.
+struct GeoPointFromLonLat {
+    static constexpr auto NAME = "geo_point";
+    static const size_t NUM_ARGS = 2;
+    using Type = DataTypeGeoPoint;
+    static Status execute(Block& block, const ColumnNumbers& arguments, size_t result) {
+        DCHECK_EQ(arguments.size(), 2);
+
+        auto lng = ColumnView<TYPE_DOUBLE>::create(block.get_by_position(arguments[0]).column);
+        auto lat = ColumnView<TYPE_DOUBLE>::create(block.get_by_position(arguments[1]).column);
+
+        const auto size = lng.size();
+        auto res = ColumnGeoPoint::create();
+        res->reserve(size);
+        auto null_map = ColumnUInt8::create(size, 0);
+        auto& null_map_data = null_map->get_data();
+        for (int row = 0; row < size; ++row) {
+            int64_t cell_key = 0;
+            double lng_v = lng.value_at(row);
+            double lat_v = lat.value_at(row);
+            // ComputeS2CellKey only validates |lat| <= 90; longitudes outside
+            // [-180, 180] would silently normalize and alias distinct inputs.
+            if (lng_v < -180.0 || lng_v > 180.0 ||
+                !GeoPoint::ComputeS2CellKey(lng_v, lat_v, &cell_key)) {
+                null_map_data[row] = 1;
+                res->insert_default();
+                continue;
+            }
+            res->insert_value(cell_key);
+        }
+
+        block.replace_by_position(result,
+                                  ColumnNullable::create(std::move(res), std::move(null_map)));
+        return Status::OK();
+    }
+};
+
+// Cell-center accessors, the decode side of geo_point(lon, lat).
+template <bool kLon>
+struct GeoPointCoord {
+    static constexpr auto NAME = kLon ? "geo_lon" : "geo_lat";
+    static const size_t NUM_ARGS = 1;
+    using Type = DataTypeFloat64;
+    static Status execute(Block& block, const ColumnNumbers& arguments, size_t result) {
+        DCHECK_EQ(arguments.size(), 1);
+
+        auto gp = ColumnView<TYPE_GEO_POINT>::create(block.get_by_position(arguments[0]).column);
+
+        const auto size = gp.size();
+        auto res = ColumnFloat64::create();
+        res->reserve(size);
+        auto null_map = ColumnUInt8::create(size, 0);
+        auto& null_map_data = null_map->get_data();
+        for (int row = 0; row < size; ++row) {
+            double lng = 0;
+            double lat = 0;
+            if (!GeoPoint::DecodeS2CellKey(gp.value_at(row), &lng, &lat)) {
+                null_map_data[row] = 1;
+                res->insert_default();
+                continue;
+            }
+            res->insert_value(kLon ? lng : lat);
+        }
+
+        block.replace_by_position(result,
+                                  ColumnNullable::create(std::move(res), std::move(null_map)));
+        return Status::OK();
+    }
+};
+
 struct StDistanceSphere {
     static constexpr auto NAME = "st_distance_sphere";
     static const size_t NUM_ARGS = 4;
@@ -226,6 +297,57 @@ struct StDistanceSphere {
         block.replace_by_position(result,
                                   ColumnNullable::create(std::move(res), std::move(null_map)));
         return Status::OK();
+    }
+};
+
+// st_distance_sphere(geo_point, lon, lat): decodes the cell center and runs the
+// SAME kernel as the 4-arg form (contract C2) — the stored point IS the center,
+// so this is the exact row-level semantics of the type, not an approximation.
+struct StDistanceSphereGeoPoint {
+    static constexpr auto NAME = "st_distance_sphere";
+    static const size_t NUM_ARGS = 3;
+    using Type = DataTypeFloat64;
+    static Status execute(Block& block, const ColumnNumbers& arguments, size_t result) {
+        DCHECK_EQ(arguments.size(), 3);
+
+        auto gp = ColumnView<TYPE_GEO_POINT>::create(block.get_by_position(arguments[0]).column);
+        auto y_lng = ColumnView<TYPE_DOUBLE>::create(block.get_by_position(arguments[1]).column);
+        auto y_lat = ColumnView<TYPE_DOUBLE>::create(block.get_by_position(arguments[2]).column);
+
+        const auto size = gp.size();
+        auto res = ColumnFloat64::create();
+        res->reserve(size);
+        auto null_map = ColumnUInt8::create(size, 0);
+        auto& null_map_data = null_map->get_data();
+        for (int row = 0; row < size; ++row) {
+            double x_lng = 0;
+            double x_lat = 0;
+            double distance = 0;
+            if (!GeoPoint::DecodeS2CellKey(gp.value_at(row), &x_lng, &x_lat) ||
+                !GeoPoint::ComputeDistance(x_lng, x_lat, y_lng.value_at(row),
+                                           y_lat.value_at(row), &distance)) {
+                null_map_data[row] = 1;
+                res->insert_default();
+                continue;
+            }
+            res->insert_value(distance);
+        }
+
+        block.replace_by_position(result,
+                                  ColumnNullable::create(std::move(res), std::move(null_map)));
+        return Status::OK();
+    }
+};
+
+// Same-name overload resolution: this variant declares its full signature via
+// get_variadic_argument_types, so the factory keys it separately from the plain
+// 4-double registration (which stays the name-only fallback).
+class FunctionStDistanceSphereGeoPoint : public GeoFunction<StDistanceSphereGeoPoint> {
+public:
+    static FunctionPtr create() { return std::make_shared<FunctionStDistanceSphereGeoPoint>(); }
+    DataTypes get_variadic_argument_types_impl() const override {
+        return {std::make_shared<DataTypeGeoPoint>(), std::make_shared<DataTypeFloat64>(),
+                std::make_shared<DataTypeFloat64>()};
     }
 };
 
@@ -1015,7 +1137,11 @@ void register_function_geo(SimpleFunctionFactory& factory) {
     factory.register_function<GeoFunction<StX>>();
     factory.register_function<GeoFunction<StY>>();
     factory.register_function<GeoFunction<StDistanceSphere>>();
+    factory.register_function<FunctionStDistanceSphereGeoPoint>();
     factory.register_function<GeoFunction<StS2CellId>>();
+    factory.register_function<GeoFunction<GeoPointFromLonLat>>();
+    factory.register_function<GeoFunction<GeoPointCoord<true>>>();
+    factory.register_function<GeoFunction<GeoPointCoord<false>>>();
     factory.register_function<GeoFunctionKeepNulls<GeoAggPartialVal>>();
     factory.register_function<GeoFunctionKeepNulls<GeoAggPartialCnt>>();
     factory.register_function<GeoFunction<StAngleSphere>>();

@@ -1856,6 +1856,7 @@ primitiveColType
     | type=DECIMALV3
     | type=IPV4
     | type=IPV6
+    | type=GEO_POINT
     | type=VARBINARY
     | type=VARIANT
     | type=ALL
@@ -2083,6 +2084,7 @@ nonReserved
     | GET_FORMAT
     | GENERIC
     | GEO
+    | GEO_POINT
     | GLOBAL
     | GRAPH
     | GROUPING

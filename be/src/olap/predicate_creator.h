@@ -164,6 +164,9 @@ std::shared_ptr<ColumnPredicate> create_in_list_predicate(const uint32_t cid,
     case TYPE_IPV6: {
         return create_in_list_predicate<TYPE_IPV6, PT>(cid, col_name, set, is_opposite);
     }
+    case TYPE_GEO_POINT: {
+        return create_in_list_predicate<TYPE_GEO_POINT, PT>(cid, col_name, set, is_opposite);
+    }
     default:
         throw Exception(Status::InternalError("Unsupported type {} for in_predicate",
                                               type_to_string(data_type->get_primitive_type())));
@@ -279,6 +282,10 @@ std::shared_ptr<ColumnPredicate> create_comparison_predicate(
     case TYPE_IPV6: {
         return ComparisonPredicateBase<TYPE_IPV6, PT>::create_shared(cid, col_name, value,
                                                                      opposite);
+    }
+    case TYPE_GEO_POINT: {
+        return ComparisonPredicateBase<TYPE_GEO_POINT, PT>::create_shared(cid, col_name, value,
+                                                                          opposite);
     }
     default:
         throw Exception(Status::InternalError("Unsupported type {} for comparison_predicate",

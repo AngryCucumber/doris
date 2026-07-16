@@ -46,6 +46,8 @@ public enum PrimitiveType {
     DATETIME("DATETIME", 16, TPrimitiveType.DATETIME, true),
     IPV4("IPV4", 4, TPrimitiveType.IPV4, true),
     IPV6("IPV6", 16, TPrimitiveType.IPV6, true),
+    // 8B s2 leaf cell key (raw id XOR 2^63), see geo_index/HASI_POC.md §10
+    GEO_POINT("GEO_POINT", 8, TPrimitiveType.GEO_POINT, true),
     // Fixed length char array.
     CHAR("CHAR", 16, TPrimitiveType.CHAR, true),
     // 8-byte pointer and 4-byte length indicator (12 bytes total).
@@ -139,6 +141,7 @@ public enum PrimitiveType {
         supportedTypes.add(TIMESTAMPTZ);
         supportedTypes.add(IPV4);
         supportedTypes.add(IPV6);
+        supportedTypes.add(GEO_POINT);
         supportedTypes.add(DECIMALV2);
         supportedTypes.add(DECIMAL32);
         supportedTypes.add(DECIMAL64);
@@ -217,6 +220,8 @@ public enum PrimitiveType {
                 return IPV4;
             case IPV6:
                 return IPV6;
+            case GEO_POINT:
+                return GEO_POINT;
             case BINARY:
                 return BINARY;
             case DECIMALV2:
@@ -385,6 +390,10 @@ public enum PrimitiveType {
 
     public boolean isIPType() {
         return (this == IPV4 || this == IPV6);
+    }
+
+    public boolean isGeoPointType() {
+        return (this == GEO_POINT);
     }
 
     public boolean isIPv4Type() {

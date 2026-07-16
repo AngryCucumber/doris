@@ -610,6 +610,13 @@ Status create_texpr_literal_node(const void* data, TExprNode* node, int precisio
         literal.__set_value(vectorized::CastToString::from_ip(*origin_value));
         (*node).__set_ipv6_literal(literal);
         (*node).__set_type(create_type_desc(PrimitiveType::TYPE_IPV6));
+    } else if constexpr (T == TYPE_GEO_POINT) {
+        const auto* origin_value = reinterpret_cast<const int64_t*>(data);
+        (*node).__set_node_type(TExprNodeType::GEO_POINT_LITERAL);
+        TGeoPointLiteral literal;
+        literal.__set_value(*origin_value);
+        (*node).__set_geo_point_literal(literal);
+        (*node).__set_type(create_type_desc(PrimitiveType::TYPE_GEO_POINT));
     } else if constexpr (T == TYPE_TIMEV2) {
         // the code use for runtime filter but we dont support timev2 as predicate now
         // so this part not used

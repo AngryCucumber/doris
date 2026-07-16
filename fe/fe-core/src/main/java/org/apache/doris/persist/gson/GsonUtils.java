@@ -36,6 +36,7 @@ import org.apache.doris.analysis.EncryptKeyRef;
 import org.apache.doris.analysis.Expr;
 import org.apache.doris.analysis.FloatLiteral;
 import org.apache.doris.analysis.FunctionCallExpr;
+import org.apache.doris.analysis.GeoPointLiteral;
 import org.apache.doris.analysis.IPv4Literal;
 import org.apache.doris.analysis.IPv6Literal;
 import org.apache.doris.analysis.InPredicate;
@@ -331,6 +332,7 @@ public class GsonUtils {
             .registerSubtype(DateLiteral.class, DateLiteral.class.getSimpleName())
             .registerSubtype(IPv6Literal.class, IPv6Literal.class.getSimpleName())
             .registerSubtype(IPv4Literal.class, IPv4Literal.class.getSimpleName())
+            .registerSubtype(GeoPointLiteral.class, GeoPointLiteral.class.getSimpleName())
             .registerSubtype(JsonLiteral.class, JsonLiteral.class.getSimpleName())
             .registerSubtype(ArrayLiteral.class, ArrayLiteral.class.getSimpleName())
             .registerSubtype(StructLiteral.class, StructLiteral.class.getSimpleName())

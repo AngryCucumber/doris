@@ -103,6 +103,10 @@ std::shared_ptr<ColumnPredicate> create_bloom_filter_predicate(
     case TYPE_IPV6: {
         return BloomFilterColumnPredicate<TYPE_IPV6>::create_shared(cid, col_name, filter_olap);
     }
+    case TYPE_GEO_POINT: {
+        return BloomFilterColumnPredicate<TYPE_GEO_POINT>::create_shared(cid, col_name,
+                                                                         filter_olap);
+    }
     default:
         return nullptr;
     }

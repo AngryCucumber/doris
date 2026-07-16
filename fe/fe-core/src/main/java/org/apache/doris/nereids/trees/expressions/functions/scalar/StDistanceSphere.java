@@ -24,6 +24,7 @@ import org.apache.doris.nereids.trees.expressions.functions.ExplicitlyCastableSi
 import org.apache.doris.nereids.trees.expressions.functions.PropagateNullLiteral;
 import org.apache.doris.nereids.trees.expressions.visitor.ExpressionVisitor;
 import org.apache.doris.nereids.types.DoubleType;
+import org.apache.doris.nereids.types.GeoPointType;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
@@ -38,7 +39,10 @@ public class StDistanceSphere extends ScalarFunction
 
     public static final List<FunctionSignature> SIGNATURES = ImmutableList.of(
             FunctionSignature.ret(DoubleType.INSTANCE)
-                    .args(DoubleType.INSTANCE, DoubleType.INSTANCE, DoubleType.INSTANCE, DoubleType.INSTANCE)
+                    .args(DoubleType.INSTANCE, DoubleType.INSTANCE, DoubleType.INSTANCE, DoubleType.INSTANCE),
+            // geo_point overload: distance from the stored point (= its cell center)
+            FunctionSignature.ret(DoubleType.INSTANCE)
+                    .args(GeoPointType.INSTANCE, DoubleType.INSTANCE, DoubleType.INSTANCE)
     );
 
     /**
@@ -46,6 +50,13 @@ public class StDistanceSphere extends ScalarFunction
      */
     public StDistanceSphere(Expression arg0, Expression arg1, Expression arg2, Expression arg3) {
         super("st_distance_sphere", arg0, arg1, arg2, arg3);
+    }
+
+    /**
+     * constructor with 3 arguments (geo_point form).
+     */
+    public StDistanceSphere(Expression arg0, Expression arg1, Expression arg2) {
+        super("st_distance_sphere", arg0, arg1, arg2);
     }
 
     /** constructor for withChildren and reuse signature */
@@ -58,7 +69,7 @@ public class StDistanceSphere extends ScalarFunction
      */
     @Override
     public StDistanceSphere withChildren(List<Expression> children) {
-        Preconditions.checkArgument(children.size() == 4);
+        Preconditions.checkArgument(children.size() == 3 || children.size() == 4);
         return new StDistanceSphere(getFunctionParams(children));
     }
 

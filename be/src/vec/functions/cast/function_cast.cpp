@@ -22,6 +22,7 @@
 #include "cast_to_date.h"
 #include "cast_to_decimal.h"
 #include "cast_to_float.h"
+#include "cast_to_geo_point.h"
 #include "cast_to_int.h"
 #include "cast_to_ip.h"
 #include "cast_to_jsonb.h"
@@ -273,6 +274,8 @@ WrapperType prepare_impl(FunctionContext* context, const DataTypePtr& origin_fro
         return create_ip_wrapper<DataTypeIPv4>(context, from_type);
     case PrimitiveType::TYPE_IPV6:
         return create_ip_wrapper<DataTypeIPv6>(context, from_type);
+    case PrimitiveType::TYPE_GEO_POINT:
+        return create_geo_point_wrapper(context, from_type);
     case PrimitiveType::TYPE_DECIMALV2:
         return create_decimal_wrapper<DataTypeDecimalV2>(context, from_type);
     case PrimitiveType::TYPE_DECIMAL32:

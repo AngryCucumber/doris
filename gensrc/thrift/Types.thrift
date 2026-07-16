@@ -102,7 +102,8 @@ enum TPrimitiveType {
   UINT64 = 41,  // only used in BE to represent offsets
   FIXED_LENGTH_OBJECT = 42 // only used in BE to represent fixed-length object
   VARBINARY = 43, // represent varbinary type
-  TIMESTAMPTZ = 44 //  timestamp with time zone
+  TIMESTAMPTZ = 44, //  timestamp with time zone
+  GEO_POINT = 45 // 8B s2 leaf cell key (raw id XOR 2^63), see geo_index/HASI_POC.md §10
 }
 
 enum TTypeNodeType {

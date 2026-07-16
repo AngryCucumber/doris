@@ -276,7 +276,8 @@ Status RuntimeFilterWrapper::_assign(const PInFilter& in_filter, bool contain_nu
         });
         break;
     }
-    case TYPE_BIGINT: {
+    case TYPE_BIGINT:
+    case TYPE_GEO_POINT: {
         batch_assign(in_filter, [](std::shared_ptr<HybridSetBase>& set, PColumnValue& column) {
             int64_t long_val = column.longval();
             set->insert(&long_val);
@@ -446,7 +447,8 @@ Status RuntimeFilterWrapper::_assign(const PMinMaxFilter& minmax_filter, bool co
         int32_t max_val = minmax_filter.max_val().intval();
         return _minmax_func->assign(&min_val, &max_val);
     }
-    case TYPE_BIGINT: {
+    case TYPE_BIGINT:
+    case TYPE_GEO_POINT: {
         int64_t min_val = minmax_filter.min_val().longval();
         int64_t max_val = minmax_filter.max_val().longval();
         return _minmax_func->assign(&min_val, &max_val);

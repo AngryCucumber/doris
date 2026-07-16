@@ -126,6 +126,8 @@ FieldType TabletColumn::get_field_type_by_type(PrimitiveType primitiveType) {
         return FieldType::OLAP_FIELD_TYPE_VARIANT;
     case PrimitiveType::TYPE_IPV4:
         return FieldType::OLAP_FIELD_TYPE_IPV4;
+    case PrimitiveType::TYPE_GEO_POINT:
+        return FieldType::OLAP_FIELD_TYPE_GEO_POINT;
     case PrimitiveType::TYPE_IPV6:
         return FieldType::OLAP_FIELD_TYPE_IPV6;
     case PrimitiveType::TYPE_LAMBDA_FUNCTION:
@@ -180,6 +182,7 @@ PrimitiveType TabletColumn::get_primitive_type_by_field_type(FieldType type) {
             /* 38 OLAP_FIELD_TYPE_IPV4              */ PrimitiveType::TYPE_IPV4,
             /* 39 OLAP_FIELD_TYPE_IPV6              */ PrimitiveType::TYPE_IPV6,
             /* 40 OLAP_FIELD_TYPE_TIMESTAMPTZ       */ PrimitiveType::TYPE_TIMESTAMPTZ,
+            /* 41 OLAP_FIELD_TYPE_GEO_POINT         */ PrimitiveType::TYPE_GEO_POINT,
     };
 
     int idx = static_cast<int>(type);
@@ -212,6 +215,8 @@ FieldType TabletColumn::get_field_type_by_string(const std::string& type_str) {
         type = FieldType::OLAP_FIELD_TYPE_UNSIGNED_BIGINT;
     } else if (0 == upper_type_str.compare("IPV4")) {
         type = FieldType::OLAP_FIELD_TYPE_IPV4;
+    } else if (0 == upper_type_str.compare("GEO_POINT")) {
+        type = FieldType::OLAP_FIELD_TYPE_GEO_POINT;
     } else if (0 == upper_type_str.compare("IPV6")) {
         type = FieldType::OLAP_FIELD_TYPE_IPV6;
     } else if (0 == upper_type_str.compare("FLOAT")) {
@@ -342,6 +347,8 @@ std::string TabletColumn::get_string_by_field_type(FieldType type) {
 
     case FieldType::OLAP_FIELD_TYPE_IPV4:
         return "IPV4";
+    case FieldType::OLAP_FIELD_TYPE_GEO_POINT:
+        return "GEO_POINT";
 
     case FieldType::OLAP_FIELD_TYPE_IPV6:
         return "IPV6";
@@ -485,6 +492,7 @@ uint32_t TabletColumn::get_field_length_by_type(TPrimitiveType::type type, uint3
         return 8;
     case TPrimitiveType::DATETIMEV2:
     case TPrimitiveType::TIMESTAMPTZ:
+    case TPrimitiveType::GEO_POINT:
         return 8;
     case TPrimitiveType::FLOAT:
         return 4;

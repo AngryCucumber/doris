@@ -54,6 +54,7 @@
 #include "vec/data_types/data_type_decimal.h"
 #include "vec/data_types/data_type_fixed_length_object.h"
 #include "vec/data_types/data_type_hll.h"
+#include "vec/data_types/data_type_geo_point.h"
 #include "vec/data_types/data_type_ipv4.h"
 #include "vec/data_types/data_type_ipv6.h"
 #include "vec/data_types/data_type_jsonb.h"
@@ -148,6 +149,9 @@ DataTypePtr DataTypeFactory::_create_primitive_data_type(const FieldType& type, 
     case FieldType::OLAP_FIELD_TYPE_IPV6:
         result = std::make_shared<vectorized::DataTypeIPv6>();
         break;
+    case FieldType::OLAP_FIELD_TYPE_GEO_POINT:
+        result = std::make_shared<vectorized::DataTypeGeoPoint>();
+        break;
     case FieldType::OLAP_FIELD_TYPE_DATE:
         result = std::make_shared<vectorized::DataTypeDate>();
         break;
@@ -238,6 +242,9 @@ DataTypePtr DataTypeFactory::create_data_type(const PColumnMeta& pcolumn) {
         break;
     case PGenericType::IPV6:
         nested = std::make_shared<DataTypeIPv6>();
+        break;
+    case PGenericType::GEO_POINT:
+        nested = std::make_shared<DataTypeGeoPoint>();
         break;
     case PGenericType::STRING:
         nested = std::make_shared<DataTypeString>();
@@ -426,6 +433,9 @@ DataTypePtr DataTypeFactory::create_data_type(const PrimitiveType primitive_type
         break;
     case TYPE_IPV6:
         nested = std::make_shared<vectorized::DataTypeIPv6>();
+        break;
+    case TYPE_GEO_POINT:
+        nested = std::make_shared<vectorized::DataTypeGeoPoint>();
         break;
     case TYPE_DATE:
         nested = std::make_shared<vectorized::DataTypeDate>();

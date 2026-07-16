@@ -85,6 +85,7 @@ public abstract class DataType {
                     .put(Type.DECIMAL256.getPrimitiveType(), DecimalV3Type.SYSTEM_DEFAULT)
                     .put(Type.IPV4.getPrimitiveType(), IPv4Type.INSTANCE)
                     .put(Type.IPV6.getPrimitiveType(), IPv6Type.INSTANCE)
+                    .put(Type.GEO_POINT.getPrimitiveType(), GeoPointType.INSTANCE)
                     .put(Type.VARBINARY.getPrimitiveType(), VarBinaryType.INSTANCE)
                     .build();
         }
@@ -382,6 +383,9 @@ public abstract class DataType {
             case "ipv6":
                 dataType = IPv6Type.INSTANCE;
                 break;
+            case "geo_point":
+                dataType = GeoPointType.INSTANCE;
+                break;
             case "variant":
                 dataType = VariantType.INSTANCE;
                 break;
@@ -438,6 +442,7 @@ public abstract class DataType {
             case JSONB: return JsonType.INSTANCE;
             case IPV4: return IPv4Type.INSTANCE;
             case IPV6: return IPv6Type.INSTANCE;
+            case GEO_POINT: return GeoPointType.INSTANCE;
             case VARBINARY: return VarBinaryType.createVarBinaryType(type.getLength());
             case AGG_STATE: {
                 org.apache.doris.catalog.AggStateType catalogType = ((org.apache.doris.catalog.AggStateType) type);
@@ -682,6 +687,10 @@ public abstract class DataType {
 
     public boolean isIPv6Type() {
         return this instanceof IPv6Type;
+    }
+
+    public boolean isGeoPointType() {
+        return this instanceof GeoPointType;
     }
 
     public boolean isBitmapType() {

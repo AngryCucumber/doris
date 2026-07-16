@@ -207,6 +207,9 @@ OlapBlockDataConvertor::create_olap_column_data_convertor(const TabletColumn& co
     case FieldType::OLAP_FIELD_TYPE_LARGEINT: {
         return std::make_unique<OlapColumnDataConvertorSimple<TYPE_LARGEINT>>();
     }
+    case FieldType::OLAP_FIELD_TYPE_GEO_POINT: {
+        return std::make_unique<OlapColumnDataConvertorSimple<TYPE_GEO_POINT>>();
+    }
     case FieldType::OLAP_FIELD_TYPE_IPV4: {
         return std::make_unique<OlapColumnDataConvertorSimple<TYPE_IPV4>>();
     }

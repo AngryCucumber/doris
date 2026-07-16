@@ -65,6 +65,7 @@ public abstract class Type {
     public static final ScalarType DOUBLE = new ScalarType(PrimitiveType.DOUBLE);
     public static final ScalarType IPV4 = new ScalarType(PrimitiveType.IPV4);
     public static final ScalarType IPV6 = new ScalarType(PrimitiveType.IPV6);
+    public static final ScalarType GEO_POINT = new ScalarType(PrimitiveType.GEO_POINT);
     public static final ScalarType DATE = new ScalarType(PrimitiveType.DATE);
     public static final ScalarType DATETIME = new ScalarType(PrimitiveType.DATETIME);
     public static final ScalarType DATEV2 = new ScalarType(PrimitiveType.DATEV2);
@@ -179,6 +180,7 @@ public abstract class Type {
         trivialTypes.add(DATETIMEV2);
         trivialTypes.add(IPV4);
         trivialTypes.add(IPV6);
+        trivialTypes.add(GEO_POINT);
         trivialTypes.add(TIMEV2);
         trivialTypes.add(JSONB);
         trivialTypes.add(VARIANT);
@@ -709,6 +711,10 @@ public abstract class Type {
         return isScalarType(PrimitiveType.IPV6);
     }
 
+    public boolean isGeoPoint() {
+        return isScalarType(PrimitiveType.GEO_POINT);
+    }
+
     /**
      * Returns true if Impala supports this type in the metdata. It does not mean we
      * can manipulate data of this type. For tables that contain columns with these
@@ -826,6 +832,8 @@ public abstract class Type {
                 return Type.IPV4;
             case IPV6:
                 return Type.IPV6;
+            case GEO_POINT:
+                return Type.GEO_POINT;
             case DATE:
                 return Type.DATE;
             case DATETIME:

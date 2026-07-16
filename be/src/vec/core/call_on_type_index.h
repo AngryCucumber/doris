@@ -159,6 +159,7 @@ class DataTypeDateTimeV2;
 class DataTypeDateTime;
 class DataTypeIPv4;
 class DataTypeIPv6;
+class DataTypeGeoPoint;
 class DataTypeString;
 template <typename T>
 class DataTypeEnum;
@@ -215,6 +216,8 @@ bool call_on_index_and_data_type(PrimitiveType number, F&& f) {
         return f(TypePair<DataTypeIPv4, T>());
     case PrimitiveType::TYPE_IPV6:
         return f(TypePair<DataTypeIPv6, T>());
+    case PrimitiveType::TYPE_GEO_POINT:
+        return f(TypePair<DataTypeGeoPoint, T>());
 
     case PrimitiveType::TYPE_STRING:
     case PrimitiveType::TYPE_CHAR:

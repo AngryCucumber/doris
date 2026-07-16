@@ -22,6 +22,7 @@
 #include "util/to_string.h"
 #include "vec/core/types.h"
 #include "vec/data_types/serde/data_type_serde.h"
+#include "vec/runtime/geo_point_value.h"
 #include "vec/runtime/time_value.h"
 namespace doris::vectorized {
 #include "common/compile_check_begin.h"
@@ -78,6 +79,12 @@ struct CastToString {
 
     template <class SRC>
     static inline void push_ip(const SRC& from, BufferWritable& bw);
+
+    // GEO_POINT shares BIGINT's CppType, so these are named (not CppType-keyed
+    // overloads of from_number) to keep the raw-key and text formattings apart.
+    static inline std::string from_geo_point(const Int64& from);
+
+    static inline void push_geo_point(const Int64& from, BufferWritable& bw);
 
     static inline std::string from_time(const TimeValue::TimeType& from, UInt32 scale);
 
@@ -166,6 +173,9 @@ constexpr size_t CastToString::string_length<TYPE_IPV4> = sizeof("255.255 .255.2
 template <>
 constexpr size_t CastToString::string_length<TYPE_IPV6> =
         sizeof("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff") - 1;
+template <>
+constexpr size_t CastToString::string_length<TYPE_GEO_POINT> =
+        sizeof("[-179.99999999999999999, -89.999999999999999999]") - 1;
 
 // BOOLEAN
 template <>
@@ -520,6 +530,16 @@ template <>
 inline void CastToString::push_ip(const IPv6& from, BufferWritable& bw) {
     auto value = IPv6Value(from);
     std::string str = value.to_string();
+    bw.write(str.data(), str.size());
+}
+
+// GeoPoint
+inline std::string CastToString::from_geo_point(const Int64& from) {
+    return GeoPointValue::to_string(from);
+}
+
+inline void CastToString::push_geo_point(const Int64& from, BufferWritable& bw) {
+    std::string str = GeoPointValue::to_string(from);
     bw.write(str.data(), str.size());
 }
 

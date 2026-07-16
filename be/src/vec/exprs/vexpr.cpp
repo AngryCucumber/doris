@@ -171,6 +171,10 @@ TExprNode create_texpr_node_from(const void* data, const PrimitiveType& type, in
         THROW_IF_ERROR(create_texpr_literal_node<TYPE_IPV6>(data, &node));
         break;
     }
+    case TYPE_GEO_POINT: {
+        THROW_IF_ERROR(create_texpr_literal_node<TYPE_GEO_POINT>(data, &node));
+        break;
+    }
     case TYPE_TIMEV2: {
         THROW_IF_ERROR(create_texpr_literal_node<TYPE_TIMEV2>(data, &node, precision, scale));
         break;
@@ -315,6 +319,11 @@ TExprNode create_texpr_node_from(const vectorized::Field& field, const Primitive
         THROW_IF_ERROR(create_texpr_literal_node<TYPE_IPV6>(&storage, &node));
         break;
     }
+    case TYPE_GEO_POINT: {
+        const auto& storage = field.get<TYPE_GEO_POINT>();
+        THROW_IF_ERROR(create_texpr_literal_node<TYPE_GEO_POINT>(&storage, &node));
+        break;
+    }
     case TYPE_TIMEV2: {
         const auto& storage = field.get<TYPE_TIMEV2>();
         THROW_IF_ERROR(create_texpr_literal_node<TYPE_TIMEV2>(&storage, &node));
@@ -422,6 +431,7 @@ Status VExpr::create_expr(const TExprNode& expr_node, VExprSPtr& expr) {
         case TExprNodeType::LARGE_INT_LITERAL:
         case TExprNodeType::IPV4_LITERAL:
         case TExprNodeType::IPV6_LITERAL:
+        case TExprNodeType::GEO_POINT_LITERAL:
         case TExprNodeType::FLOAT_LITERAL:
         case TExprNodeType::DECIMAL_LITERAL:
         case TExprNodeType::DATE_LITERAL:

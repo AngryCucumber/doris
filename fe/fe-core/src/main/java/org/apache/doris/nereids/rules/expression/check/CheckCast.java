@@ -38,6 +38,7 @@ import org.apache.doris.nereids.types.DecimalV2Type;
 import org.apache.doris.nereids.types.DecimalV3Type;
 import org.apache.doris.nereids.types.DoubleType;
 import org.apache.doris.nereids.types.FloatType;
+import org.apache.doris.nereids.types.GeoPointType;
 import org.apache.doris.nereids.types.HllType;
 import org.apache.doris.nereids.types.IPv4Type;
 import org.apache.doris.nereids.types.IPv6Type;
@@ -101,7 +102,11 @@ public class CheckCast implements ExpressionPatternRuleFactory {
         strictCastWhiteList.put(TinyIntType.class, allowedTypes);
         strictCastWhiteList.put(SmallIntType.class, allowedTypes);
         strictCastWhiteList.put(IntegerType.class, allowedTypes);
-        strictCastWhiteList.put(BigIntType.class, allowedTypes);
+        // BigInt additionally casts to GEO_POINT: the value must already be a flipped
+        // s2 cell key (st_s2_cellid domain) — zero-cost migration for __s2 columns
+        Set<Class<? extends DataType>> bigIntAllowedTypes = Sets.newHashSet(allowedTypes);
+        bigIntAllowedTypes.add(GeoPointType.class);
+        strictCastWhiteList.put(BigIntType.class, bigIntAllowedTypes);
         strictCastWhiteList.put(LargeIntType.class, allowedTypes);
         strictCastWhiteList.put(FloatType.class, allowedTypes);
         strictCastWhiteList.put(DoubleType.class, allowedTypes);
@@ -177,6 +182,7 @@ public class CheckCast implements ExpressionPatternRuleFactory {
         allowToBasicType(allowedTypes);
         allowedTypes.add(IPv4Type.class);
         allowedTypes.add(IPv6Type.class);
+        allowedTypes.add(GeoPointType.class);
         allowedTypes.add(VarBinaryType.class);
         allowedTypes.add(TimeStampTzType.class);
         allowToComplexType(allowedTypes);
@@ -201,6 +207,12 @@ public class CheckCast implements ExpressionPatternRuleFactory {
         allowToStringLikeType(allowedTypes);
         allowedTypes.add(VariantType.class);
         strictCastWhiteList.put(IPv6Type.class, allowedTypes);
+
+        // GEO_POINT: text form only ("[lon, lat]")
+        allowedTypes = Sets.newHashSet();
+        allowedTypes.add(GeoPointType.class);
+        allowToStringLikeType(allowedTypes);
+        strictCastWhiteList.put(GeoPointType.class, allowedTypes);
 
         // bitmap
         allowedTypes = Sets.newHashSet();
@@ -229,6 +241,9 @@ public class CheckCast implements ExpressionPatternRuleFactory {
         allowedTypes.add(ArrayType.class);
         allowedTypes.add(JsonType.class);
         allowedTypes.add(VariantType.class);
+        // [lon, lat] array literals fold to GEO_POINT on the FE; non-literal arrays
+        // reach the BE cast and fail with a clean NotSupported (documented boundary)
+        allowedTypes.add(GeoPointType.class);
         strictCastWhiteList.put(ArrayType.class, allowedTypes);
 
         // map

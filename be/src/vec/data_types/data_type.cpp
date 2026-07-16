@@ -92,6 +92,8 @@ PGenericType_TypeId IDataType::get_pdata_type(const IDataType* data_type) {
         return PGenericType::INT128;
     case PrimitiveType::TYPE_IPV4:
         return PGenericType::IPV4;
+    case PrimitiveType::TYPE_GEO_POINT:
+        return PGenericType::GEO_POINT;
     case PrimitiveType::TYPE_IPV6:
         return PGenericType::IPV6;
     case PrimitiveType::TYPE_FLOAT:

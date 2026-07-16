@@ -47,6 +47,7 @@
 #include "vec/data_types/data_type.h"
 #include "vec/data_types/data_type_date_or_datetime_v2.h"
 #include "vec/data_types/data_type_decimal.h"
+#include "vec/data_types/data_type_geo_point.h"
 #include "vec/data_types/data_type_ipv4.h"
 #include "vec/data_types/data_type_ipv6.h"
 #include "vec/data_types/data_type_nullable.h"
@@ -537,7 +538,9 @@ public:
                 // decimal
                 DataTypeDecimal32, DataTypeDecimal64, DataTypeDecimal128, DataTypeDecimal256,
                 // ip
-                DataTypeIPv4, DataTypeIPv6>(arg_then.type.get(), [&](const auto& type) -> bool {
+                DataTypeIPv4, DataTypeIPv6,
+                // geo
+                DataTypeGeoPoint>(arg_then.type.get(), [&](const auto& type) -> bool {
             using DataType = std::decay_t<decltype(type)>;
             vec_exec = execute_basic_type<DataType::PType>(block, cond_col, arg_then, arg_else,
                                                            result, vec_exec);

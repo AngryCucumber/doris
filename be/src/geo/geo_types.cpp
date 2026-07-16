@@ -645,6 +645,17 @@ bool GeoPoint::ComputeS2CellKey(double lng, double lat, int64_t* cell_key) {
     return true;
 }
 
+bool GeoPoint::DecodeS2CellKey(int64_t cell_key, double* lng, double* lat) {
+    S2CellId cell(static_cast<uint64_t>(cell_key) ^ (uint64_t(1) << 63));
+    if (!cell.is_valid()) {
+        return false;
+    }
+    S2LatLng ll = cell.ToLatLng();
+    *lng = ll.lng().degrees();
+    *lat = ll.lat().degrees();
+    return true;
+}
+
 bool GeoPoint::ComputeAngleSphere(double x_lng, double x_lat, double y_lng, double y_lat,
                                   double* angle) {
     S2LatLng x = S2LatLng::FromDegrees(x_lat, x_lng);

@@ -82,6 +82,7 @@ using DataTypeDecimal128 = DataTypeDecimal<TYPE_DECIMAL128I>;
 using DataTypeDecimal256 = DataTypeDecimal<TYPE_DECIMAL256>;
 class DataTypeIPv4;
 class DataTypeIPv6;
+class DataTypeGeoPoint;
 class DataTypeString;
 class DataTypeVarbinary;
 class DataTypeHLL;
@@ -110,6 +111,9 @@ using ColumnFloat32 = ColumnVector<TYPE_FLOAT>;
 using ColumnFloat64 = ColumnVector<TYPE_DOUBLE>;
 using ColumnIPv4 = ColumnVector<TYPE_IPV4>;
 using ColumnIPv6 = ColumnVector<TYPE_IPV6>;
+// GEO_POINT: int64-backed (flipped s2 cell key); no scalar alias to avoid clashing
+// with the doris::GeoPoint geometry class, the enum template arg disambiguates.
+using ColumnGeoPoint = ColumnVector<TYPE_GEO_POINT>;
 using ColumnTime = ColumnVector<TYPE_TIME>;
 using ColumnTimeV2 = ColumnVector<TYPE_TIMEV2>;
 using ColumnOffset32 = ColumnVector<TYPE_UINT32>;
@@ -159,6 +163,7 @@ constexpr bool is_enumeration_type(PrimitiveType type) {
     case TYPE_DATEV2:
     case TYPE_IPV4:
     case TYPE_IPV6:
+    case TYPE_GEO_POINT:
         return true;
 
     case INVALID_TYPE:
@@ -433,6 +438,13 @@ struct PrimitiveTypeTraits<TYPE_IPV6> {
     using StorageFieldType = CppType;
     using DataType = vectorized::DataTypeIPv6;
     using ColumnType = vectorized::ColumnIPv6;
+};
+template <>
+struct PrimitiveTypeTraits<TYPE_GEO_POINT> {
+    using CppType = int64_t;
+    using StorageFieldType = CppType;
+    using DataType = vectorized::DataTypeGeoPoint;
+    using ColumnType = vectorized::ColumnGeoPoint;
 };
 template <>
 struct PrimitiveTypeTraits<TYPE_CHAR> {

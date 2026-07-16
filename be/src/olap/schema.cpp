@@ -211,6 +211,9 @@ vectorized::IColumn::MutablePtr Schema::get_predicate_column_ptr(const FieldType
     case FieldType::OLAP_FIELD_TYPE_IPV6:
         ptr = doris::vectorized::PredicateColumnType<TYPE_IPV6>::create();
         break;
+    case FieldType::OLAP_FIELD_TYPE_GEO_POINT:
+        ptr = doris::vectorized::PredicateColumnType<TYPE_GEO_POINT>::create();
+        break;
     default:
         throw Exception(
                 ErrorCode::SCHEMA_SCHEMA_FIELD_INVALID,

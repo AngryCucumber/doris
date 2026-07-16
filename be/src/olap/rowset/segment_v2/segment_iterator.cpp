@@ -1030,30 +1030,44 @@ Status SegmentIterator::_apply_geo_predicate() {
     };
     for (auto it = _common_expr_ctxs_push_down.begin(); it != _common_expr_ctxs_push_down.end();) {
         GeoRangeSearchRuntime runtime;
-        if (!extract_geo_range_search((*it)->root().get(), &runtime) ||
-            runtime.lng_idx_in_block < 0 || runtime.lat_idx_in_block < 0 ||
-            static_cast<size_t>(runtime.lng_idx_in_block) >= idx_to_cid.size() ||
-            static_cast<size_t>(runtime.lat_idx_in_block) >= idx_to_cid.size()) {
+        if (!extract_geo_range_search((*it)->root().get(), &runtime)) {
             ++it;
             continue;
         }
-        const std::string& lng_name =
-                _opts.tablet_schema->column(idx_to_cid[runtime.lng_idx_in_block]).name();
-        const std::string& lat_name =
-                _opts.tablet_schema->column(idx_to_cid[runtime.lat_idx_in_block]).name();
-        // Find a geo index whose FE-recorded source columns are exactly the
-        // predicate's lng/lat slots; never match on column naming conventions.
+        const bool geo_point_mode = runtime.geo_idx_in_block >= 0;
         GeoIndexIterator* geo_iterator = nullptr;
-        for (auto cid : _schema->column_ids()) {
-            auto* candidate = dynamic_cast<GeoIndexIterator*>(_index_iterators[cid].get());
-            if (candidate == nullptr) {
+        if (geo_point_mode) {
+            if (static_cast<size_t>(runtime.geo_idx_in_block) >= idx_to_cid.size()) {
+                ++it;
                 continue;
             }
-            const auto& props = candidate->geo_reader()->index_meta().properties();
-            if (iequals(geo_index_property(props, kGeoIndexPropLngColumn), lng_name) &&
-                iequals(geo_index_property(props, kGeoIndexPropLatColumn), lat_name)) {
-                geo_iterator = candidate;
-                break;
+            // GEO_POINT mode: the index is on the very column the predicate reads,
+            // so matching is by column identity -- no recorded properties needed.
+            geo_iterator = dynamic_cast<GeoIndexIterator*>(
+                    _index_iterators[idx_to_cid[runtime.geo_idx_in_block]].get());
+        } else if (runtime.lng_idx_in_block < 0 || runtime.lat_idx_in_block < 0 ||
+                   static_cast<size_t>(runtime.lng_idx_in_block) >= idx_to_cid.size() ||
+                   static_cast<size_t>(runtime.lat_idx_in_block) >= idx_to_cid.size()) {
+            ++it;
+            continue;
+        } else {
+            const std::string& lng_name =
+                    _opts.tablet_schema->column(idx_to_cid[runtime.lng_idx_in_block]).name();
+            const std::string& lat_name =
+                    _opts.tablet_schema->column(idx_to_cid[runtime.lat_idx_in_block]).name();
+            // Find a geo index whose FE-recorded source columns are exactly the
+            // predicate's lng/lat slots; never match on column naming conventions.
+            for (auto cid : _schema->column_ids()) {
+                auto* candidate = dynamic_cast<GeoIndexIterator*>(_index_iterators[cid].get());
+                if (candidate == nullptr) {
+                    continue;
+                }
+                const auto& props = candidate->geo_reader()->index_meta().properties();
+                if (iequals(geo_index_property(props, kGeoIndexPropLngColumn), lng_name) &&
+                    iequals(geo_index_property(props, kGeoIndexPropLatColumn), lat_name)) {
+                    geo_iterator = candidate;
+                    break;
+                }
             }
         }
         std::vector<CellRange> covering;
@@ -1073,9 +1087,17 @@ Status SegmentIterator::_apply_geo_predicate() {
         int64_t band_rows = static_cast<int64_t>(search_stats.rows_margin);
         if (exact_mode) {
             std::vector<uint32_t> need_exact;
-            classify_margin_cells(runtime, margin, &hit, &need_exact);
+            if (geo_point_mode) {
+                // the stored point IS its cell center: zero quantization slack, and
+                // the leftover band resolves from the index alone (no column reads)
+                segment_v2::classify_margin_cells(runtime.lng0, runtime.lat0, runtime.radius_m,
+                                                  kGeoIndexMarginMeters, /*quantization_m=*/0.0,
+                                                  margin, &hit, &need_exact);
+            } else {
+                classify_margin_cells(runtime, margin, &hit, &need_exact);
+            }
             band_rows = static_cast<int64_t>(need_exact.size());
-            Status st = _resolve_geo_exact_rows(runtime, need_exact, &hit);
+            Status st = _resolve_geo_exact_rows(runtime, need_exact, margin, &hit);
             if (st.ok()) {
                 // The verdict is exact for every row: the residual predicate is
                 // redundant and gets dropped (same mechanism as a fully-evaluated
@@ -1088,13 +1110,19 @@ Status SegmentIterator::_apply_geo_predicate() {
                 }
                 it = _common_expr_ctxs_push_down.erase(it);
                 erased = true;
-                // Mark the expression index-answered for its lng/lat slots, then let
-                // the standard all-conditions check decide whether those columns can
+                // Mark the expression index-answered for its slots, then let the
+                // standard all-conditions check decide whether those columns can
                 // skip materialization (they still read when another predicate or the
                 // SELECT list needs them). This is what makes `where geo_pred` stop
-                // paying lon/lat IO and enables the COUNT_ON_INDEX placeholder path.
-                for (ColumnId c : {idx_to_cid[runtime.lng_idx_in_block],
-                                   idx_to_cid[runtime.lat_idx_in_block]}) {
+                // paying point-column IO and enables the COUNT_ON_INDEX placeholder path.
+                std::vector<ColumnId> answered_cids;
+                if (geo_point_mode) {
+                    answered_cids.push_back(idx_to_cid[runtime.geo_idx_in_block]);
+                } else {
+                    answered_cids.push_back(idx_to_cid[runtime.lng_idx_in_block]);
+                    answered_cids.push_back(idx_to_cid[runtime.lat_idx_in_block]);
+                }
+                for (ColumnId c : answered_cids) {
                     auto status_it = _common_expr_index_exec_status.find(c);
                     if (status_it != _common_expr_index_exec_status.end()) {
                         auto expr_entry = status_it->second.find(runtime.distance_expr);
@@ -1333,10 +1361,50 @@ Status SegmentIterator::_patch_geo_agg_rep_row(vectorized::Block* block) {
 // Reads true lon/lat for the ambiguity-band rows and runs the exact circle kernel
 // (the very same scalar code ST_Distance_Sphere executes, contract C2). Rows that
 // satisfy the predicate are added to `hit`; NULLs never satisfy it.
-Status SegmentIterator::_resolve_geo_exact_rows(const GeoRangeSearchRuntime& runtime,
-                                                const std::vector<uint32_t>& rowids,
-                                                roaring::Roaring* hit) {
+// GEO_POINT mode short-circuits: the row value IS the cell already sitting in
+// `margin`, so centers decode from the index walk and no column is read at all.
+Status SegmentIterator::_resolve_geo_exact_rows(
+        const GeoRangeSearchRuntime& runtime, const std::vector<uint32_t>& rowids,
+        const std::vector<std::pair<uint32_t, uint64_t>>& margin, roaring::Roaring* hit) {
     if (rowids.empty()) {
+        return Status::OK();
+    }
+    if (runtime.geo_idx_in_block >= 0) {
+        std::vector<double> lng_vals(rowids.size(), 0.0);
+        std::vector<double> lat_vals(rowids.size(), 0.0);
+        std::vector<uint8_t> valid(rowids.size(), 0);
+        // classify_margin_cells emits need_exact rids in margin order: walk both
+        // sequences with two pointers to recover each rid's raw cell.
+        size_t mi = 0;
+        for (size_t i = 0; i < rowids.size(); ++i) {
+            while (mi < margin.size() && margin[mi].first != rowids[i]) {
+                ++mi;
+            }
+            if (mi >= margin.size()) {
+                return Status::InternalError("geo exact: band rid {} not found in margin",
+                                             rowids[i]);
+            }
+            double lng = 0;
+            double lat = 0;
+            if (GeoPoint::DecodeS2CellKey(s2_key_from_cell(margin[mi].second), &lng, &lat)) {
+                lng_vals[i] = lng;
+                lat_vals[i] = lat;
+                valid[i] = 1;
+            }
+        }
+        CircleRecheck recheck;
+        if (!recheck.init(runtime.lng0, runtime.lat0, runtime.radius_m,
+                          runtime.is_strict ? GeoCirclePredicate::DISTANCE_LT
+                                            : GeoCirclePredicate::DISTANCE_LE)) {
+            return Status::NotSupported("geo exact recheck: invalid circle");
+        }
+        std::vector<uint8_t> keep(rowids.size(), 0);
+        recheck.recheck(lng_vals.data(), lat_vals.data(), rowids.size(), keep.data());
+        for (size_t i = 0; i < rowids.size(); ++i) {
+            if (keep[i] != 0 && valid[i] != 0) {
+                hit->add(rowids[i]);
+            }
+        }
         return Status::OK();
     }
     const auto& idx_to_cid = _schema->column_ids();

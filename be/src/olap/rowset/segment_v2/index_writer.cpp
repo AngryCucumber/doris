@@ -47,8 +47,10 @@ bool IndexColumnWriter::check_support_ann_index(const TabletColumn& column) {
 }
 
 bool IndexColumnWriter::check_support_geo_index(const TabletColumn& column) {
-    // the geo index is built on the __s2 BIGINT generated column (FE-validated)
-    return column.type() == FieldType::OLAP_FIELD_TYPE_BIGINT;
+    // the geo index is built either on the __s2 BIGINT generated column or directly
+    // on a GEO_POINT column (FE-validated); both store the same flipped cell key
+    return column.type() == FieldType::OLAP_FIELD_TYPE_BIGINT ||
+           column.type() == FieldType::OLAP_FIELD_TYPE_GEO_POINT;
 }
 
 // create index writer

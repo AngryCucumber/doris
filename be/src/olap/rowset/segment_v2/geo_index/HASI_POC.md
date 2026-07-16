@@ -923,6 +923,120 @@ bbox 同尺度、多边形（凸 6 边/凹 50 边/带洞/跨反子午线）、kN
 
 ---
 
+## 10. GEO_POINT 原生类型（rev3，方案 B 冻结设计）
+
+用户拍板采纳方案 B（§7 rev2.7 决策块）。本节冻结实现设计；实现进展与实测另记 rev3.x。
+
+### 10.1 语义与编码（冻结）
+
+- **物理存储**：单列 8B，`int64 = raw_s2_cell_id XOR 2^63`——与 `__s2` 生成列**同一编码**
+  （单一出处 `GeoPoint::ComputeS2CellKey`，geo_types.cpp:639）。有符号序 = 无符号 Hilbert 序，
+  因此 zone map / short key / 包络范围谓词 / GEO 索引写入全部按既有 BIGINT 语义直接工作，
+  HASI 检索内核零改动。新增对称解码 `GeoPoint::DecodeS2CellKey(key, &lng, &lat)`（cell 中心）。
+- **值语义**：GEO_POINT 值 = level-30 leaf cell，代表点 = cell 中心（量化 ≤~1cm，v1.5 精算
+  余量的 5cm 量化项本就覆盖）。入库即量化；查询期一切几何计算作用于中心点——因此
+  `st_distance_sphere(loc,...)` 行级执行与索引侧判定**逐位一致**（同一 C2 内核作用于同一坐标），
+  精算带（±1m 模糊环）内的行可完全在索引内判定（解码 margin cell 中心），**谓词零行读**。
+- **文本形态**：`[lon, lat]`（GeoJSON 轴序，与 ES 数组形态一致）。输出用最短往返 repr
+  （C++ fmt `{}` / Java `Double.toString`，跨端罕见指数格式差异仅影响显示，双方解析均兼容；
+  中心点重编码必落回同一 cell，文本往返稳定）。解析仅接受带方括号形式（拒绝裸 `a,b`——
+  ES 的裸字符串是 lat,lon 轴序，两义性宁可不收）。非法坐标/格式 → NULL（cast 非严格语义）。
+- **NULL**：列自身 null map；索引侧沿用 raw cell 0 = NULL 哨兵，与生成列路径一致。
+- **cast 矩阵**：VARCHAR/STRING ↔ GEO_POINT（文本解析/输出）；BIGINT ↔ GEO_POINT
+  （翻转键直通 + is_valid 校验，与 `st_s2_cellid` 输出同域 → 存量 `__s2` 数据可零成本迁移）；
+  数组字面量 `[lon, lat]` → GEO_POINT 仅 FE 常量折叠路径（INSERT VALUES 可用；
+  非常量数组表达式 BE cast 不实现，报干净的 NotSupported，记为已知边界）。
+- **函数**：`geo_point(lon, lat) → GEO_POINT`（构造，复用 ComputeS2CellKey）；
+  `st_distance_sphere(GEO_POINT, DOUBLE, DOUBLE) → DOUBLE` 3 参重载（解码中心→同 4 参内核）；
+  `geo_lon(gp)` / `geo_lat(gp)`（中心解码访问器，回归对拍与迁移逃生口）。
+- **DDL**：GEO 索引可直建于 GEO_POINT 列（无需生成列与 lng/lat 属性回填）；索引匹配从
+  "属性记录源列名"变为"索引列即谓词列"（按 cid 直配）。GEO_POINT 允许做 DUP/MOW key 列
+  （v0 包络 key-range 剪枝依赖此）；FE 包络注入用 GEO_POINT 型字面量（同域比较，无 cast 破坏 sargable）。
+- **C++ 命名**：BE 已有 `doris::GeoPoint` 几何类——新类型不引入同名标量别名，CppType 直接用
+  `Int64`，按 `ColumnVector<TYPE_GEO_POINT>` / `DataTypeNumberBase<TYPE_GEO_POINT>` 模板参数区分
+  （克隆 IPV4 模式：typedef + 薄子类，无新列机制）。
+
+### 10.2 触点清单（以 IPV4 引入为克隆模板，两次全仓盘点核对）
+
+- **枚举四处 + BE 枚举**：`Types.thrift` TPrimitiveType、`Exprs.thrift`（GEO_POINT_LITERAL +
+  TGeoPointLiteral + TExprNode 字段）、`types.proto` PGenericType、`internal_service.proto`
+  PColumnType；BE `define_primitive_type.h`、`olap_common.h` FieldType。各枚举序号独立，映射显式。
+- **FE 核心**：PrimitiveType（slotSize=8）/ScalarType/Type（trivialTypes 等集合）、Nereids
+  `GeoPointType`（WIDTH=8）+ `DataType.java` 三处 + `TypeCoercionUtils`、`GeoPointLiteral`
+  （Nereids long 背衬 + legacy analysis 版 toThrift）+ `Literal/StringLikeLiteral/LiteralExpr`、
+  `DorisLexer/Parser.g4`（关键字 + primitiveColType + nonReserved）、`ColumnDef/Column`
+  （getFieldLengthByType=8）、`GsonUtils`（literal 多态注册）、`CheckCast` 白名单、
+  `ExpressionVisitor`、`FoldConstantRuleOnBE`（文本回读）、mysql 列类型走 default→STRING 免改。
+- **BE 核心**：`types.h` CppTypeTraits/FieldTypeTraits（from_string/to_string 走 geo 值助手）+
+  `types.cpp` 注册数组、`tablet_schema.cpp` 四张映射表（含字节数=8）、`key_coder.cpp`、
+  `schema.cpp` PredicateColumnType、`encoding_info.cpp`（BIT_SHUFFLE/PLAIN）、
+  `zone_map_index.cpp`、`primitive_type.{h,cpp}`（3 个转换 + Traits + ColumnGeoPoint typedef）、
+  `column_vector.{h,cpp}` + `data_type_number_base.{h,cpp}` + `data_type_number_serde.{h,cpp}`
+  显式实例化、`data_type_geo_point.{h,cpp}` + 专用 serde（文本/JSON/MySQL/from_string）、
+  `data_type_factory.cpp` 三处 + `data_type.cpp` get_pdata_type、`call_on_type_index.h`、
+  `field.cpp` 全部七处、cast（`function_cast.cpp` 分发 + `cast_to_geo_point.h` + `cast_to_string.h`）、
+  `vexpr.{h,cpp}` 字面量节点、`olap_data_convertor.cpp`（写路径）、`predicate_creator.{h,cpp}` +
+  `create_predicate_function.h` + `scan_operator.cpp` + `exec/olap_common.h`（谓词/scan key 归一化）、
+  `functions_comparison.h`、`if.cpp`、`raw_value.h`（hash 宽度 8）、`fold_constant_executor.cpp`、
+  `runtime_filter_wrapper.cpp`、`schema_columns_scanner.cpp`（information_schema 名）。
+- **明确不做（POC 边界，触发处给干净报错或按原生 int64 直通）**：ORC/Parquet/Arrow 导出语义化
+  （导出为原始 int64 键）、JNI/JDBC 外表、ARRAY/MAP/STRUCT 嵌套元素、聚合函数族
+  （min/max/collect/topn/approx_count_distinct/window——FE 签名不放行即不可达）、DELETE 条件列、
+  分区列/分桶列（不放行）、字典、bloom filter 索引、倒排/NGRAM 索引、AGG 表模型。
+
+### 10.2b 落地记录（rev3 实测）
+
+- **全链路已落地并验证**：FE 编译过（含 checkstyle）、FE 单测 11/11（IndexDefinitionTest
+  含 geo_point 直建分支 + GeoPointLiteralTest 编解码往返/拒收矩阵/序保持）、BE 编译过、
+  回归 geo_index_p0 5/5 全绿（新增 geo_point_type suite：三形态入库对拍、文本往返重编码
+  同 cell、±5cm 半径夹逼、四配置检索对拍、v2b 聚合三配置对拍、GeoAggFoldedLeaves>0
+  断言在 flush 与 full compaction 后均触发——索引与 sketch 均在 geo_point 列上原生工作）、
+  BE 单测 22/22（geo_index 四套件 357ms：GeoPointValueTest 往返/解析矩阵/与 st_s2_cellid
+  内核逐位一致/非法 key 打印，+ CircleRecheck/HasiTree/S2Covering 存量 18 例）。
+- **编译期踩坑（后来者必查）**：`ColumnVector` / `DataTypeNumberBase` /
+  `DataTypeNumberSerDe` 三处模板都有**类型白名单 static_assert**（column_vector.h:72 /
+  data_type_number_base.h:51 / data_type_number_serde.h:52），新类型不加进去会以
+  "no member named get_data" 之类的误导性错误在百里之外爆炸；这份名单与 §3.1 枚举
+  链路、rev2.3 的 IndexFileWriter 门控暗链同级必查。
+- **1e8 实测（runs=3 热中位，与 §8 同 harness；geo_gp_t 为 geo_meas_t 经
+  `insert…select geo_point(lon,lat),id,val` 迁移，跨表 sum(val) 逐位相等）**：
+  - 六个基准圆的**命中行数与三列表逐一相同**（69154/3023360/3502100/3685182/18/3023521）——
+    量化在这些半径下未改变任何计数，也证明 geo_point() 与 st_s2_cellid 编码逐位一致；
+  - 检索 v1.5：10-17ms，与三列表（10-18ms）同级；相对全表扫 27-50×（gp 表全表扫基线
+    465-500ms 高于三列表的 207-234ms——3 参形态逐行解码 cell 中心再算 haversine，
+    这恰是"不用索引时 geo_point 更贵、用索引后打平"的预期形态）；
+  - 聚合 v2b：13-31ms，与三列表（17-31ms）同级，v2b 相对 v1.5 的边界行地板与 rev2.7
+    结论一致（金字塔层课题不变）；
+  - **存储 1.346GB vs 2.359GB（-43%）**：单列 8B key 替代 lon/lat 两列 double + __s2。
+- **环境踩坑（与代码无关，跑 BE UT 必读）**：macOS 27 Beta 3（26A5378n，2026-07-15 更新）
+  的新 dyld 与 homebrew llvm@20 的 ASAN runtime 不兼容——ASAN 初始化 shadow memory 时经
+  `get_dyld_hdr()` 走入新的 `dyld_shared_cache_iterate_text_swift`，其内部 `_Block_copy`
+  触发 malloc → 被 ASAN 拦截 → **同线程重入 `AsanInitFromRtl` 自旋锁 = 永久死锁**（进程
+  ~93% CPU 空转、永不进 main，`sample` 可见栈停在 dyld `runAllInitializersForMain`）。
+  `MallocNanoZone=0`、`DYLD_SHARED_REGION=avoid` 均无效。**绕过**：`DYLD_LIBRARY_PATH`
+  前置注入 homebrew `llvm`（22.1.8）的 `lib/clang/22/lib/darwin` 目录以按叶名顶替
+  `libclang_rt.asan_osx_dynamic.dylib`（llvm.org 血统导出 `__asan_version_mismatch_check_v8`，
+  与 llvm@20 编译产物兼容；Apple CLT 的 runtime 只导出 `apple_clang_2100` 版符号，不可用）。
+  注意 SIP 会在 `/bin/bash` 等平台二进制上清洗 DYLD_*，故不能包一层 run-be-ut.sh，须直接
+  对 `doris_be_test` 设置，并手工补齐脚本的 env（`DORIS_HOME`/`LOG_DIR`/`UDF_RUNTIME_DIR`
+  等——缺失会在 run_all_tests.cpp:68 / logconfig.cpp:176 以空指针 SEGV 崩溃）。
+- **已知边界（POC 口径，触发即干净报错）**：非常量数组表达式 cast→geo_point 不支持
+  （字面量 FE 折叠可用）；geo_point→bigint 方向不开；min/max(geo_point) 等聚合、DELETE
+  条件列、分区列、BF/倒排索引、ARRAY 嵌套、字典、Arrow/ORC 语义化导出（原始 int64 键
+  直出）均不放行；CSV 装载 "[lon, lat]" 含逗号需引号包裹。
+
+### 10.3 查询链路适配
+
+- FE `RewriteGeoPredicate.extractCircle` 增识别 3 参形态（首参 GEO_POINT slot）；
+  `findS2Slot` 新分支：谓词列自身带 GEO 索引（geo_point 模式索引无 lng/lat 属性）即为包络列；
+  包络注入 `GeoPointLiteral(long)`。`PushDownGeoAgg` 复用同一 extractCircle，自动跟随。
+- BE `extract_geo_range_search` 增 3 参识别 → `geo_idx_in_block` 单槽模式；索引匹配按
+  "geo iterator 的 cid == 谓词槽 cid"；v1.5 精算 margin 行由 (rid, cell) 对直接解码中心跑同一
+  标量内核（`_resolve_geo_exact_rows` 免列读分支）；免读标记/`v2b` fold 门槛按单列 cid 适配
+  （包络谓词落在索引列自身，性质不变）。
+
+---
+
 ## 附：关键源码锚点速查（rev2 全部经源码核对）
 | 用途 | 位置 |
 |---|---|

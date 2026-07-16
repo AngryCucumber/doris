@@ -161,14 +161,20 @@ public class IndexDefinition {
         if (indexType == IndexType.GEO) {
             String indexColName = column.getName();
             caseSensitivityCols.add(indexColName);
-            if (!column.getType().isBigIntType()) {
-                throw new AnalysisException(
-                        "GEO index column must be BIGINT, invalid index: " + name);
-            }
             if (keysType != KeysType.DUP_KEYS
                     && !(keysType == KeysType.UNIQUE_KEYS && enableUniqueKeyMergeOnWrite)) {
                 throw new AnalysisException(
                         "GEO index can only be used in DUP_KEYS or UNIQUE MOW table");
+            }
+            // Native GEO_POINT column: the stored value IS the flipped cell key, so the
+            // index provably derives from the very column the predicate reads — no
+            // lng/lat properties needed (matching is by column identity on both sides).
+            if (column.getType().isGeoPointType()) {
+                return;
+            }
+            if (!column.getType().isBigIntType()) {
+                throw new AnalysisException(
+                        "GEO index column must be GEO_POINT or BIGINT, invalid index: " + name);
             }
             // The index answers ST_* predicates over (lng, lat), so the indexed cells must
             // provably derive from those columns: only st_s2_cellid(lng, lat) generated

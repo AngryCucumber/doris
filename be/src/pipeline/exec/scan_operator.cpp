@@ -238,7 +238,8 @@ Status ScanLocalState<Derived>::_normalize_conjuncts(RuntimeState* state) {
     M(DECIMALV2)                    \
     M(BOOLEAN)                      \
     M(IPV4)                         \
-    M(IPV6)
+    M(IPV6)                         \
+    M(GEO_POINT)
             APPLY_FOR_PRIMITIVE_TYPE(M)
 #undef M
         default: {
@@ -918,7 +919,8 @@ Status ScanLocalState<Derived>::_change_value_range(bool is_equal_op,
                          (PrimitiveType == TYPE_INT) || (PrimitiveType == TYPE_BIGINT) ||
                          (PrimitiveType == TYPE_LARGEINT) || (PrimitiveType == TYPE_FLOAT) ||
                          (PrimitiveType == TYPE_DOUBLE) || (PrimitiveType == TYPE_IPV4) ||
-                         (PrimitiveType == TYPE_IPV6) || (PrimitiveType == TYPE_DECIMAL32) ||
+                         (PrimitiveType == TYPE_IPV6) || (PrimitiveType == TYPE_GEO_POINT) ||
+                         (PrimitiveType == TYPE_DECIMAL32) ||
                          (PrimitiveType == TYPE_DECIMAL64) || (PrimitiveType == TYPE_DECIMAL128I) ||
                          (PrimitiveType == TYPE_DECIMAL256) || (PrimitiveType == TYPE_BOOLEAN) ||
                          (PrimitiveType == TYPE_DATEV2) || (PrimitiveType == TYPE_TIMESTAMPTZ) ||

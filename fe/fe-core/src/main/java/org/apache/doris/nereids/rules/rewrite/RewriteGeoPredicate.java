@@ -20,9 +20,11 @@ package org.apache.doris.nereids.rules.rewrite;
 import org.apache.doris.analysis.CastExpr;
 import org.apache.doris.analysis.Expr;
 import org.apache.doris.analysis.FunctionCallExpr;
+import org.apache.doris.analysis.IndexDef;
 import org.apache.doris.analysis.SlotRef;
 import org.apache.doris.catalog.Column;
 import org.apache.doris.catalog.GeneratedColumnInfo;
+import org.apache.doris.catalog.Index;
 import org.apache.doris.nereids.rules.Rule;
 import org.apache.doris.nereids.rules.RuleType;
 import org.apache.doris.nereids.trees.expressions.Cast;
@@ -36,6 +38,7 @@ import org.apache.doris.nereids.trees.expressions.Slot;
 import org.apache.doris.nereids.trees.expressions.SlotReference;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.StDistanceSphere;
 import org.apache.doris.nereids.trees.expressions.literal.BigIntLiteral;
+import org.apache.doris.nereids.trees.expressions.literal.GeoPointLiteral;
 import org.apache.doris.nereids.trees.expressions.literal.NumericLiteral;
 import org.apache.doris.nereids.trees.plans.Plan;
 import org.apache.doris.nereids.trees.plans.logical.LogicalFilter;
@@ -123,21 +126,32 @@ public class RewriteGeoPredicate implements RewriteRuleFactory {
             if (circle == null) {
                 continue;
             }
-            Slot s2Slot = findS2Slot(scan, circle.lonSlot, circle.latSlot);
+            Slot s2Slot = circle.isGeoPointMode()
+                    ? findGeoPointIndexSlot(scan, circle.geoSlot)
+                    : findS2Slot(scan, circle.lonSlot, circle.latSlot);
             if (s2Slot == null) {
                 continue;
             }
-            // Skip when this filter already constrains the __s2 slot (either a user-written predicate or
-            // a conjunct injected by an earlier application of this rule), to keep the rewrite idempotent.
-            if (!handledS2Slots.add(s2Slot) || anyConjunctReferences(conjuncts, s2Slot)) {
+            // Skip when this filter already constrains the envelope slot (a user-written
+            // predicate or a conjunct injected by an earlier application of this rule), to
+            // keep the rewrite idempotent. The circle conjunct itself is excluded: in
+            // geo_point mode it necessarily references the envelope slot.
+            if (!handledS2Slots.add(s2Slot)
+                    || anyOtherConjunctReferences(conjuncts, conjunct, s2Slot)) {
                 continue;
             }
             long[] envelope = computeEnvelope(circle);
             if (envelope == null) {
                 continue;
             }
-            injected.add(new GreaterThanEqual(s2Slot, new BigIntLiteral(envelope[0])));
-            injected.add(new LessThanEqual(s2Slot, new BigIntLiteral(envelope[1])));
+            if (circle.isGeoPointMode()) {
+                // same-domain literals keep the comparison sargable (no cast wrapping)
+                injected.add(new GreaterThanEqual(s2Slot, new GeoPointLiteral(envelope[0])));
+                injected.add(new LessThanEqual(s2Slot, new GeoPointLiteral(envelope[1])));
+            } else {
+                injected.add(new GreaterThanEqual(s2Slot, new BigIntLiteral(envelope[0])));
+                injected.add(new LessThanEqual(s2Slot, new BigIntLiteral(envelope[1])));
+            }
             changed = true;
         }
         if (!changed) {
@@ -172,6 +186,27 @@ public class RewriteGeoPredicate implements RewriteRuleFactory {
             return null;
         }
         StDistanceSphere distanceSphere = (StDistanceSphere) distance;
+        // GEO_POINT overload: st_distance_sphere(geoSlot, lonConst, latConst)
+        if (distanceSphere.arity() == 3) {
+            Expression geoArg = stripCast(distanceSphere.child(0));
+            if (!(geoArg instanceof SlotReference) || !geoArg.getDataType().isGeoPointType()) {
+                return null;
+            }
+            Expression lonLit3 = distanceSphere.child(1);
+            Expression latLit3 = distanceSphere.child(2);
+            if (!(lonLit3 instanceof NumericLiteral) || !(latLit3 instanceof NumericLiteral)
+                    || !(bound instanceof NumericLiteral)) {
+                return null;
+            }
+            double lon = ((NumericLiteral) lonLit3).getDouble();
+            double lat = ((NumericLiteral) latLit3).getDouble();
+            double radius = ((NumericLiteral) bound).getDouble();
+            if (!Double.isFinite(lon) || !Double.isFinite(lat) || !Double.isFinite(radius)
+                    || lon < -180.0 || lon > 180.0 || lat < -90.0 || lat > 90.0 || radius < 0.0) {
+                return null;
+            }
+            return new GeoCircle((SlotReference) geoArg, lon, lat, radius);
+        }
         // first two arguments must be the point columns; slots may be wrapped in casts by type coercion,
         // st_s2_cellid applies the same coercion at generation time so the underlying column still matches
         Expression lonArg = stripCast(distanceSphere.child(0));
@@ -273,13 +308,34 @@ public class RewriteGeoPredicate implements RewriteRuleFactory {
         return new long[] {lo, hi};
     }
 
-    private boolean anyConjunctReferences(Set<Expression> conjuncts, Slot slot) {
+    private boolean anyOtherConjunctReferences(Set<Expression> conjuncts, Expression self,
+            Slot slot) {
         for (Expression conjunct : conjuncts) {
-            if (conjunct.getInputSlots().contains(slot)) {
+            if (conjunct != self && conjunct.getInputSlots().contains(slot)) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * GEO_POINT mode: the envelope slot is the predicate's own geo_point column,
+     * qualified when the scan table has a GEO index directly on that column.
+     */
+    private Slot findGeoPointIndexSlot(LogicalOlapScan scan, SlotReference geoSlot) {
+        if (!scan.getOutputSet().contains(geoSlot)) {
+            return null;
+        }
+        for (Index index : scan.getTable().getIndexes()) {
+            if (index.getIndexType() != IndexDef.IndexType.GEO) {
+                continue;
+            }
+            List<String> cols = index.getColumns();
+            if (cols != null && cols.size() == 1 && cols.get(0).equalsIgnoreCase(geoSlot.getName())) {
+                return geoSlot;
+            }
+        }
+        return null;
     }
 
     private static Expression stripCast(Expression expression) {
@@ -300,6 +356,9 @@ public class RewriteGeoPredicate implements RewriteRuleFactory {
     static final class GeoCircle {
         final SlotReference lonSlot;
         final SlotReference latSlot;
+        // GEO_POINT mode (HASI_POC.md §10): the point is a single geo_point slot;
+        // lonSlot/latSlot are null and the envelope goes onto this very column.
+        final SlotReference geoSlot;
         final double centerLon;
         final double centerLat;
         final double radiusMeters;
@@ -308,9 +367,23 @@ public class RewriteGeoPredicate implements RewriteRuleFactory {
                 double centerLon, double centerLat, double radiusMeters) {
             this.lonSlot = lonSlot;
             this.latSlot = latSlot;
+            this.geoSlot = null;
             this.centerLon = centerLon;
             this.centerLat = centerLat;
             this.radiusMeters = radiusMeters;
+        }
+
+        GeoCircle(SlotReference geoSlot, double centerLon, double centerLat, double radiusMeters) {
+            this.lonSlot = null;
+            this.latSlot = null;
+            this.geoSlot = geoSlot;
+            this.centerLon = centerLon;
+            this.centerLat = centerLat;
+            this.radiusMeters = radiusMeters;
+        }
+
+        boolean isGeoPointMode() {
+            return geoSlot != null;
         }
     }
 }

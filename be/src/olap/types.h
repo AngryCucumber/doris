@@ -740,6 +740,16 @@ struct CppTypeTraits<FieldType::OLAP_FIELD_TYPE_IPV6> {
     using CppType = uint128_t;
     using UnsignedCppType = uint128_t;
 };
+// GEO_POINT stores the flipped s2 cell key; int64 semantics are exactly BIGINT's
+// (signed order == Hilbert order), so the primary FieldTypeTraits template applies:
+// scan-key/delete-condition strings are plain int64 decimals, NOT the user-facing
+// "[lon, lat]" text — envelope bounds get ±1 adjustments that need not decode to a
+// valid cell. The text form lives only in DataTypeGeoPointSerDe.
+template <>
+struct CppTypeTraits<FieldType::OLAP_FIELD_TYPE_GEO_POINT> {
+    using CppType = int64_t;
+    using UnsignedCppType = uint64_t;
+};
 template <>
 struct CppTypeTraits<FieldType::OLAP_FIELD_TYPE_CHAR> {
     using CppType = Slice;

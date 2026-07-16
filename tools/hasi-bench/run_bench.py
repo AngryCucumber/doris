@@ -107,6 +107,9 @@ def main():
     ap.add_argument("--table", default="geo_t")
     ap.add_argument("--meas-table", default="",
                     help="table with a val measure + measures geo index; enables the v2b agg section")
+    ap.add_argument("--gp-table", default="",
+                    help="GEO_POINT-column table (loc geo_point + val measure, GEO index on loc); "
+                         "enables the native-type section (3-arg st_distance_sphere)")
     ap.add_argument("--user", default="root")
     ap.add_argument("--password", default="")
     args = ap.parse_args()
@@ -197,6 +200,72 @@ def main():
         if len(set(results.values())) != 1:
             # val is loaded as exact halves, so even sum must be bit-identical
             print(f"!! AGG MISMATCH for {qname}: {results}", file=sys.stderr)
+            sys.exit(2)
+        base = medians["agg_off"]
+        v15 = medians["agg_v15"]
+        v2b = medians["agg_v2b"]
+        nrows = results["agg_off"][0] if results["agg_off"] else "?"
+        print(f"{qname:<20} {nrows:>9} {base:>8.0f}ms {v15:>8.0f}ms {v2b:>8.0f}ms "
+              f"{base / max(v15, 0.001):>5.1f}x {base / max(v2b, 0.001):>5.1f}x")
+
+    if not args.gp_table:
+        return
+    # GEO_POINT native type (HASI_POC.md §10): the same circles through the 3-arg
+    # predicate on a single geo_point column. Per-config results on the SAME table
+    # must stay bit-identical (the quantized point is the value, every config
+    # evaluates the same function); cross-table counts vs geo_t may differ by the
+    # ≤1cm quantization at the circle boundary and are not asserted here.
+    print()
+    print(f"{'geo_point retrieval':<20} {'rows':>9} {'all_off':>9} {'v0':>9} {'v1':>9} {'v1.5':>9} "
+          f"{'v15_x':>6}")
+    for qname, _table, lon0, lat0, radius in QUERIES:
+        table = args.gp_table
+        counts = {}
+        medians = {}
+        for cname, setvars in CONFIGS:
+            stmt = (f"select /*+ SET_VAR({setvars}) */ count(id) from {table} "
+                    f"where st_distance_sphere(loc, {lon0}, {lat0}) < {radius}")
+            times = []
+            count = None
+            for i in range(args.runs + 1):
+                data = run_stmt(args.fe, args.db, args.user, args.password, stmt)
+                count = data["data"][0][0] if data.get("data") else None
+                if i > 0:
+                    times.append(data["time"])
+            counts[cname] = count
+            medians[cname] = statistics.median(times)
+        if len(set(counts.values())) != 1:
+            print(f"!! GEO_POINT RESULT MISMATCH for {qname}: {counts}", file=sys.stderr)
+            sys.exit(2)
+        base = medians["all_off"]
+        v0 = medians["v0_rewrite"]
+        v1 = medians["v1_index"]
+        v15 = medians["v15_exact"]
+        print(f"{qname:<20} {counts['all_off']:>9} {base:>8.0f}ms {v0:>8.0f}ms {v1:>8.0f}ms "
+              f"{v15:>8.0f}ms {base / max(v15, 0.001):>5.1f}x")
+
+    print()
+    print(f"{'geo_point agg (v2b)':<20} {'rows':>9} {'off':>9} {'v1.5':>9} {'v2b':>9} "
+          f"{'v15_x':>6} {'v2b_x':>6}")
+    for qname, _table, lon0, lat0, radius in QUERIES:
+        table = args.gp_table
+        results = {}
+        medians = {}
+        for cname, setvars in AGG_CONFIGS:
+            stmt = (f"select /*+ SET_VAR({setvars}) */ "
+                    f"count(*), count(val), sum(val), min(val), max(val) from {table} "
+                    f"where st_distance_sphere(loc, {lon0}, {lat0}) < {radius}")
+            times = []
+            result = None
+            for i in range(args.runs + 1):
+                data = run_stmt(args.fe, args.db, args.user, args.password, stmt)
+                result = tuple(data["data"][0]) if data.get("data") else None
+                if i > 0:
+                    times.append(data["time"])
+            results[cname] = result
+            medians[cname] = statistics.median(times)
+        if len(set(results.values())) != 1:
+            print(f"!! GEO_POINT AGG MISMATCH for {qname}: {results}", file=sys.stderr)
             sys.exit(2)
         base = medians["agg_off"]
         v15 = medians["agg_v15"]

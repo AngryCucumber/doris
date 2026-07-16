@@ -160,6 +160,9 @@ void Field::create(Field&& field) {
     case PrimitiveType::TYPE_IPV6:
         create_concrete<TYPE_IPV6>(std::move(field.template get<TYPE_IPV6>()));
         return;
+    case PrimitiveType::TYPE_GEO_POINT:
+        create_concrete<TYPE_GEO_POINT>(std::move(field.template get<TYPE_GEO_POINT>()));
+        return;
     case PrimitiveType::TYPE_FLOAT:
         create_concrete<TYPE_FLOAT>(std::move(field.template get<TYPE_FLOAT>()));
         return;
@@ -288,6 +291,9 @@ void Field::create(const Field& field) {
         return;
     case PrimitiveType::TYPE_IPV6:
         create_concrete<TYPE_IPV6>(field.template get<TYPE_IPV6>());
+        return;
+    case PrimitiveType::TYPE_GEO_POINT:
+        create_concrete<TYPE_GEO_POINT>(field.template get<TYPE_GEO_POINT>());
         return;
     case PrimitiveType::TYPE_FLOAT:
         create_concrete<TYPE_FLOAT>(field.template get<TYPE_FLOAT>());
@@ -450,6 +456,9 @@ void Field::assign(Field&& field) {
     case PrimitiveType::TYPE_IPV6:
         assign_concrete<TYPE_IPV6>(std::move(field.template get<TYPE_IPV6>()));
         return;
+    case PrimitiveType::TYPE_GEO_POINT:
+        assign_concrete<TYPE_GEO_POINT>(std::move(field.template get<TYPE_GEO_POINT>()));
+        return;
     case PrimitiveType::TYPE_FLOAT:
         assign_concrete<TYPE_FLOAT>(std::move(field.template get<TYPE_FLOAT>()));
         return;
@@ -558,6 +567,9 @@ void Field::assign(const Field& field) {
         return;
     case PrimitiveType::TYPE_IPV6:
         assign_concrete<TYPE_IPV6>(field.template get<TYPE_IPV6>());
+        return;
+    case PrimitiveType::TYPE_GEO_POINT:
+        assign_concrete<TYPE_GEO_POINT>(field.template get<TYPE_GEO_POINT>());
         return;
     case PrimitiveType::TYPE_FLOAT:
         assign_concrete<TYPE_FLOAT>(field.template get<TYPE_FLOAT>());
@@ -723,6 +735,8 @@ std::strong_ordering Field::operator<=>(const Field& rhs) const {
         return get<TYPE_IPV6>() <=> rhs.get<TYPE_IPV6>();
     case PrimitiveType::TYPE_IPV4:
         return get<TYPE_IPV4>() <=> rhs.get<TYPE_IPV4>();
+    case PrimitiveType::TYPE_GEO_POINT:
+        return get<TYPE_GEO_POINT>() <=> rhs.get<TYPE_GEO_POINT>();
     case PrimitiveType::TYPE_FLOAT:
         return get<TYPE_FLOAT>() < rhs.get<TYPE_FLOAT>()    ? std::strong_ordering::less
                : get<TYPE_FLOAT>() == rhs.get<TYPE_FLOAT>() ? std::strong_ordering::equal
@@ -813,6 +827,7 @@ std::string_view Field::as_string_view() const {
     MATCH_PRIMITIVE_TYPE(TYPE_DECIMAL256);
     MATCH_PRIMITIVE_TYPE(TYPE_IPV4);
     MATCH_PRIMITIVE_TYPE(TYPE_IPV6);
+    MATCH_PRIMITIVE_TYPE(TYPE_GEO_POINT);
     MATCH_PRIMITIVE_TYPE(TYPE_UINT32);
     MATCH_PRIMITIVE_TYPE(TYPE_UINT64);
     // MATCH_PRIMITIVE_TYPE(TYPE_FIXED_LENGTH_OBJECT);
@@ -931,6 +946,10 @@ std::string_view Field::as_string_view() const {
                                               rhs);                                               \
     template void Field::FUNC_NAME<TYPE_IPV6>(                                                    \
             const typename PrimitiveTypeTraits<TYPE_IPV6>::CppType& rhs);                         \
+    template void Field::FUNC_NAME<TYPE_GEO_POINT>(                                               \
+            typename PrimitiveTypeTraits<TYPE_GEO_POINT>::CppType && rhs);                        \
+    template void Field::FUNC_NAME<TYPE_GEO_POINT>(                                               \
+            const typename PrimitiveTypeTraits<TYPE_GEO_POINT>::CppType& rhs);                    \
     template void Field::FUNC_NAME<TYPE_BOOLEAN>(                                                 \
             typename PrimitiveTypeTraits<TYPE_BOOLEAN>::CppType && rhs);                          \
     template void Field::FUNC_NAME<TYPE_BOOLEAN>(                                                 \
@@ -1008,6 +1027,7 @@ DECLARE_FUNCTION(TYPE_ARRAY)
 DECLARE_FUNCTION(TYPE_TIME)
 DECLARE_FUNCTION(TYPE_IPV4)
 DECLARE_FUNCTION(TYPE_IPV6)
+DECLARE_FUNCTION(TYPE_GEO_POINT)
 DECLARE_FUNCTION(TYPE_BOOLEAN)
 DECLARE_FUNCTION(TYPE_FLOAT)
 DECLARE_FUNCTION(TYPE_DOUBLE)

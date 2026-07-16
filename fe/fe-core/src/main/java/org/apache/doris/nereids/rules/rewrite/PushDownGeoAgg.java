@@ -139,7 +139,14 @@ public class PushDownGeoAgg implements RewriteRuleFactory {
         }
         RewriteGeoPredicate.GeoCircle circle =
                 RewriteGeoPredicate.extractCircle(filter.getConjuncts().iterator().next());
-        if (circle == null || !scan.getOutputSet().contains(circle.lonSlot)
+        if (circle == null) {
+            return null;
+        }
+        if (circle.isGeoPointMode()) {
+            if (!scan.getOutputSet().contains(circle.geoSlot)) {
+                return null;
+            }
+        } else if (!scan.getOutputSet().contains(circle.lonSlot)
                 || !scan.getOutputSet().contains(circle.latSlot)) {
             return null;
         }
@@ -250,7 +257,8 @@ public class PushDownGeoAgg implements RewriteRuleFactory {
     }
 
     /**
-     * Finds a GEO index whose lng/lat property columns match the circle's slots and
+     * Finds the GEO index answering the circle — matched by lng/lat property columns
+     * (generated-column mode) or by the indexed column itself (geo_point mode) — and
      * returns its measure column names (lower-cased), or null when absent.
      */
     private static Set<String> findIndexMeasures(LogicalOlapScan scan,
@@ -260,13 +268,24 @@ public class PushDownGeoAgg implements RewriteRuleFactory {
                 continue;
             }
             Map<String, String> props = index.getProperties();
-            String lng = props == null ? null : props.get(GeoIndexUtil.PROP_LNG_COLUMN);
-            String lat = props == null ? null : props.get(GeoIndexUtil.PROP_LAT_COLUMN);
             String measures = props == null ? null : props.get(GeoIndexUtil.PROP_MEASURES);
-            if (lng == null || lat == null || measures == null
-                    || !lng.equalsIgnoreCase(circle.lonSlot.getName())
-                    || !lat.equalsIgnoreCase(circle.latSlot.getName())) {
+            if (measures == null) {
                 continue;
+            }
+            if (circle.isGeoPointMode()) {
+                List<String> cols = index.getColumns();
+                if (cols == null || cols.size() != 1
+                        || !cols.get(0).equalsIgnoreCase(circle.geoSlot.getName())) {
+                    continue;
+                }
+            } else {
+                String lng = props.get(GeoIndexUtil.PROP_LNG_COLUMN);
+                String lat = props.get(GeoIndexUtil.PROP_LAT_COLUMN);
+                if (lng == null || lat == null
+                        || !lng.equalsIgnoreCase(circle.lonSlot.getName())
+                        || !lat.equalsIgnoreCase(circle.latSlot.getName())) {
+                    continue;
+                }
             }
             Set<String> names = new HashSet<>();
             for (String name : measures.split(",")) {

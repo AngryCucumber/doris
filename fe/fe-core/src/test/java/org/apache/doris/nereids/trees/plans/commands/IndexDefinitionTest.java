@@ -232,6 +232,24 @@ public class IndexDefinitionTest {
                         geoColumn("__s2", IntegerType.INSTANCE, s2Expr),
                         KeysType.DUP_KEYS, false, TInvertedIndexFileStorageFormat.V2));
 
+        // valid: native GEO_POINT column, no generated column and no lng/lat props
+        // (matching is by column identity on both sides, HASI_POC.md §10)
+        IndexDefinition gpDef = new IndexDefinition("idx_loc", false, Lists.newArrayList("loc"),
+                "GEO", new HashMap<>(), "geo test");
+        gpDef.checkColumn(geoColumn("loc",
+                        org.apache.doris.nereids.types.GeoPointType.INSTANCE, null),
+                KeysType.DUP_KEYS, false, TInvertedIndexFileStorageFormat.V2);
+        Assertions.assertNull(gpDef.getProperties().get("lng_column"));
+        Assertions.assertNull(gpDef.getProperties().get("lat_column"));
+
+        // invalid: GEO_POINT column but AGG table
+        Assertions.assertThrows(AnalysisException.class, () ->
+                new IndexDefinition("idx_loc", false, Lists.newArrayList("loc"), "GEO",
+                        new HashMap<>(), "geo test").checkColumn(
+                        geoColumn("loc", org.apache.doris.nereids.types.GeoPointType.INSTANCE,
+                                null),
+                        KeysType.AGG_KEYS, false, TInvertedIndexFileStorageFormat.V2));
+
         // invalid: plain (non-generated) BIGINT column
         Assertions.assertThrows(AnalysisException.class, () ->
                 new IndexDefinition("idx_geo", false, Lists.newArrayList("__s2"), "GEO",

@@ -47,6 +47,11 @@ struct GeoRangeSearchRuntime {
     // segment read schema; map to ColumnId via Schema::column_ids().
     int lng_idx_in_block = -1;
     int lat_idx_in_block = -1;
+    // GEO_POINT mode (HASI_POC.md §10): st_distance_sphere(geo_slot, lng0, lat0).
+    // Set instead of lng/lat above; the index matches by column identity (the
+    // indexed column IS the predicate column) and the stored value IS the cell,
+    // so the exact filter decides every margin row from the index alone.
+    int geo_idx_in_block = -1;
     // The st_distance_sphere call node: the key _calculate_expr_in_remaining_conjunct_root
     // registered the lng/lat slots under in _common_expr_index_exec_status, needed to mark
     // the expression index-answered after v1.5 exact filtering.

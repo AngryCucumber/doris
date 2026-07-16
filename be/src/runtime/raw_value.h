@@ -114,6 +114,8 @@ inline uint32_t RawValue::zlib_crc32(const void* v, size_t len, const PrimitiveT
         return HashUtil::zlib_crc_hash(v, 4, seed);
     case TYPE_IPV6:
         return HashUtil::zlib_crc_hash(v, 16, seed);
+    case TYPE_GEO_POINT:
+        return HashUtil::zlib_crc_hash(v, 8, seed);
     default:
         DCHECK(false) << "invalid type: " << type;
         return 0;

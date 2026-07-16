@@ -600,6 +600,8 @@ public:
             return execute_num_type<TYPE_IPV4>(block, result, col_left_ptr, col_right_ptr);
         case TYPE_IPV6:
             return execute_num_type<TYPE_IPV6>(block, result, col_left_ptr, col_right_ptr);
+        case TYPE_GEO_POINT:
+            return execute_num_type<TYPE_GEO_POINT>(block, result, col_left_ptr, col_right_ptr);
         case TYPE_FLOAT:
             return execute_num_type<TYPE_FLOAT>(block, result, col_left_ptr, col_right_ptr);
         case TYPE_DOUBLE:

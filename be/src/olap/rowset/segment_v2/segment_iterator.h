@@ -199,9 +199,12 @@ private:
             bool* continue_apply);
     [[nodiscard]] Status _apply_ann_topn_predicate();
     [[nodiscard]] Status _apply_geo_predicate();
-    [[nodiscard]] Status _resolve_geo_exact_rows(const GeoRangeSearchRuntime& runtime,
-                                                 const std::vector<uint32_t>& rowids,
-                                                 roaring::Roaring* hit);
+    // `margin` is the (rid, raw cell) band from the index walk; in GEO_POINT mode
+    // the row value IS its cell, so the exact verdict decodes cell centers from it
+    // and never reads a column. The lon/lat mode ignores it and reads true columns.
+    [[nodiscard]] Status _resolve_geo_exact_rows(
+            const GeoRangeSearchRuntime& runtime, const std::vector<uint32_t>& rowids,
+            const std::vector<std::pair<uint32_t, uint64_t>>& margin, roaring::Roaring* hit);
     // v2b: whole-leaf sketch fold into the geo_agg_partial_* virtual columns; called
     // after the circle predicate was consumed exactly. pre_geo_bitmap is the row
     // bitmap BEFORE the circle narrowed it (fold gate: a leaf folds only when fully

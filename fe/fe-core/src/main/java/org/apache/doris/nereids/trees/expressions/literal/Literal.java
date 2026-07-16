@@ -305,6 +305,8 @@ public abstract class Literal extends Expression implements LeafExpression {
             return new IPv4Literal(desc);
         } else if (targetType.isIPv6Type()) {
             return new IPv6Literal(desc);
+        } else if (targetType.isGeoPointType()) {
+            return new GeoPointLiteral(desc);
         } else if (targetType.isTimeType()) {
             if (this.dataType.isStringLikeType()) { // could parse in FE
                 return new TimeV2Literal((TimeV2Type) targetType, desc);
@@ -536,6 +538,8 @@ public abstract class Literal extends Expression implements LeafExpression {
             case JSONB: return new JsonLiteral(literalExpr.getStringValue());
             case IPV4: return new IPv4Literal(literalExpr.getStringValue());
             case IPV6: return new IPv6Literal(literalExpr.getStringValue());
+            case GEO_POINT: return new GeoPointLiteral(
+                    ((org.apache.doris.analysis.GeoPointLiteral) literalExpr).getLongValue());
             case TIMEV2: return new TimeV2Literal((TimeV2Type) dataType, literalExpr.getStringValue());
             default: {
                 throw new AnalysisException("Unsupported convert the " + literalExpr.getType()

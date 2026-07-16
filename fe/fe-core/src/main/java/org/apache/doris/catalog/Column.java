@@ -796,6 +796,8 @@ public class Column implements GsonPostProcessable {
                 return 4;
             case IPV6:
                 return 16;
+            case GEO_POINT:
+                return 8;
             case VARIANT:
                 return stringLength + 4; // sizeof(OLAP_STRING_MAX_LENGTH)
             default:

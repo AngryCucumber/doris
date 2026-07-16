@@ -113,6 +113,14 @@ public class ArrayLiteral extends Literal implements ComparableLiteral {
                     .map(i -> i.checkedCastWithFallback(((ArrayType) targetType).getItemType()))
                     .map(Literal.class::cast)
                     .collect(ImmutableList.toImmutableList()), targetType);
+        } else if (targetType.isGeoPointType()) {
+            // ES-style ingest: a [lon, lat] numeric array literal IS a geo_point
+            if (items.size() != 2) {
+                throw new AnalysisException(
+                        "geo_point array literal must be [lon, lat], got " + this);
+            }
+            return new GeoPointLiteral(GeoPointLiteral.encode(
+                    items.get(0).getDouble(), items.get(1).getDouble()));
         } else {
             return super.uncheckedCastTo(targetType);
         }

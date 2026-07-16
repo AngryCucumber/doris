@@ -225,6 +225,8 @@ public class ScalarType extends Type {
                 return IPV4;
             case IPV6:
                 return IPV6;
+            case GEO_POINT:
+                return GEO_POINT;
             case VARBINARY:
                 return VARBINARY;
             default:
@@ -702,6 +704,8 @@ public class ScalarType extends Type {
                 return "ipv4";
             case IPV6:
                 return "ipv6";
+            case GEO_POINT:
+                return "geo_point";
             case FLOAT:
             case DOUBLE:
             case DATE:

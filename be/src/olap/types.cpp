@@ -101,6 +101,7 @@ const TypeInfo* get_scalar_type_info(FieldType field_type) {
             get_scalar_type_info<FieldType::OLAP_FIELD_TYPE_IPV4>(),
             get_scalar_type_info<FieldType::OLAP_FIELD_TYPE_IPV6>(),
             get_scalar_type_info<FieldType::OLAP_FIELD_TYPE_TIMESTAMPTZ>(),
+            get_scalar_type_info<FieldType::OLAP_FIELD_TYPE_GEO_POINT>(),
             nullptr};
     return field_type_array[int(field_type)];
 }

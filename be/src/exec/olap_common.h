@@ -347,7 +347,8 @@ using ColumnValueRangeType = std::variant<
         ColumnValueRange<TYPE_TIMESTAMPTZ>, ColumnValueRange<TYPE_DECIMALV2>,
         ColumnValueRange<TYPE_BOOLEAN>, ColumnValueRange<TYPE_HLL>,
         ColumnValueRange<TYPE_DECIMAL32>, ColumnValueRange<TYPE_DECIMAL64>,
-        ColumnValueRange<TYPE_DECIMAL128I>, ColumnValueRange<TYPE_DECIMAL256>>;
+        ColumnValueRange<TYPE_DECIMAL128I>, ColumnValueRange<TYPE_DECIMAL256>,
+        ColumnValueRange<TYPE_GEO_POINT>>;
 
 template <PrimitiveType primitive_type>
 const typename ColumnValueRange<primitive_type>::CppType

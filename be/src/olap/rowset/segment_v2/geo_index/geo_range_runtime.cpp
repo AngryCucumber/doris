@@ -73,12 +73,33 @@ const vectorized::VSlotRef* as_slot(const vectorized::VExpr* expr) {
 }
 
 // st_distance_sphere(lng_slot, lat_slot, lng0_lit, lat0_lit) -- the same shape the
-// v0 FE rewrite matches (slots first, constants last).
+// v0 FE rewrite matches (slots first, constants last) -- or the GEO_POINT overload
+// st_distance_sphere(geo_slot, lng0_lit, lat0_lit).
 bool match_distance_call(const vectorized::VExpr* expr, GeoRangeSearchRuntime* out) {
     expr = strip_casts(expr);
     const auto* call = dynamic_cast<const vectorized::VectorizedFnCall*>(expr);
-    if (call == nullptr || call->function_name() != "st_distance_sphere" ||
-        call->get_num_children() != 4) {
+    if (call == nullptr || call->function_name() != "st_distance_sphere") {
+        return false;
+    }
+    if (call->get_num_children() == 3) {
+        const auto* geo_slot = as_slot(call->get_child(0).get());
+        // nullable wrappers delegate get_primitive_type to the nested type
+        if (geo_slot == nullptr || geo_slot->result_type() != PrimitiveType::TYPE_GEO_POINT) {
+            return false;
+        }
+        double lng0 = 0;
+        double lat0 = 0;
+        if (!literal_as_double(call->get_child(1).get(), &lng0) ||
+            !literal_as_double(call->get_child(2).get(), &lat0)) {
+            return false;
+        }
+        out->geo_idx_in_block = geo_slot->column_id();
+        out->lng0 = lng0;
+        out->lat0 = lat0;
+        out->distance_expr = call;
+        return true;
+    }
+    if (call->get_num_children() != 4) {
         return false;
     }
     const auto* lng_slot = as_slot(call->get_child(0).get());

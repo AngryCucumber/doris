@@ -88,6 +88,7 @@ enum TExprNodeType {
   TRY_CAST_EXPR = 41
   // for search DSL function
   SEARCH_EXPR = 42,
+  GEO_POINT_LITERAL = 43,
 }
 
 //enum TAggregationOp {
@@ -151,6 +152,11 @@ struct TIPv4Literal {
 
 struct TIPv6Literal {
   1: required string value
+}
+
+// GEO_POINT: the flipped s2 cell key (raw id XOR 2^63), same domain as st_s2_cellid
+struct TGeoPointLiteral {
+  1: required i64 value
 }
 
 struct TInPredicate {
@@ -324,6 +330,7 @@ struct TExprNode {
   39: optional bool is_cast_nullable
   40: optional TSearchParam search_param
   41: optional bool short_circuit_evaluation
+  42: optional TGeoPointLiteral geo_point_literal
 }
 
 // A flattened representation of a tree of Expr nodes, obtained by depth-first

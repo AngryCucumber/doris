@@ -57,6 +57,7 @@ import org.apache.doris.nereids.trees.expressions.literal.DecimalLiteral;
 import org.apache.doris.nereids.trees.expressions.literal.DecimalV3Literal;
 import org.apache.doris.nereids.trees.expressions.literal.DoubleLiteral;
 import org.apache.doris.nereids.trees.expressions.literal.FloatLiteral;
+import org.apache.doris.nereids.trees.expressions.literal.GeoPointLiteral;
 import org.apache.doris.nereids.trees.expressions.literal.IPv4Literal;
 import org.apache.doris.nereids.trees.expressions.literal.IntegerLiteral;
 import org.apache.doris.nereids.trees.expressions.literal.JsonLiteral;
@@ -501,6 +502,11 @@ public class FoldConstantRuleOnBE implements ExpressionPatternRuleFactory {
                 Inet4Address inet4Address = InetAddresses.fromInteger(resultContent.getUint32Value(i));
                 IPv4Literal iPv4Literal = new IPv4Literal(inet4Address.getHostAddress());
                 res.add(iPv4Literal);
+            }
+        } else if (type.isGeoPointType()) {
+            int num = resultContent.getInt64ValueCount();
+            for (int i = 0; i < num; ++i) {
+                res.add(new GeoPointLiteral(resultContent.getInt64Value(i)));
             }
         } else if (type.isJsonType()) {
             int num = resultContent.getStringValueCount();
