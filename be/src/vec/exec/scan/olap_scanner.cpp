@@ -95,7 +95,8 @@ OlapScanner::OlapScanner(pipeline::ScanLocalStateBase* parent, OlapScanner::Para
                                  .vir_col_idx_to_type {},
                                  .score_runtime {},
                                  .collection_statistics {},
-                                 .ann_topn_runtime {}}) {
+                                 .ann_topn_runtime {},
+                                 .geo_topn_runtime {}}) {
     _tablet_reader_params.set_read_source(std::move(params.read_source),
                                           _state->skip_delete_bitmap());
     _has_prepared = false;
@@ -155,6 +156,8 @@ Status OlapScanner::prepare() {
     _score_runtime = local_state->_score_runtime;
     // All scanners share the same ann_topn_runtime.
     _ann_topn_runtime = local_state->_ann_topn_runtime;
+    // Likewise for the geo kNN runtime (HASI v4).
+    _geo_topn_runtime = local_state->_geo_topn_runtime;
 
     // set limit to reduce end of rowset and segment mem use
     _tablet_reader = std::make_unique<BlockReader>();
@@ -368,6 +371,7 @@ Status OlapScanner::_init_tablet_reader_params(
     _tablet_reader_params.output_columns =
             ((pipeline::OlapScanLocalState*)_local_state)->_output_column_ids;
     _tablet_reader_params.ann_topn_runtime = _ann_topn_runtime;
+    _tablet_reader_params.geo_topn_runtime = _geo_topn_runtime;
     for (const auto& ele :
          ((pipeline::OlapScanLocalState*)_local_state)->_cast_types_for_variants) {
         _tablet_reader_params.target_cast_type_for_variants[ele.first] = ele.second;
@@ -880,6 +884,10 @@ void OlapScanner::_collect_profile_before_close() {
     COUNTER_UPDATE(local_state->_geo_boundary_leaves_counter, stats.geo_boundary_leaves);
     COUNTER_UPDATE(local_state->_geo_agg_folded_rows_counter, stats.geo_agg_folded_rows);
     COUNTER_UPDATE(local_state->_geo_agg_folded_leaves_counter, stats.geo_agg_folded_leaves);
+    COUNTER_UPDATE(local_state->_geo_knn_filter_counter, stats.rows_geo_knn_filtered);
+    COUNTER_UPDATE(local_state->_geo_knn_leaves_scanned_counter, stats.geo_knn_leaves_scanned);
+    COUNTER_UPDATE(local_state->_geo_knn_rows_scored_counter, stats.geo_knn_rows_scored);
+    COUNTER_UPDATE(local_state->_geo_knn_search_costs, stats.geo_knn_search_ns);
     COUNTER_UPDATE(local_state->_ann_topn_filter_counter, stats.rows_ann_index_topn_filtered);
     COUNTER_UPDATE(local_state->_ann_index_load_costs, stats.ann_index_load_ns);
     COUNTER_UPDATE(local_state->_ann_range_search_costs, stats.ann_index_range_search_ns);

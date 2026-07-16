@@ -149,7 +149,8 @@ public class PushDownVectorTopNIntoOlapScan implements RewriteRuleFactory {
         Plan plan = scan.appendVirtualColumnsAndTopN(
                 ImmutableList.of(orderKeyAlias),
                 topN.getOrderKeys(), Optional.of(topN.getLimit() + topN.getOffset()),
-                ImmutableList.of(), Optional.empty(), Optional.empty());
+                ImmutableList.of(), Optional.empty(), Optional.empty(),
+                ImmutableList.of(), Optional.empty());
 
         Map<Expression, Expression> replaceMap = Maps.newHashMap();
         replaceMap.put(orderKeyAlias, orderKeyAlias.toSlot());

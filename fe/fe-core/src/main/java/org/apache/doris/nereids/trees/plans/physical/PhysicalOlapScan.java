@@ -75,6 +75,9 @@ public class PhysicalOlapScan extends PhysicalCatalogRelation implements OlapSca
     // use for ann push down
     private final List<OrderKey> annOrderKeys;
     private final Optional<Long> annLimit;
+    // HASI v4: geo kNN push down (single distance order key + per-scanner limit)
+    private final List<OrderKey> geoOrderKeys;
+    private final Optional<Long> geoLimit;
 
     /**
      * Constructor for PhysicalOlapScan.
@@ -85,13 +88,14 @@ public class PhysicalOlapScan extends PhysicalCatalogRelation implements OlapSca
             Optional<GroupExpression> groupExpression, LogicalProperties logicalProperties,
             Optional<TableSample> tableSample, List<Slot> operativeSlots, List<NamedExpression> virtualColumns,
             List<OrderKey> scoreOrderKeys, Optional<Long> scoreLimit, Optional<ScoreRangeInfo> scoreRangeInfo,
-            List<OrderKey> annOrderKeys, Optional<Long> annLimit) {
+            List<OrderKey> annOrderKeys, Optional<Long> annLimit,
+            List<OrderKey> geoOrderKeys, Optional<Long> geoLimit) {
         this(id, olapTable, qualifier,
                 selectedIndexId, selectedTabletIds, selectedPartitionIds, distributionSpec,
                 preAggStatus, baseOutputs,
                 groupExpression, logicalProperties, null,
                 null, tableSample, operativeSlots, virtualColumns, scoreOrderKeys, scoreLimit,
-                scoreRangeInfo, annOrderKeys, annLimit);
+                scoreRangeInfo, annOrderKeys, annLimit, geoOrderKeys, geoLimit);
     }
 
     /**
@@ -105,7 +109,8 @@ public class PhysicalOlapScan extends PhysicalCatalogRelation implements OlapSca
             Optional<TableSample> tableSample,
             Collection<Slot> operativeSlots, List<NamedExpression> virtualColumns,
             List<OrderKey> scoreOrderKeys, Optional<Long> scoreLimit, Optional<ScoreRangeInfo> scoreRangeInfo,
-            List<OrderKey> annOrderKeys, Optional<Long> annLimit) {
+            List<OrderKey> annOrderKeys, Optional<Long> annLimit,
+            List<OrderKey> geoOrderKeys, Optional<Long> geoLimit) {
         super(id, PlanType.PHYSICAL_OLAP_SCAN, olapTable, qualifier,
                 groupExpression, logicalProperties, physicalProperties, statistics, operativeSlots);
         this.selectedIndexId = selectedIndexId;
@@ -122,6 +127,8 @@ public class PhysicalOlapScan extends PhysicalCatalogRelation implements OlapSca
         this.scoreRangeInfo = scoreRangeInfo;
         this.annOrderKeys = ImmutableList.copyOf(annOrderKeys);
         this.annLimit = annLimit;
+        this.geoOrderKeys = ImmutableList.copyOf(geoOrderKeys);
+        this.geoLimit = geoLimit;
     }
 
     @Override
@@ -183,6 +190,14 @@ public class PhysicalOlapScan extends PhysicalCatalogRelation implements OlapSca
 
     public Optional<Long> getAnnLimit() {
         return annLimit;
+    }
+
+    public List<OrderKey> getGeoOrderKeys() {
+        return geoOrderKeys;
+    }
+
+    public Optional<Long> getGeoLimit() {
+        return geoLimit;
     }
 
     public Optional<ScoreRangeInfo> getScoreRangeInfo() {
@@ -266,7 +281,9 @@ public class PhysicalOlapScan extends PhysicalCatalogRelation implements OlapSca
                 && Objects.equals(scoreLimit, olapScan.scoreLimit)
                 && Objects.equals(scoreRangeInfo, olapScan.scoreRangeInfo)
                 && Objects.equals(annOrderKeys, olapScan.annOrderKeys)
-                && Objects.equals(annLimit, olapScan.annLimit);
+                && Objects.equals(annLimit, olapScan.annLimit)
+                && Objects.equals(geoOrderKeys, olapScan.geoOrderKeys)
+                && Objects.equals(geoLimit, olapScan.geoLimit);
     }
 
     @Override
@@ -284,7 +301,7 @@ public class PhysicalOlapScan extends PhysicalCatalogRelation implements OlapSca
         return new PhysicalOlapScan(relationId, getTable(), qualifier, selectedIndexId, selectedTabletIds,
                 selectedPartitionIds, distributionSpec, preAggStatus, baseOutputs,
                 groupExpression, getLogicalProperties(), null, null, tableSample, operativeSlots, virtualColumns,
-                scoreOrderKeys, scoreLimit, scoreRangeInfo, annOrderKeys, annLimit);
+                scoreOrderKeys, scoreLimit, scoreRangeInfo, annOrderKeys, annLimit, geoOrderKeys, geoLimit);
     }
 
     @Override
@@ -293,7 +310,7 @@ public class PhysicalOlapScan extends PhysicalCatalogRelation implements OlapSca
         return new PhysicalOlapScan(relationId, getTable(), qualifier, selectedIndexId, selectedTabletIds,
                 selectedPartitionIds, distributionSpec, preAggStatus, baseOutputs, groupExpression,
                 logicalProperties.get(), null, null, tableSample, operativeSlots, virtualColumns,
-                scoreOrderKeys, scoreLimit, scoreRangeInfo, annOrderKeys, annLimit);
+                scoreOrderKeys, scoreLimit, scoreRangeInfo, annOrderKeys, annLimit, geoOrderKeys, geoLimit);
     }
 
     @Override
@@ -302,7 +319,8 @@ public class PhysicalOlapScan extends PhysicalCatalogRelation implements OlapSca
         return new PhysicalOlapScan(relationId, getTable(), qualifier, selectedIndexId, selectedTabletIds,
                 selectedPartitionIds, distributionSpec, preAggStatus, baseOutputs, groupExpression,
                 getLogicalProperties(), physicalProperties, statistics, tableSample, operativeSlots,
-                virtualColumns, scoreOrderKeys, scoreLimit, scoreRangeInfo, annOrderKeys, annLimit);
+                virtualColumns, scoreOrderKeys, scoreLimit, scoreRangeInfo, annOrderKeys, annLimit,
+                geoOrderKeys, geoLimit);
     }
 
     @Override
@@ -329,7 +347,7 @@ public class PhysicalOlapScan extends PhysicalCatalogRelation implements OlapSca
                 selectedPartitionIds, distributionSpec, preAggStatus, baseOutputs,
                 groupExpression, getLogicalProperties(), getPhysicalProperties(), statistics,
                 tableSample, operativeSlots, virtualColumns, scoreOrderKeys, scoreLimit,
-                scoreRangeInfo, annOrderKeys, annLimit);
+                scoreRangeInfo, annOrderKeys, annLimit, geoOrderKeys, geoLimit);
     }
 
     @Override

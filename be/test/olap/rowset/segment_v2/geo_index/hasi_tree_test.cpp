@@ -32,6 +32,8 @@
 #include <set>
 #include <vector>
 
+#include "geo/geo_types.h"
+#include "olap/rowset/segment_v2/geo_index/geo_range_runtime.h"
 #include "olap/rowset/segment_v2/geo_index/s2_covering.h"
 
 namespace doris::segment_v2 {
@@ -558,6 +560,179 @@ TEST(HasiTreeTest, ParseRejectsCorruption) {
         ASSERT_TRUE(tree.parse(std::move(good)).ok());
         ASSERT_EQ(1000, tree.num_rows());
         ASSERT_EQ((1000 + 127) / 128, tree.num_leaves());
+    }
+}
+
+// ---- v4 kNN ----
+
+namespace {
+
+// Exact per-row distances the row path would produce: decode the stored center,
+// haversine to the query -- the same kernel + argument order _apply_geo_topn_predicate
+// uses for its rescoring.
+std::vector<std::pair<double, uint32_t>> knn_oracle(const Dataset& data,
+                                                    const roaring::Roaring* present, double lng0,
+                                                    double lat0) {
+    std::vector<std::pair<double, uint32_t>> exact;
+    for (size_t i = 0; i < data.size(); ++i) {
+        if (!data[i].has_value()) {
+            continue;
+        }
+        if (present != nullptr && !present->contains(static_cast<uint32_t>(i))) {
+            continue;
+        }
+        double lng = 0;
+        double lat = 0;
+        double d = 0;
+        EXPECT_TRUE(GeoPoint::DecodeS2CellKey(*data[i], &lng, &lat));
+        EXPECT_TRUE(GeoPoint::ComputeDistance(lng, lat, lng0, lat0, &d));
+        exact.emplace_back(d, static_cast<uint32_t>(i));
+    }
+    std::sort(exact.begin(), exact.end());
+    return exact;
+}
+
+// Runs the full v4 selection math over knn_candidates output (mirrors
+// _apply_geo_topn_predicate) and checks bit-exactness against the oracle:
+// selected == { rid : exact_dist <= k-th smallest exact dist } (ties included).
+void check_knn(const Dataset& data, uint32_t leaf_rows, const roaring::Roaring* present,
+               double lng0, double lat0, uint32_t k) {
+    HasiTree tree;
+    ASSERT_TRUE(tree.parse(build(data, leaf_rows)).ok());
+
+    std::vector<std::pair<uint32_t, uint64_t>> candidates;
+    HasiKnnStats stats;
+    ASSERT_TRUE(tree.knn_candidates(lng0, lat0, k, present, /*slack_m=*/kGeoIndexMarginMeters,
+                                    &candidates, &stats)
+                        .ok());
+
+    std::vector<std::pair<double, uint32_t>> oracle = knn_oracle(data, present, lng0, lat0);
+    if (oracle.empty() || k == 0) {
+        ASSERT_TRUE(candidates.empty());
+        return;
+    }
+
+    // Rescore candidates exactly (candidate cells decode to the same centers).
+    std::vector<std::pair<double, uint32_t>> scored;
+    scored.reserve(candidates.size());
+    for (const auto& [rid, cell] : candidates) {
+        ASSERT_TRUE(data[rid].has_value());
+        ASSERT_EQ(s2_cell_from_key(*data[rid]), cell);
+        if (present != nullptr) {
+            ASSERT_TRUE(present->contains(rid));
+        }
+        double lng = 0;
+        double lat = 0;
+        double d = 0;
+        ASSERT_TRUE(GeoPoint::DecodeS2CellKey(*data[rid], &lng, &lat));
+        ASSERT_TRUE(GeoPoint::ComputeDistance(lng, lat, lng0, lat0, &d));
+        scored.emplace_back(d, rid);
+    }
+
+    const size_t kth_idx = std::min<size_t>(k, oracle.size()) - 1;
+    const double kth_dist = oracle[kth_idx].first;
+    std::set<uint32_t> expected;
+    for (const auto& [d, rid] : oracle) {
+        if (d <= kth_dist) {
+            expected.insert(rid);
+        }
+    }
+    std::set<uint32_t> selected;
+    if (scored.size() >= std::min<size_t>(k, oracle.size())) {
+        std::vector<double> dists;
+        dists.reserve(scored.size());
+        for (const auto& [d, rid] : scored) {
+            dists.push_back(d);
+        }
+        std::nth_element(dists.begin(), dists.begin() + kth_idx, dists.end());
+        const double cand_kth = dists[kth_idx];
+        for (const auto& [d, rid] : scored) {
+            if (d <= cand_kth) {
+                selected.insert(rid);
+            }
+        }
+    }
+    ASSERT_EQ(expected, selected) << "leaf_rows=" << leaf_rows << " k=" << k << " lng0=" << lng0
+                                  << " lat0=" << lat0;
+}
+
+} // namespace
+
+TEST(HasiKnnTest, MatchesOracle) {
+    std::mt19937_64 rng(20260716);
+    std::uniform_real_distribution<double> lng_dist(-180.0, 180.0);
+    std::uniform_real_distribution<double> lat_dist(-90.0, 90.0);
+    for (int round = 0; round < 6; ++round) {
+        const uint32_t leaf_rows = (round % 2 == 0) ? 64 : 257;
+        Dataset data = (round % 2 == 0) ? make_clustered(rng, 3000, 0)
+                                        : make_unsorted(rng, 3000, /*null_ratio=*/0.0);
+        for (uint32_t k : {1u, 7u, 64u, 5000u}) {
+            check_knn(data, leaf_rows, nullptr, lng_dist(rng), lat_dist(rng), k);
+        }
+    }
+}
+
+TEST(HasiKnnTest, SpecialCenters) {
+    std::mt19937_64 rng(4242);
+    Dataset data = make_clustered(rng, 2000, 0);
+    // Antimeridian, poles, and a face-boundary meridian.
+    for (auto [lng0, lat0] : std::vector<std::pair<double, double>> {
+                 {180.0, 0.0}, {-180.0, 15.0}, {0.0, 90.0}, {0.0, -90.0}, {45.0, 35.26}}) {
+        for (uint32_t k : {1u, 16u, 100u}) {
+            check_knn(data, 128, nullptr, lng0, lat0, k);
+        }
+    }
+}
+
+TEST(HasiKnnTest, PresentBitmapAndNulls) {
+    std::mt19937_64 rng(777);
+    Dataset data = make_unsorted(rng, 4000, /*null_ratio=*/0.15);
+    HasiTree tree;
+    ASSERT_TRUE(tree.parse(build(data, 128)).ok());
+    uint64_t nulls = 0;
+    for (const auto& v : data) {
+        nulls += v.has_value() ? 0 : 1;
+    }
+    ASSERT_EQ(nulls, tree.num_nulls());
+
+    // Restrict to a rid subset; candidates must respect it and stay exact.
+    roaring::Roaring present;
+    for (uint32_t rid = 0; rid < 4000; rid += 3) {
+        present.add(rid);
+    }
+    for (uint32_t k : {1u, 25u, 300u}) {
+        check_knn(data, 128, &present, 116.4, 39.9, k);
+    }
+
+    // k = 0 and empty-present degenerate cases.
+    std::vector<std::pair<uint32_t, uint64_t>> out;
+    HasiKnnStats stats;
+    ASSERT_TRUE(tree.knn_candidates(116.4, 39.9, 0, nullptr, 1.0, &out, &stats).ok());
+    ASSERT_TRUE(out.empty());
+    roaring::Roaring empty;
+    ASSERT_TRUE(tree.knn_candidates(116.4, 39.9, 5, &empty, 1.0, &out, &stats).ok());
+    ASSERT_TRUE(out.empty());
+    // Invalid query rejected.
+    ASSERT_FALSE(tree.knn_candidates(500.0, 0.0, 5, nullptr, 1.0, &out, &stats).ok());
+}
+
+TEST(HasiKnnTest, TiedDistances) {
+    // Duplicate cells produce exactly tied distances; every tied row must survive.
+    std::mt19937_64 rng(99);
+    std::vector<int64_t> keys;
+    for (int i = 0; i < 50; ++i) {
+        int64_t key = s2_key_from_cell(S2CellId(random_point(rng)).id());
+        for (int dup = 0; dup < 4; ++dup) {
+            keys.push_back(key); // 4-way ties
+        }
+    }
+    std::sort(keys.begin(), keys.end());
+    Dataset data;
+    for (int64_t k : keys) {
+        data.emplace_back(k);
+    }
+    for (uint32_t k : {1u, 2u, 3u, 10u}) {
+        check_knn(data, 64, nullptr, 10.0, 20.0, k);
     }
 }
 

@@ -919,6 +919,24 @@ public class PhysicalPlanTranslator extends DefaultPlanVisitor<PlanFragment, Pla
             olapScanNode.setAnnSortLimit(olapScan.getAnnLimit().get());
         }
 
+        // translate geo knn topn info (HASI v4)
+        if (!olapScan.getGeoOrderKeys().isEmpty()) {
+            TupleDescriptor geoSortTuple = olapScanNode.getTupleDesc();
+            List<Expr> geoOrderingExprs = Lists.newArrayList();
+            List<Boolean> geoAscOrders = Lists.newArrayList();
+            List<Boolean> geoNullsFirstParams = Lists.newArrayList();
+            for (OrderKey k : olapScan.getGeoOrderKeys()) {
+                geoOrderingExprs.add(ExpressionTranslator.translate(k.getExpr(), context));
+                geoAscOrders.add(k.isAsc());
+                geoNullsFirstParams.add(k.isNullFirst());
+            }
+            olapScanNode.setGeoSortInfo(
+                    new SortInfo(geoOrderingExprs, geoAscOrders, geoNullsFirstParams, geoSortTuple));
+        }
+        if (olapScan.getGeoLimit().isPresent()) {
+            olapScanNode.setGeoSortLimit(olapScan.getGeoLimit().get());
+        }
+
         // TODO: move all node set cardinality into one place
         if (olapScan.getStats() != null) {
             // NOTICE: we should not set stats row count

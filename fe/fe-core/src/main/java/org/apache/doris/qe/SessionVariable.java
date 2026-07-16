@@ -206,6 +206,7 @@ public class SessionVariable implements Serializable, Writable {
     public static final String ENABLE_GEO_INDEX_QUERY = "enable_geo_index_query";
     public static final String ENABLE_GEO_INDEX_EXACT_FILTER = "enable_geo_index_exact_filter";
     public static final String ENABLE_GEO_AGG_PUSHDOWN = "enable_geo_agg_pushdown";
+    public static final String ENABLE_GEO_KNN_PUSHDOWN = "enable_geo_knn_pushdown";
     public static final String USE_V2_ROLLUP = "use_v2_rollup";
     public static final String REWRITE_COUNT_DISTINCT_TO_BITMAP_HLL = "rewrite_count_distinct_to_bitmap_hll";
     public static final String EVENT_SCHEDULER = "event_scheduler";
@@ -1429,6 +1430,11 @@ public class SessionVariable implements Serializable, Writable {
     // FE-only gate: allow COUNT_ON_INDEX plans justified by a GEO index (v2a).
     @VariableMgr.VarAttr(name = ENABLE_GEO_AGG_PUSHDOWN, needForward = true)
     public boolean enableGeoAggPushdown = true;
+
+    // HASI v4: push ORDER BY st_distance_sphere(...) LIMIT k into the scan (FE rule gate;
+    // also forwarded to BE as the best-first search rollback switch).
+    @VariableMgr.VarAttr(name = ENABLE_GEO_KNN_PUSHDOWN, needForward = true)
+    public boolean enableGeoKnnPushdown = true;
 
     @VariableMgr.VarAttr(name = ALLOW_PARTITION_COLUMN_NULLABLE, description = {
             "是否允许 NULLABLE 列作为 PARTITION 列。开启后，RANGE PARTITION 允许 NULLABLE PARTITION 列"
@@ -5063,6 +5069,7 @@ public class SessionVariable implements Serializable, Writable {
         tResult.setEnableGeoIndexQuery(enableGeoIndexQuery);
 
         tResult.setEnableGeoIndexExactFilter(enableGeoIndexExactFilter);
+        tResult.setEnableGeoKnnPushdown(enableGeoKnnPushdown);
         tResult.setEnableInvertedIndexWandQuery(enableInvertedIndexWandQuery);
 
         tResult.setEnableParallelScan(enableParallelScan);

@@ -198,6 +198,11 @@ private:
             std::vector<std::shared_ptr<ColumnPredicate>>& remaining_predicates,
             bool* continue_apply);
     [[nodiscard]] Status _apply_ann_topn_predicate();
+    // v4 kNN: replaces _row_bitmap with the exact top-k rows (all ties at the k-th
+    // distance kept -- the SortNode above tie-breaks) and materializes the virtual
+    // distance column from the index. POC scope: fires only on unfiltered scans;
+    // any surviving predicate falls back to expr materialization + full sort.
+    [[nodiscard]] Status _apply_geo_topn_predicate();
     [[nodiscard]] Status _apply_geo_predicate();
     // `margin` is the (rid, raw cell) band from the index walk; in GEO_POINT mode
     // the row value IS its cell, so the exact verdict decodes cell centers from it
@@ -529,6 +534,7 @@ private:
     vectorized::ScoreRuntimeSPtr _score_runtime;
 
     std::shared_ptr<segment_v2::AnnTopNRuntime> _ann_topn_runtime;
+    std::shared_ptr<segment_v2::GeoTopNRuntime> _geo_topn_runtime;
 
     // cid to virtual column expr
     std::map<ColumnId, vectorized::VExprContextSPtr> _virtual_column_exprs;

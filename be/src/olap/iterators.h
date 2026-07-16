@@ -26,6 +26,7 @@
 #include "olap/column_predicate.h"
 #include "olap/olap_common.h"
 #include "olap/rowset/segment_v2/ann_index/ann_topn_runtime.h"
+#include "olap/rowset/segment_v2/geo_index/geo_topn_runtime.h"
 #include "olap/rowset/segment_v2/row_ranges.h"
 #include "olap/tablet_schema.h"
 #include "runtime/runtime_state.h"
@@ -124,6 +125,7 @@ public:
 
     std::map<ColumnId, vectorized::VExprContextSPtr> virtual_column_exprs;
     std::shared_ptr<segment_v2::AnnTopNRuntime> ann_topn_runtime;
+    std::shared_ptr<segment_v2::GeoTopNRuntime> geo_topn_runtime;
     std::map<ColumnId, size_t> vir_cid_to_idx_in_block;
     std::map<size_t, vectorized::DataTypePtr> vir_col_idx_to_type;
 

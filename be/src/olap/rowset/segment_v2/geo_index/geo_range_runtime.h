@@ -84,6 +84,11 @@ inline constexpr double kGeoIndexMaxCoveringFraction = 0.5;
 // slots/literals are stripped; nullable literals are rejected.
 bool extract_geo_range_search(const vectorized::VExpr* root, GeoRangeSearchRuntime* out);
 
+// v4 kNN: matches a BARE st_distance_sphere call (no comparison around it) — the
+// shape a geo topN virtual column expression carries. Fills the same fields as the
+// predicate matcher except radius/is_strict (meaningless for an order key).
+bool extract_geo_distance_call(const vectorized::VExpr* root, GeoRangeSearchRuntime* out);
+
 // Builds covering C (superset, cap expanded by the margin) and interior I (subset,
 // cap shrunk by the margin) for the recognized circle, normalized to the leaf
 // keyspace. Returns false when the predicate cannot select anything (invalid

@@ -203,6 +203,10 @@ public class OlapScanNode extends ScanNode {
     private long scoreSortLimit = -1;
     private ScoreRangeInfo scoreRangeInfo = null;
 
+    // HASI v4: geo kNN pushdown (single distance ordering expr + per-scanner limit)
+    private SortInfo geoSortInfo = null;
+    private long geoSortLimit = -1;
+
     // cached for prepared statement to quickly prune partition
     // only used in short circuit plan at present
     private final PartitionPruneV2ForShortCircuitPlan cachedPartitionPruner =
@@ -303,6 +307,14 @@ public class OlapScanNode extends ScanNode {
 
     public void setAnnSortLimit(long annSortLimit) {
         this.annSortLimit = annSortLimit;
+    }
+
+    public void setGeoSortInfo(SortInfo geoSortInfo) {
+        this.geoSortInfo = geoSortInfo;
+    }
+
+    public void setGeoSortLimit(long geoSortLimit) {
+        this.geoSortLimit = geoSortLimit;
     }
 
     public Collection<Long> getSelectedPartitionIds() {
@@ -1046,6 +1058,16 @@ public class OlapScanNode extends ScanNode {
             output.append(prefix).append("ANN SORT LIMIT: ").append(annSortLimit).append("\n");
         }
 
+        if (geoSortInfo != null) {
+            output.append(prefix).append("GEO SORT INFO:\n");
+            geoSortInfo.getOrderingExprs().forEach(expr -> {
+                output.append(prefix).append(prefix).append(expr.toSql()).append("\n");
+            });
+        }
+        if (geoSortLimit != -1) {
+            output.append(prefix).append("GEO SORT LIMIT: ").append(geoSortLimit).append("\n");
+        }
+
         if (useTopnFilter()) {
             String topnFilterSources = String.join(",",
                     topnFilterSortNodes.stream()
@@ -1219,6 +1241,16 @@ public class OlapScanNode extends ScanNode {
         }
         if (annSortLimit != -1) {
             msg.olap_scan_node.setAnnSortLimit(annSortLimit);
+        }
+        if (geoSortInfo != null) {
+            TSortInfo tGeoSortInfo = new TSortInfo(
+                    Expr.treesToThrift(geoSortInfo.getOrderingExprs()),
+                    geoSortInfo.getIsAscOrder(),
+                    geoSortInfo.getNullsFirst());
+            msg.olap_scan_node.setGeoSortInfo(tGeoSortInfo);
+        }
+        if (geoSortLimit != -1) {
+            msg.olap_scan_node.setGeoSortLimit(geoSortLimit);
         }
         if (selectedIndexId != -1) {
             msg.olap_scan_node.setKeyType(olapTable.getIndexMetaByIndexId(selectedIndexId).getKeysType().toThrift());

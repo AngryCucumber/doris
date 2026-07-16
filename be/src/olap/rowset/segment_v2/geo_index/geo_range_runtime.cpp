@@ -180,6 +180,14 @@ bool extract_geo_agg_partial(const vectorized::VExpr* root, GeoAggFoldSlot* out)
     return true;
 }
 
+bool extract_geo_distance_call(const vectorized::VExpr* root, GeoRangeSearchRuntime* out) {
+    if (root == nullptr || !match_distance_call(root, out)) {
+        return false;
+    }
+    out->valid = true;
+    return true;
+}
+
 bool extract_geo_range_search(const vectorized::VExpr* root, GeoRangeSearchRuntime* out) {
     if (root == nullptr || root->get_num_children() != 2) {
         return false;

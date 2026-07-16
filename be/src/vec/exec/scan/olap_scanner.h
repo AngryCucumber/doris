@@ -125,6 +125,7 @@ public:
     std::shared_ptr<vectorized::ScoreRuntime> _score_runtime;
 
     std::shared_ptr<segment_v2::AnnTopNRuntime> _ann_topn_runtime;
+    std::shared_ptr<segment_v2::GeoTopNRuntime> _geo_topn_runtime;
 
     VectorSearchUserParams _vector_search_params;
 };

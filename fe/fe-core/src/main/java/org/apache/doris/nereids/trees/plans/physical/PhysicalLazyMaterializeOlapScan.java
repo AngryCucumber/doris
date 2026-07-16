@@ -61,7 +61,9 @@ public class PhysicalLazyMaterializeOlapScan extends PhysicalOlapScan {
                 physicalOlapScan.getScoreLimit(),
                 physicalOlapScan.getScoreRangeInfo(),
                 physicalOlapScan.getAnnOrderKeys(),
-                physicalOlapScan.getAnnLimit()
+                physicalOlapScan.getAnnLimit(),
+                physicalOlapScan.getGeoOrderKeys(),
+                physicalOlapScan.getGeoLimit()
         );
         this.scan = physicalOlapScan;
         this.rowId = rowId;

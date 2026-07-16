@@ -54,6 +54,7 @@
 #include "olap/rowset/segment_v2/ann_index/ann_index.h"
 #include "olap/rowset/segment_v2/ann_index/ann_index_reader.h"
 #include "olap/rowset/segment_v2/ann_index/ann_topn_runtime.h"
+#include "olap/rowset/segment_v2/geo_index/geo_topn_runtime.h"
 #include "olap/rowset/segment_v2/column_reader.h"
 #include "olap/rowset/segment_v2/column_reader_cache.h"
 #include "olap/rowset/segment_v2/geo_index/geo_index_iterator.h"
@@ -325,6 +326,7 @@ Status SegmentIterator::_init_impl(const StorageReadOptions& opts) {
     _vir_cid_to_idx_in_block = _opts.vir_cid_to_idx_in_block;
     _score_runtime = _opts.score_runtime;
     _ann_topn_runtime = _opts.ann_topn_runtime;
+    _geo_topn_runtime = _opts.geo_topn_runtime;
 
     if (opts.output_columns != nullptr) {
         _output_columns = *(opts.output_columns);
@@ -429,6 +431,8 @@ Status SegmentIterator::_lazy_init(vectorized::Block* block) {
     _prepare_score_column_materialization();
 
     RETURN_IF_ERROR(_apply_ann_topn_predicate());
+
+    RETURN_IF_ERROR(_apply_geo_topn_predicate());
 
     if (_opts.read_orderby_key_reverse) {
         _range_iter.reset(new BackwardBitmapRangeIterator(_row_bitmap));
@@ -804,6 +808,249 @@ Status SegmentIterator::_apply_ann_topn_predicate() {
     return Status::OK();
 }
 
+// HASI v4 kNN. Gate order matters: the runtime + session switch first, then the
+// predicate landscape (POC scope: unfiltered scans only -- a residual pushed-down
+// expr or column predicate is evaluated AFTER this point, so committing to a top-k
+// here could drop rows a later filter would have kept out of the k), then the
+// index/NULL/shape gates that need the loaded tree. Every bail-out path leaves
+// _row_bitmap untouched: the virtual distance column then materializes through the
+// expression fallback and the SortNode performs the full sort -- correct, just slow.
+Status SegmentIterator::_apply_geo_topn_predicate() {
+    if (_geo_topn_runtime == nullptr) {
+        return Status::OK();
+    }
+
+    const GeoRangeSearchRuntime& dist = _geo_topn_runtime->distance();
+    const auto& idx_to_cid = _schema->column_ids();
+    const bool geo_point_mode = dist.geo_idx_in_block >= 0;
+
+    // On EVERY bail-out the virtual distance column falls back to expression
+    // evaluation, which reads the distance source column(s) -- but earlier index
+    // machinery (the generic inverted-index suppression at _lazy_init, or the geo
+    // v1.5 exact filter) may have marked them skippable because nothing ELSE needs
+    // them. Force them readable on all non-success exits (the ann topn hook does
+    // the same for its source column); the success path disarms the guard and
+    // re-suppresses deliberately after materializing the virtual column.
+    bool pushdown_succeeded = false;
+    Defer restore_source_reads {[&]() {
+        if (pushdown_succeeded) {
+            return;
+        }
+        for (int idx : {dist.geo_idx_in_block, dist.lng_idx_in_block, dist.lat_idx_in_block}) {
+            if (idx >= 0 && static_cast<size_t>(idx) < idx_to_cid.size()) {
+                _need_read_data_indices[idx_to_cid[idx]] = true;
+            }
+        }
+    }};
+
+    if (_row_bitmap.isEmpty()) {
+        return Status::OK();
+    }
+    if (_opts.runtime_state != nullptr &&
+        !_opts.runtime_state->query_options().enable_geo_knn_pushdown) {
+        return Status::OK();
+    }
+    // POC scope: unfiltered kNN only. _remaining_conjunct_roots also covers the
+    // conjuncts a scanner keeps for POST-scan evaluation (enable_common_expr_pushdown
+    // off, or non-slot-acting exprs) -- they flow down as remaining roots even when
+    // _common_expr_ctxs_push_down is empty, and committing to a top-k before they
+    // filter would drop qualifying rows.
+    const bool has_common_expr_push_down =
+            !_common_expr_ctxs_push_down.empty() || !_remaining_conjunct_roots.empty();
+    const bool has_column_predicate = std::any_of(_is_pred_column.begin(), _is_pred_column.end(),
+                                                  [](bool is_pred) { return is_pred; });
+    if (has_common_expr_push_down || has_column_predicate || !_geo_topn_runtime->is_asc()) {
+        return Status::OK();
+    }
+    auto iequals = [](const std::string& a, const std::string& b) {
+        return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+                   return std::tolower(static_cast<unsigned char>(x)) ==
+                          std::tolower(static_cast<unsigned char>(y));
+               });
+    };
+
+    GeoIndexIterator* geo_iterator = nullptr;
+    ColumnId geo_point_cid = 0;
+    ColumnId lng_cid = 0;
+    ColumnId lat_cid = 0;
+    if (geo_point_mode) {
+        if (static_cast<size_t>(dist.geo_idx_in_block) >= idx_to_cid.size()) {
+            return Status::OK();
+        }
+        geo_point_cid = idx_to_cid[dist.geo_idx_in_block];
+        geo_iterator = dynamic_cast<GeoIndexIterator*>(_index_iterators[geo_point_cid].get());
+    } else {
+        if (dist.lng_idx_in_block < 0 || dist.lat_idx_in_block < 0 ||
+            static_cast<size_t>(dist.lng_idx_in_block) >= idx_to_cid.size() ||
+            static_cast<size_t>(dist.lat_idx_in_block) >= idx_to_cid.size()) {
+            return Status::OK();
+        }
+        lng_cid = idx_to_cid[dist.lng_idx_in_block];
+        lat_cid = idx_to_cid[dist.lat_idx_in_block];
+        const std::string& lng_name = _opts.tablet_schema->column(lng_cid).name();
+        const std::string& lat_name = _opts.tablet_schema->column(lat_cid).name();
+        // With no WHERE clause nothing pulls the __s2 index column into the read
+        // schema, so its iterator was never created by _init_index_iterators: scan
+        // the whole tablet schema for the matching GEO index and create it here.
+        const size_t num_cids =
+                std::min<size_t>(_index_iterators.size(), _opts.tablet_schema->num_columns());
+        for (ColumnId cid = 0; cid < num_cids && geo_iterator == nullptr; ++cid) {
+            const auto& column = _opts.tablet_schema->column(cid);
+            const auto* index_meta = _segment->_tablet_schema->geo_index(column);
+            if (index_meta == nullptr) {
+                continue;
+            }
+            const auto& props = index_meta->properties();
+            if (!iequals(geo_index_property(props, kGeoIndexPropLngColumn), lng_name) ||
+                !iequals(geo_index_property(props, kGeoIndexPropLatColumn), lat_name)) {
+                continue;
+            }
+            if (_index_iterators[cid] == nullptr) {
+                RETURN_IF_ERROR(_segment->new_index_iterator(column, index_meta, _opts,
+                                                             &_index_iterators[cid]));
+                if (_index_iterators[cid] != nullptr && _index_query_context != nullptr) {
+                    _index_iterators[cid]->set_context(_index_query_context);
+                }
+            }
+            geo_iterator = dynamic_cast<GeoIndexIterator*>(_index_iterators[cid].get());
+        }
+    }
+    if (geo_iterator == nullptr) {
+        return Status::OK();
+    }
+
+    SCOPED_RAW_TIMER(&_opts.stats->geo_knn_search_ns);
+    RETURN_IF_ERROR(geo_iterator->geo_reader()->load_index(&_opts.io_ctx));
+    const auto reader = geo_iterator->geo_reader();
+    const auto k64 = static_cast<uint64_t>(_geo_topn_runtime->limit());
+    if (k64 == 0 || k64 > std::numeric_limits<uint32_t>::max()) {
+        return Status::OK();
+    }
+    const auto k = static_cast<uint32_t>(k64);
+    // Flat leaf directory: the upfront ranking pass is O(num_leaves); tiny-leaf
+    // configurations make it dominate, so leave those to the fallback path.
+    constexpr uint32_t kGeoKnnMaxLeaves = 65536;
+    if (reader->num_leaves() > kGeoKnnMaxLeaves) {
+        return Status::OK();
+    }
+    // NULL distances order by nulls_first/nulls_last and the index cannot rank
+    // NULL rows: bail whenever a NULL row could belong to the output prefix.
+    // (`present_card - num_nulls >= k` guarantees at least k non-NULL candidate
+    // rows even if every NULL row survived in the bitmap.)
+    const uint64_t present_card = _row_bitmap.cardinality();
+    if (reader->num_nulls() > 0 &&
+        (_geo_topn_runtime->nulls_first() || present_card < k64 + reader->num_nulls())) {
+        return Status::OK();
+    }
+    if (present_card < k64) {
+        return Status::OK(); // every row is in the top-k anyway; nothing to prune
+    }
+
+    // Candidate collection in the cell-center chord metric. The margin covers both
+    // the (lon/lat mode) center quantization and the chord-vs-haversine numeric
+    // divergence, so candidates are a superset of the exact top-k plus ties.
+    std::vector<std::pair<uint32_t, uint64_t>> candidates;
+    HasiKnnStats knn_stats;
+    RETURN_IF_ERROR(geo_iterator->knn_candidates(dist.lng0, dist.lat0, k, &_row_bitmap,
+                                                 kGeoIndexMarginMeters, &candidates, &knn_stats));
+    _opts.stats->geo_knn_leaves_scanned += static_cast<int64_t>(knn_stats.leaves_scanned);
+    _opts.stats->geo_knn_rows_scored += static_cast<int64_t>(knn_stats.rows_scored);
+    if (candidates.size() < k64) {
+        return Status::OK(); // defensive (decode anomalies); fallback stays correct
+    }
+    std::sort(candidates.begin(), candidates.end());
+
+    // Exact rescoring, contract C2: the SAME kernel + argument order as the scalar
+    // function -- geo_point mode decodes the stored center, lon/lat mode reads the
+    // true columns -- so the materialized values are bit-identical to row execution.
+    const size_t n_cand = candidates.size();
+    std::vector<uint32_t> rowids(n_cand);
+    for (size_t i = 0; i < n_cand; ++i) {
+        rowids[i] = candidates[i].first;
+    }
+    std::vector<double> exact(n_cand, 0.0);
+    std::vector<uint8_t> valid(n_cand, 0);
+    if (geo_point_mode) {
+        for (size_t i = 0; i < n_cand; ++i) {
+            double lng = 0;
+            double lat = 0;
+            double d = 0;
+            if (GeoPoint::DecodeS2CellKey(s2_key_from_cell(candidates[i].second), &lng, &lat) &&
+                GeoPoint::ComputeDistance(lng, lat, dist.lng0, dist.lat0, &d)) {
+                exact[i] = d;
+                valid[i] = 1;
+            }
+        }
+    } else {
+        std::vector<double> lng_vals;
+        std::vector<double> lat_vals;
+        std::vector<uint8_t> lng_nulls;
+        std::vector<uint8_t> lat_nulls;
+        RETURN_IF_ERROR(_read_double_column(lng_cid, rowids, &lng_vals, &lng_nulls));
+        RETURN_IF_ERROR(_read_double_column(lat_cid, rowids, &lat_vals, &lat_nulls));
+        for (size_t i = 0; i < n_cand; ++i) {
+            double d = 0;
+            if (lng_nulls[i] == 0 && lat_nulls[i] == 0 &&
+                GeoPoint::ComputeDistance(lng_vals[i], lat_vals[i], dist.lng0, dist.lat0, &d)) {
+                exact[i] = d;
+                valid[i] = 1;
+            }
+        }
+    }
+
+    std::vector<double> valid_dists;
+    valid_dists.reserve(n_cand);
+    for (size_t i = 0; i < n_cand; ++i) {
+        if (valid[i] != 0) {
+            valid_dists.push_back(exact[i]);
+        }
+    }
+    if (valid_dists.size() < k64) {
+        return Status::OK(); // NULL-decoding rows would reach the output; fall back
+    }
+    std::nth_element(valid_dists.begin(), valid_dists.begin() + (k - 1), valid_dists.end());
+    const double kth_dist = valid_dists[k - 1];
+
+    // Keep every row at or under the k-th distance (ALL ties included) so the
+    // SortNode's tie-break key stays bit-exact against the full-sort plan.
+    roaring::Roaring selected;
+    auto out_row_ids = std::make_unique<std::vector<uint64_t>>();
+    auto dist_column = vectorized::ColumnFloat64::create();
+    out_row_ids->reserve(k64 + 16);
+    for (size_t i = 0; i < n_cand; ++i) {
+        if (valid[i] != 0 && exact[i] <= kth_dist) {
+            selected.add(rowids[i]);
+            out_row_ids->push_back(rowids[i]);
+            dist_column->get_data().push_back(exact[i]);
+        }
+    }
+
+    // The virtual distance slot is Nullable(Float64) (st_distance_sphere is
+    // AlwaysNullable); every selected row has a non-NULL distance.
+    const size_t n_out = out_row_ids->size();
+    vectorized::IColumn::MutablePtr result_column = vectorized::ColumnNullable::create(
+            std::move(dist_column), vectorized::ColumnUInt8::create(n_out, 0));
+    ColumnIterator* column_iter =
+            _column_iterators[_schema->column_id(_geo_topn_runtime->dest_column_idx())].get();
+    auto* virtual_column_iter = dynamic_cast<VirtualColumnIterator*>(column_iter);
+    if (virtual_column_iter == nullptr) {
+        return Status::OK(); // no virtual column slot to feed; leave the fallback path
+    }
+    virtual_column_iter->prepare_materialization(std::move(result_column),
+                                                 std::move(out_row_ids));
+
+    _row_bitmap = std::move(selected);
+    _opts.stats->rows_geo_knn_filtered +=
+            static_cast<int64_t>(present_card - _row_bitmap.cardinality());
+    pushdown_succeeded = true;
+    if (geo_point_mode) {
+        // The stored value was fully consumed by the index: skip its data pages
+        // (same index-only-scan mechanism as ann topn).
+        _need_read_data_indices[geo_point_cid] = false;
+    }
+    return Status::OK();
+}
+
 Status SegmentIterator::_get_row_ranges_from_conditions(RowRanges* condition_row_ranges) {
     std::set<int32_t> cids;
     for (auto& entry : _opts.col_id_to_predicates) {
@@ -1122,6 +1369,24 @@ Status SegmentIterator::_apply_geo_predicate() {
                     answered_cids.push_back(idx_to_cid[runtime.lng_idx_in_block]);
                     answered_cids.push_back(idx_to_cid[runtime.lat_idx_in_block]);
                 }
+                // v4 interaction: when a geo topn rides on this scan, its virtual
+                // distance column falls back to expression evaluation whenever the
+                // kNN pushdown bails -- and that expression reads the distance
+                // source column(s). Keep them readable here; a SUCCESSFUL kNN
+                // pushdown re-suppresses after materializing the virtual column.
+                auto geo_topn_references = [this, &idx_to_cid](ColumnId c) {
+                    if (_geo_topn_runtime == nullptr) {
+                        return false;
+                    }
+                    const auto& d = _geo_topn_runtime->distance();
+                    auto to_cid = [&idx_to_cid](int idx) -> int64_t {
+                        return (idx >= 0 && static_cast<size_t>(idx) < idx_to_cid.size())
+                                       ? static_cast<int64_t>(idx_to_cid[idx])
+                                       : -1;
+                    };
+                    return to_cid(d.geo_idx_in_block) == c || to_cid(d.lng_idx_in_block) == c ||
+                           to_cid(d.lat_idx_in_block) == c;
+                };
                 for (ColumnId c : answered_cids) {
                     auto status_it = _common_expr_index_exec_status.find(c);
                     if (status_it != _common_expr_index_exec_status.end()) {
@@ -1130,7 +1395,8 @@ Status SegmentIterator::_apply_geo_predicate() {
                             expr_entry->second = true;
                         }
                     }
-                    if (_check_all_conditions_passed_inverted_index_for_column(c)) {
+                    if (!geo_topn_references(c) &&
+                        _check_all_conditions_passed_inverted_index_for_column(c)) {
                         _need_read_data_indices[c] = false;
                     }
                 }

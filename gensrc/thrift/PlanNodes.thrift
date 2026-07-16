@@ -855,6 +855,10 @@ struct TOlapScanNode {
   21: optional TSortInfo ann_sort_info
   22: optional i64 ann_sort_limit
   23: optional TScoreRangeInfo score_range_info
+  // HASI geo index v4 kNN: single ordering expr (virtual distance slot) + per-scanner limit,
+  // mirrors ann_sort_info; the TopN above still does the final (distance, tie-break) sort.
+  24: optional TSortInfo geo_sort_info
+  25: optional i64 geo_sort_limit
 }
 
 struct TEqJoinCondition {

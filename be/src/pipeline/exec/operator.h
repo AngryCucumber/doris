@@ -53,6 +53,9 @@ class AsyncResultWriter;
 class ScoreRuntime;
 class AnnTopNRuntime;
 } // namespace vectorized
+namespace segment_v2 {
+class GeoTopNRuntime;
+} // namespace segment_v2
 } // namespace doris
 
 namespace doris::pipeline {
@@ -318,6 +321,7 @@ protected:
     vectorized::VExprContextSPtrs _projections;
     std::shared_ptr<vectorized::ScoreRuntime> _score_runtime;
     std::shared_ptr<segment_v2::AnnTopNRuntime> _ann_topn_runtime;
+    std::shared_ptr<segment_v2::GeoTopNRuntime> _geo_topn_runtime;
     // Used in common subexpression elimination to compute intermediate results.
     std::vector<vectorized::VExprContextSPtrs> _intermediate_projections;
 

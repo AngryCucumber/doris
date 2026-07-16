@@ -194,7 +194,8 @@ public class PushDownScoreTopNIntoOlapScan implements RewriteRuleFactory {
         Plan newScan = scan.appendVirtualColumnsAndTopN(ImmutableList.of(scoreAlias),
                 ImmutableList.of(), Optional.empty(),
                 topN.getOrderKeys(), Optional.of(topN.getLimit() + topN.getOffset()),
-                scoreRangeInfo);
+                scoreRangeInfo,
+                ImmutableList.of(), Optional.empty());
 
         // Rebuild the plan tree above the new scan.
         // We need to replace the original score() function with a reference to the new

@@ -70,6 +70,14 @@ public:
                                         _context ? _context->io_ctx : nullptr);
     }
 
+    // v4 kNN candidate collection (loads the index on first use).
+    Status knn_candidates(double lng0, double lat0, uint32_t k, const roaring::Roaring* present,
+                          double slack_m, std::vector<std::pair<uint32_t, uint64_t>>* out,
+                          HasiKnnStats* stats) {
+        return _geo_reader->knn_candidates(lng0, lat0, k, present, slack_m, out, stats,
+                                           _context ? _context->io_ctx : nullptr);
+    }
+
     GeoIndexReaderPtr geo_reader() const { return _geo_reader; }
 
 private:

@@ -31,6 +31,7 @@
 #include "io/cache/block_file_cache_profile.h"
 #include "olap/parallel_scanner_builder.h"
 #include "olap/rowset/segment_v2/ann_index/ann_topn_runtime.h"
+#include "olap/rowset/segment_v2/geo_index/geo_topn_runtime.h"
 #include "olap/storage_engine.h"
 #include "olap/tablet_manager.h"
 #include "pipeline/exec/scan_operator.h"
@@ -77,6 +78,24 @@ Status OlapScanLocalState::init(RuntimeState* state, LocalStateInfo& info) {
         RETURN_IF_ERROR(vectorized::VExpr::create_expr_tree(ordering_expr, ordering_expr_ctx));
         _ann_topn_runtime =
                 segment_v2::AnnTopNRuntime::create_shared(asc, limit, ordering_expr_ctx);
+    }
+
+    // HASI v4: geo kNN pushdown (mirrors the ann branch; single virtual-slot key).
+    if (olap_scan_node.__isset.geo_sort_info || olap_scan_node.__isset.geo_sort_limit) {
+        DCHECK(olap_scan_node.__isset.geo_sort_info);
+        DCHECK(olap_scan_node.__isset.geo_sort_limit);
+        DCHECK(olap_scan_node.geo_sort_info.ordering_exprs.size() == 1);
+        const doris::TExpr& ordering_expr = olap_scan_node.geo_sort_info.ordering_exprs.front();
+        DCHECK(ordering_expr.nodes[0].__isset.slot_ref);
+        DCHECK(ordering_expr.nodes[0].slot_ref.is_virtual_slot);
+        DCHECK(olap_scan_node.geo_sort_info.is_asc_order.size() == 1);
+        const bool asc = olap_scan_node.geo_sort_info.is_asc_order[0];
+        const bool nulls_first = olap_scan_node.geo_sort_info.nulls_first[0];
+        const size_t limit = olap_scan_node.geo_sort_limit;
+        std::shared_ptr<vectorized::VExprContext> ordering_expr_ctx;
+        RETURN_IF_ERROR(vectorized::VExpr::create_expr_tree(ordering_expr, ordering_expr_ctx));
+        _geo_topn_runtime = segment_v2::GeoTopNRuntime::create_shared(asc, nulls_first, limit,
+                                                                      ordering_expr_ctx);
     }
 
     // Parse score range filtering parameters and set to ScoreRuntime
@@ -333,6 +352,12 @@ Status OlapScanLocalState::_init_profile() {
             ADD_COUNTER(_segment_profile, "GeoAggFoldedRows", TUnit::UNIT);
     _geo_agg_folded_leaves_counter =
             ADD_COUNTER(_segment_profile, "GeoAggFoldedLeaves", TUnit::UNIT);
+    _geo_knn_filter_counter = ADD_COUNTER(_segment_profile, "RowsGeoKnnFiltered", TUnit::UNIT);
+    _geo_knn_leaves_scanned_counter =
+            ADD_COUNTER(_segment_profile, "GeoKnnLeavesScanned", TUnit::UNIT);
+    _geo_knn_rows_scored_counter =
+            ADD_COUNTER(_segment_profile, "GeoKnnRowsScored", TUnit::UNIT);
+    _geo_knn_search_costs = ADD_TIMER(_segment_profile, "GeoKnnSearchCosts");
     _ann_topn_filter_counter = ADD_COUNTER(_segment_profile, "AnnIndexTopNFiltered", TUnit::UNIT);
 
     _ann_topn_search_costs = ADD_TIMER(_segment_profile, "AnnIndexTopNSearchCosts");
@@ -823,6 +848,10 @@ Status OlapScanLocalState::open(RuntimeState* state) {
 
     if (_ann_topn_runtime) {
         RETURN_IF_ERROR(_ann_topn_runtime->prepare(state, p.intermediate_row_desc()));
+    }
+
+    if (_geo_topn_runtime) {
+        RETURN_IF_ERROR(_geo_topn_runtime->prepare(state, p.intermediate_row_desc()));
     }
 
     RETURN_IF_ERROR(ScanLocalState<OlapScanLocalState>::open(state));

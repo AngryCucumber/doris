@@ -1037,6 +1037,92 @@ bbox 同尺度、多边形（凸 6 边/凹 50 边/带洞/跨反子午线）、kN
 
 ---
 
+## 11. v4 kNN 落地记录（实测）
+
+### 11.1 设计决策（相对 §5.4 规格的落地取舍）
+
+- **双键 ORDER BY（验收查询 `order by dist, id limit k`）**：既有 vector/score topn 通道
+  全链路硬性单键（规则 `.when(size()==1)`、BE DCHECK）。落地：FE 规则接受 `size()>=1`，
+  仅要求 key[0] 是距离别名槽且 asc，只推 key[0]+limit+offset 进 `geo_sort_info`（单表达式），
+  SortNode 保留在上方做 (dist, id) 终排序；BE 段内返回 **exact 距离 ≤ 第 k 小值的全部并列行**
+  （可 >k），并列由 SortNode 用 id 决胜 → bit-exact。
+- **POC 范围 = 无谓词 kNN**：段内 gate 为 `_common_expr_ctxs_push_down` 空 且 无列谓词。
+  WHERE+kNN 联合加速记为已知边界——回退链路（v1.5 过滤 + 虚拟列表达式回算 + SortNode）
+  本身已有索引加速且结果正确。照抄 ann 的 gate 会因 envelope 列谓词永久禁用过滤场景，
+  已避开（v4 直接回退，不照抄）。
+- **纯 kNN 无迭代器问题（lon/lat 模式）**：无 WHERE 时读 schema 不含 __s2，
+  `_init_index_iterators` 不会为它建迭代器。落地：`_apply_geo_topn_predicate` 扫 tablet
+  schema 全列匹配 GEO 索引 lng/lat 属性，命中后**现场 new_index_iterator**
+  （`_index_iterators` 按全 tablet schema 列数分配，越界安全）。geo_point 模式 src 槽被
+  虚拟列表达式引用、天然在读 schema，无此问题。
+- **排序域与 slack**：树遍历/k-堆全程 S1ChordAngle（中心距离）；候选带
+  slack=kGeoIndexMarginMeters(1.0m)，覆盖 2×量化(0.05m)+chord/haversine 数值差；
+  终值用 `GeoPoint::ComputeDistance` 重打分（geo_point 模式解码存储中心=行路径逐位一致；
+  lon/lat 模式 `_read_double_column` 读真列），实参顺序镜像行路径（点前圆心后）。
+- **NULL 排序 gate**：`HasiTree::parse` 累计 num_nulls；`(nulls_first && num_nulls>0) ||
+  present_card < k + num_nulls` 时整段回退（Doris 默认 ASC=NULLS FIRST，可空列默认序
+  必回退；NOT NULL 列/无 NULL 段照常下推）。扁平叶目录 O(num_leaves) 排序前置代价由
+  `num_leaves > 65536` gate 兜底（leaf_rows 极小配置回退，记边界）。
+
+### 11.2 触点清单
+
+FE：PushDownGeoTopNIntoOlapScan（新）注册于 Rewriter 向量 topn 规则旁、
+RewriteGeoPredicate 之前（**不改写 filter conjunct**——保 ST_* 形状给 v0 改写与 BE 识别）；
+Logical/PhysicalOlapScan geoOrderKeys/geoLimit 全构造点穿线（含 PhysicalLazyMaterializeOlapScan
+子类 super 调用与 4 个测试文件）；appendVirtualColumnsAndTopN 扩签名（vector/score 两调用点
+补空参）；translator/OlapScanNode/explain 克隆 ann 块。thrift 见 §11.1。
+BE：hasi_tree.{h,cpp}（knn_candidates + num_nulls）、geo_topn_runtime.{h,cpp}（新）、
+geo_range_runtime 导出 extract_geo_distance_call、geo_index_reader/iterator 转发、
+operator.h/olap_scan_operator/olap_scanner/tablet_reader/rowset_reader_context/
+beta_rowset_reader/iterators.h/segment_iterator 8 文件穿线、_apply_geo_topn_predicate
+挂 _lazy_init 的 ann 钩子后、OlapReaderStatistics+profile 四计数器
+（RowsGeoKnnFiltered/GeoKnnLeavesScanned/GeoKnnRowsScored/GeoKnnSearchCosts）。
+
+### 11.3 回归+对抗审查抓到的真 bug（三个，已修）
+
+1. **v1.5 抑制 × 回退回算（回归抓到）**：`WHERE 圆 + ORDER BY dist LIMIT k`（gp 表）——
+   FE 规则把 project 的距离表达式换成虚拟槽后 loc 不再被 project 引用；v1.5 精确消化
+   谓词后按"无人再需要"抑制 `_need_read_data_indices[loc]=false`；kNN 段 gate 回退 →
+   虚拟列表达式回算读不到 loc 数据页 → 距离全 NULL → NULLS FIRST 排前 → 错误 top-k。
+   修复：`_apply_geo_predicate` 抑制判定加 `geo_topn_references(cid)` 旁路。
+2. **通用倒排抑制 × 回退回算（对抗审查确认）**：同类根因的第二个抑制点——lon 上另有
+   倒排索引完整回答 `WHERE lon>100` 时，_lazy_init 的通用抑制循环也会把 lon 置为可跳过，
+   回退回算在被 `_prune_column` 填 0 的列上算距离。修复：照抄 ann 的做法，
+   `_apply_geo_topn_predicate` 用 Defer 守卫在**所有非成功出口**强制恢复源列可读
+   （成功路径物化虚拟列后按意图重新抑制）。教训：**虚拟列表达式的输入列依赖对一切
+   "谁还需要这列"判定都不可见**——新增 need-read 抑制点必须逐一排查这类隐式依赖。
+3. **Scanner 驻留 conjunct 不可见（对抗审查确认）**：`enable_common_expr_pushdown=false`
+   或表达式不满足 acting-on-a-slot 时，WHERE conjunct 留在 Scanner 层后置过滤
+   （`_filter_output_block`），段级 gate 只查 `_common_expr_ctxs_push_down` 看不见它 →
+   先提交 top-k 再被过滤 → 丢行。修复：gate 补查 `_remaining_conjunct_roots`
+   （scanner 驻留 conjunct 的根会经此通道下发，olap_scanner.cpp:355-359；v1.5 完整消化
+   的圆谓词会从中擦除，故纯圆 WHERE 场景仍可下推）。
+
+### 11.4 验证与实测（1e8，runs=3 热中位，与 §8 同 harness）
+
+- BE gtest 26/26（新增 HasiKnnTest×4：随机 oracle 对拍含全并列选择数学、反经线/极点/
+  face 边界中心、present 位图+15% NULL、四重并列距离）；回归 geo_index_p0 **6/6**
+  （新增 geo_knn：双表 × k∈{1,10,100,超行数} × 四中心开关对拍、full compaction 后、
+  MOW cluster-by 表删 3 近邻不外泄、DESC/OFFSET/WHERE 变体、explain GEO SORT INFO +
+  RowsGeoKnnFiltered>0 断言）；冒烟含量化次序差异佐证（gp 与 trio 表近邻次序可不同，
+  各自开关一致即正确）。
+- **kNN k=100 六中心（三修复后终版二进制）**：lon/lat 表全排序 186-221ms →
+  **7-10ms（20.1×-31.6×）**；geo_point 表全排序 658-710ms → **8-9ms（73.1×-83.5×）**
+  （gp 全排序基线逐行解码更贵，v4 后两表打平）。门槛 p50≥5×（§7）大幅达成。
+  开关结果 bit-strict 一致；修复相对首测无性能衰退。
+- 存量无衰退：v1.5 检索 9-17ms、v2a count 7-14ms、v2b agg 12-28ms、gp 检索 7-17ms，
+  与 GEO_POINT 轮次同级。
+- 顺带发现的存量产品缺陷（与 kNN 无关，已单列）：MOW+生成列表**无 cluster by 时
+  DELETE 报 "cannot find column [lon]"**（delete-sign 路径无法求值生成列输入），
+  带 cluster by(__s2) 正常——geo_knn 套件 MOW 表因此对齐 cluster by 形态。
+
+### 11.5 已知边界（v4 口径）
+
+WHERE+kNN 不联合加速（回退正确）；可空列 + 默认 NULLS FIRST 排序回退；
+num_leaves>65536（leaf_rows 极小）回退；DESC 不推；每段独立 top-k 无跨段共享阈值
+（RuntimePredicate 明确排除虚拟槽目标，做共享界需自建机制，列 v3 调优项）；
+非字面量圆心/半径表达式不推（与谓词链路同口径）。
+
 ## 附：关键源码锚点速查（rev2 全部经源码核对）
 | 用途 | 位置 |
 |---|---|

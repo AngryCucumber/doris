@@ -435,6 +435,10 @@ struct TQueryOptions {
   // fast-accept + margin-band recheck) and drop the residual scalar predicate.
   205: optional bool enable_geo_index_exact_filter = true;
 
+  // HASI geo index v4: serve ORDER BY st_distance_sphere(...) LIMIT k from the index
+  // via best-first traversal (rollback switch for the BE side of the kNN pushdown).
+  206: optional bool enable_geo_knn_pushdown = true;
+
   // For cloud, to control if the content would be written into file cache
   // In write path, to control if the content would be written into file cache.
   // In read path, read from file cache or remote storage when execute query.

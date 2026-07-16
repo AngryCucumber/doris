@@ -80,6 +80,13 @@ struct HasiLeafMeasure {
     }
 };
 
+// Per-query stats of HasiTree::knn_candidates (v4).
+struct HasiKnnStats {
+    uint64_t leaves_ranked = 0;  // leaves whose min chord distance was computed
+    uint64_t leaves_scanned = 0; // leaves whose cell streams were decoded and scored
+    uint64_t rows_scored = 0;    // rows whose center chord distance was computed
+};
+
 // Result of HasiTree::fold_inside (v2b query-side whole-leaf folding).
 struct HasiFoldResult {
     // rid ranges [begin, end) of folded leaves, ascending; the caller elides them
@@ -232,6 +239,28 @@ public:
                        const std::vector<int>& measure_idxs, const roaring::Roaring& present,
                        HasiFoldResult* out) const;
 
+    // ---- v4 kNN (best-first over the flat leaf directory, HASI_POC.md §5.4) ----
+    // Collects every row that could rank among the k nearest to (lng0, lat0) under
+    // any exact metric within slack_m meters of the CELL-CENTER metric:
+    //   out = { (rid, raw_cell) : cell != NULL && (present ? rid ∈ present : true)
+    //                             && chord(center(cell)) <= kth_center_chord + slack }
+    // where kth_center_chord is the k-th smallest center chord distance among the
+    // eligible rows (Infinity when fewer than k qualify -- then out is ALL of them).
+    // Leaves are ranked by min chord distance (S2CellUnion::FromMinMax expansion of
+    // the leaf [min_cell, max_cell] range) and scanned best-first; the walk stops
+    // when the next leaf's lower bound exceeds the k-th distance plus slack.
+    // Contract C2 stays the CALLER's job: recompute exact distances with
+    // GeoPoint::ComputeDistance before the final top-k selection, choosing slack_m
+    // >= 2 x (cell quantization + metric divergence) for a sound candidate superset.
+    // NULL-cell rows never qualify (their distance is NULL; the caller owns NULL
+    // ordering semantics and must bail out when NULLs could reach the top k).
+    Status knn_candidates(double lng0, double lat0, uint32_t k, const roaring::Roaring* present,
+                          double slack_m, std::vector<std::pair<uint32_t, uint64_t>>* out,
+                          HasiKnnStats* stats) const;
+
+    // Total NULL-cell rows across all leaves (v4 NULL-ordering bail-out gate).
+    uint64_t num_nulls() const { return _num_nulls; }
+
 private:
     struct Leaf {
         uint64_t min_cell;
@@ -249,6 +278,7 @@ private:
     std::string _data;
     uint32_t _leaf_rows = 0;
     uint32_t _num_rows = 0;
+    uint64_t _num_nulls = 0;
     std::vector<Leaf> _leaves;
     const uint8_t* _cells_base = nullptr;
     size_t _cells_len = 0;

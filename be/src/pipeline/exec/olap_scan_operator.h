@@ -249,6 +249,10 @@ private:
     RuntimeProfile::Counter* _geo_boundary_leaves_counter = nullptr;
     RuntimeProfile::Counter* _geo_agg_folded_rows_counter = nullptr;
     RuntimeProfile::Counter* _geo_agg_folded_leaves_counter = nullptr;
+    RuntimeProfile::Counter* _geo_knn_filter_counter = nullptr;
+    RuntimeProfile::Counter* _geo_knn_leaves_scanned_counter = nullptr;
+    RuntimeProfile::Counter* _geo_knn_rows_scored_counter = nullptr;
+    RuntimeProfile::Counter* _geo_knn_search_costs = nullptr;
     // range_Search_costs = index_load_costs + engine_search_costs + pre_process_costs + post_process_costs
     RuntimeProfile::Counter* _ann_range_search_costs = nullptr;
     RuntimeProfile::Counter* _ann_range_search_cnt = nullptr;

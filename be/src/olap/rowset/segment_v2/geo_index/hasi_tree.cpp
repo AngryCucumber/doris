@@ -19,8 +19,17 @@
 
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <cstring>
 #include <limits>
+#include <queue>
+
+#include "s2/s1chord_angle.h"
+#include "s2/s2cell.h"
+#include "s2/s2cell_id.h"
+#include "s2/s2cell_union.h"
+#include "s2/s2earth.h"
+#include "s2/s2latlng.h"
 
 namespace doris::segment_v2 {
 
@@ -325,6 +334,7 @@ Status HasiTree::parse(std::string&& data) {
         _leaf_measures = p;
     }
     _leaves.clear();
+    _num_nulls = 0;
     _leaves.reserve(num_leaves);
     uint32_t expect_rid = 0;
     for (uint32_t i = 0; i < num_leaves; ++i) {
@@ -343,6 +353,7 @@ Status HasiTree::parse(std::string&& data) {
                                       leaf.rid_begin, leaf.rid_end, leaf.cells_offset);
         }
         expect_rid = leaf.rid_end;
+        _num_nulls += leaf.null_count;
         _leaves.push_back(leaf);
     }
     if (expect_rid != _num_rows) {
@@ -528,6 +539,114 @@ Status HasiTree::search(const std::vector<CellRange>& covering,
             }
         }
         ++stats->leaves_boundary;
+    }
+    return Status::OK();
+}
+
+Status HasiTree::knn_candidates(double lng0, double lat0, uint32_t k,
+                                const roaring::Roaring* present, double slack_m,
+                                std::vector<std::pair<uint32_t, uint64_t>>* out,
+                                HasiKnnStats* stats) const {
+    out->clear();
+    if (k == 0 || _num_rows == 0) {
+        return Status::OK();
+    }
+    if (!std::isfinite(lng0) || !std::isfinite(lat0) || lng0 < -180.0 || lng0 > 180.0 ||
+        lat0 < -90.0 || lat0 > 90.0 || !std::isfinite(slack_m) || slack_m < 0.0) {
+        return Status::InvalidArgument("hasi knn bad query: lng {} lat {} slack {}", lng0, lat0,
+                                       slack_m);
+    }
+    const S2Point query = S2LatLng::FromDegrees(lat0, lng0).Normalized().ToPoint();
+    const S1ChordAngle slack = S2Earth::MetersToChordAngle(slack_m);
+
+    // Rank each eligible leaf by its minimum chord distance to the query point.
+    // The directory is flat (no internal nodes yet), so this upfront pass is
+    // O(num_leaves x O(level) cells); callers gate on num_leaves().
+    struct RankedLeaf {
+        S1ChordAngle min_dist;
+        uint32_t idx;
+        bool operator>(const RankedLeaf& o) const { return min_dist > o.min_dist; }
+    };
+    std::priority_queue<RankedLeaf, std::vector<RankedLeaf>, std::greater<RankedLeaf>> leaf_queue;
+    for (uint32_t i = 0; i < _leaves.size(); ++i) {
+        const Leaf& leaf = _leaves[i];
+        if (leaf.min_cell > leaf.max_cell || leaf.rid_end - leaf.rid_begin == leaf.null_count) {
+            continue; // all-NULL sentinel leaf
+        }
+        if (present != nullptr) {
+            const uint64_t before = leaf.rid_begin == 0 ? 0 : present->rank(leaf.rid_begin - 1);
+            if (present->rank(leaf.rid_end - 1) == before) {
+                continue; // no candidate rows survive in this leaf
+            }
+        }
+        const S2CellId lo(leaf.min_cell);
+        const S2CellId hi(leaf.max_cell);
+        if (!lo.is_valid() || !hi.is_valid()) {
+            return Status::Corruption("hasi knn bad leaf range [{}, {}]", leaf.min_cell,
+                                      leaf.max_cell);
+        }
+        S1ChordAngle min_dist = S1ChordAngle::Infinity();
+        for (const S2CellId cell : S2CellUnion::FromMinMax(lo, hi)) {
+            min_dist = std::min(min_dist, S2Cell(cell).GetDistance(query));
+            if (min_dist == S1ChordAngle::Zero()) {
+                break;
+            }
+        }
+        leaf_queue.push({min_dist, i});
+        ++stats->leaves_ranked;
+    }
+
+    // Best-first scan: keep the k smallest center chord distances; stop once the
+    // next leaf's lower bound exceeds the k-th distance plus slack.
+    struct Scored {
+        uint32_t rid;
+        uint64_t cell;
+        S1ChordAngle dist;
+    };
+    std::vector<Scored> scored;
+    std::priority_queue<S1ChordAngle> kth_heap; // max-heap over the current best k
+    std::vector<uint64_t> cells;
+    while (!leaf_queue.empty()) {
+        const RankedLeaf top = leaf_queue.top();
+        if (kth_heap.size() == k && top.min_dist > kth_heap.top() + slack) {
+            break;
+        }
+        leaf_queue.pop();
+        const Leaf& leaf = _leaves[top.idx];
+        RETURN_IF_ERROR(_decode_leaf_cells(leaf, &cells));
+        const uint32_t leaf_row_count = leaf.rid_end - leaf.rid_begin;
+        for (uint32_t i = 0; i < leaf_row_count; ++i) {
+            const uint64_t cell = cells[i];
+            if (cell == 0) {
+                continue; // NULL row
+            }
+            const uint32_t rid = leaf.rid_begin + i;
+            if (present != nullptr && !present->contains(rid)) {
+                continue;
+            }
+            const S1ChordAngle dist(query, S2CellId(cell).ToPoint());
+            scored.push_back({rid, cell, dist});
+            if (kth_heap.size() < k) {
+                kth_heap.push(dist);
+            } else if (dist < kth_heap.top()) {
+                kth_heap.pop();
+                kth_heap.push(dist);
+            }
+            ++stats->rows_scored;
+        }
+        ++stats->leaves_scanned;
+    }
+    if (scored.empty()) {
+        return Status::OK();
+    }
+
+    const S1ChordAngle cutoff = kth_heap.size() == k ? kth_heap.top() + slack
+                                                     : S1ChordAngle::Infinity();
+    out->reserve(std::min<size_t>(scored.size(), k * 2));
+    for (const Scored& s : scored) {
+        if (s.dist <= cutoff) {
+            out->emplace_back(s.rid, s.cell);
+        }
     }
     return Status::OK();
 }

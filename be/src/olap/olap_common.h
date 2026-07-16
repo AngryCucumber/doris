@@ -411,6 +411,12 @@ struct OlapReaderStatistics {
     // the interior leaves whose sketches produced them
     int64_t geo_agg_folded_rows = 0;
     int64_t geo_agg_folded_leaves = 0;
+    // v4 kNN pushdown (profile names: RowsGeoKnnFiltered / GeoKnnLeavesScanned /
+    // GeoKnnRowsScored / GeoKnnSearchCosts)
+    int64_t rows_geo_knn_filtered = 0;
+    int64_t geo_knn_leaves_scanned = 0;
+    int64_t geo_knn_rows_scored = 0;
+    int64_t geo_knn_search_ns = 0;
 
     int64_t output_index_result_column_timer = 0;
     // number of segment filtered by column stat when creating seg iterator
