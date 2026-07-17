@@ -39,6 +39,7 @@
 #include "olap/rowid_conversion.h"
 #include "olap/rowset/pending_rowset_helper.h"
 #include "olap/rowset/rowset_fwd.h"
+#include "olap/rowset/segment_v2/geo_index/hasi_splice.h"
 #include "olap/tablet_fwd.h"
 #include "util/runtime_profile.h"
 
@@ -89,6 +90,12 @@ protected:
 
     // merge inverted index files
     Status do_inverted_index_compaction();
+
+    // HASI geo index splice (HASI_POC.md §12): writes the output segments' geo
+    // index by splicing the input segments' index files. No-op unless
+    // CompactionMixin::construct_output_rowset_writer armed the fast path
+    // (ctx.geo_index_rollup); the cloud path never arms.
+    Status do_geo_index_rollup();
 
     // mark all columns in columns_to_do_index_compaction to skip index compaction next time.
     void mark_skip_index_compaction(const RowsetWriterContext& context,
@@ -150,6 +157,21 @@ protected:
 
     bool _enable_inverted_index_compaction {false};
 
+    // Armed geo rollup state (HASI_POC.md §12), filled by
+    // CompactionMixin::construct_geo_index_rollup.
+    struct GeoRollupInput {
+        RowsetSharedPtr rowset;
+        uint32_t segment_id;
+        segment_v2::HasiDirView view;
+    };
+    std::vector<GeoRollupInput> _geo_rollup_inputs;
+    segment_v2::HasiSplicePlan _geo_splice_plan;
+    const TabletIndex* _geo_rollup_index_meta = nullptr;
+    int32_t _geo_rollup_col_uid = -1;
+    // True while the ordered-data hardlink path constructs its writer: the geo
+    // rollup must not arm there (the plan would never be consumed).
+    bool _in_ordered_data_compaction = false;
+
     RuntimeProfile::Counter* _input_rowsets_data_size_counter = nullptr;
     RuntimeProfile::Counter* _input_rowsets_counter = nullptr;
     RuntimeProfile::Counter* _input_row_num_counter = nullptr;
@@ -184,6 +206,10 @@ protected:
     Tablet* tablet();
 
     Status construct_output_rowset_writer(RowsetWriterContext& ctx) override;
+
+    // Evaluates the geo rollup arming conditions (HASI_POC.md §12.2) and, when
+    // they all hold, sets ctx.geo_index_rollup and stores the splice plan.
+    void construct_geo_index_rollup(RowsetWriterContext& ctx);
 
     virtual Status modify_rowsets();
 

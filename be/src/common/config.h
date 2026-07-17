@@ -1268,6 +1268,10 @@ DECLARE_Int32(inverted_index_read_buffer_size);
 DECLARE_Int32(max_depth_in_bkd_tree);
 // index compaction
 DECLARE_mBool(inverted_index_compaction_enable);
+// HASI geo index compaction splice fast path (HASI_POC.md §12): reuse input
+// segments' geo index files byte-wise when the arming conditions hold; false
+// falls back to the inline full rebuild unconditionally.
+DECLARE_mBool(enable_geo_index_incremental_compaction);
 // Only for debug, do not use in production
 DECLARE_mBool(debug_inverted_index_compaction);
 // index by RAM directory

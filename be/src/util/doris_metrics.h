@@ -98,6 +98,13 @@ public:
     IntCounter* local_compaction_write_bytes_total = nullptr;
     IntCounter* remote_compaction_read_rows_total = nullptr;
     IntCounter* remote_compaction_read_bytes_total = nullptr;
+
+    // HASI geo index (HASI_POC.md §12): inline build time (all write paths), and
+    // the compaction splice fast path's fired/fallback counts + time.
+    IntCounter* geo_index_build_ns_total = nullptr;
+    IntCounter* geo_index_compaction_rollup_total = nullptr;
+    IntCounter* geo_index_compaction_rollup_fallback_total = nullptr;
+    IntCounter* geo_index_compaction_rollup_ns_total = nullptr;
     IntCounter* remote_compaction_write_rows_total = nullptr;
     IntCounter* remote_compaction_write_bytes_total = nullptr;
 

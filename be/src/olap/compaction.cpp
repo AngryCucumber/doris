@@ -25,6 +25,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <list>
 #include <map>
 #include <memory>
@@ -62,6 +63,8 @@
 #include "olap/rowset/rowset_meta.h"
 #include "olap/rowset/rowset_writer.h"
 #include "olap/rowset/rowset_writer_context.h"
+#include "olap/rowset/segment_v2/geo_index/geo_index_properties.h"
+#include "olap/rowset/segment_v2/geo_index/geo_index_writer.h"
 #include "olap/rowset/segment_v2/index_file_reader.h"
 #include "olap/rowset/segment_v2/index_file_writer.h"
 #include "olap/rowset/segment_v2/inverted_index_compaction.h"
@@ -253,6 +256,10 @@ Status Compaction::merge_input_rowsets() {
         }
         // 2. Merge the remaining inverted index files of the string type
         RETURN_IF_ERROR(do_inverted_index_compaction());
+
+        // 2b. Splice the geo index files when the rollup fast path is armed
+        // (HASI_POC.md §12); no-op otherwise.
+        RETURN_IF_ERROR(do_geo_index_rollup());
     }
 
     COUNTER_UPDATE(_merged_rows_counter, _stats.merged_rows);
@@ -356,7 +363,13 @@ Tablet* CompactionMixin::tablet() {
 Status CompactionMixin::do_compact_ordered_rowsets() {
     RETURN_IF_ERROR(build_basic_info(true));
     RowsetWriterContext ctx;
-    RETURN_IF_ERROR(construct_output_rowset_writer(ctx));
+    // Ordered data compaction hard-links whole segments (index files included)
+    // and never runs the merge, so the geo rollup would arm for nothing: its
+    // plan is never consumed and the per-segment index reads are wasted I/O.
+    _in_ordered_data_compaction = true;
+    Status st = construct_output_rowset_writer(ctx);
+    _in_ordered_data_compaction = false;
+    RETURN_IF_ERROR(st);
 
     LOG(INFO) << "start to do ordered data compaction, tablet=" << _tablet->tablet_id()
               << ", output_version=" << _output_version;
@@ -943,6 +956,286 @@ Status Compaction::do_inverted_index_compaction() {
     return Status::OK();
 }
 
+namespace {
+
+// One input segment's geo.hasi opened for ranged reads (HASI_POC.md §12); the
+// CLucene handles live exactly as long as the splice/rebuild that reads them.
+struct GeoHasiStream {
+    std::unique_ptr<segment_v2::IndexFileReader> reader;
+    std::unique_ptr<segment_v2::DorisCompoundReader, segment_v2::DirectoryDeleter> dir;
+    lucene::store::IndexInput* in = nullptr;
+    uint64_t len = 0;
+
+    GeoHasiStream() = default;
+    GeoHasiStream(GeoHasiStream&& o) noexcept
+            : reader(std::move(o.reader)), dir(std::move(o.dir)), in(o.in), len(o.len) {
+        o.in = nullptr;
+    }
+    GeoHasiStream& operator=(GeoHasiStream&&) = delete;
+    ~GeoHasiStream() {
+        if (in != nullptr) {
+            try {
+                in->close();
+            } catch (...) {
+            }
+            delete in;
+        }
+    }
+};
+
+Status open_geo_hasi_stream(const RowsetSharedPtr& rowset, uint32_t seg_id,
+                            InvertedIndexStorageFormatPB storage_format,
+                            const TabletIndex* index_meta, GeoHasiStream* out) {
+    auto fs = rowset->rowset_meta()->fs();
+    if (!fs) {
+        return Status::InternalError("get fs failed, resource_id={}",
+                                     rowset->rowset_meta()->resource_id());
+    }
+    auto seg_path = rowset->segment_path(seg_id);
+    if (!seg_path.has_value()) {
+        return seg_path.error();
+    }
+    out->reader = std::make_unique<segment_v2::IndexFileReader>(
+            fs,
+            std::string {InvertedIndexDescriptor::get_index_file_path_prefix(seg_path.value())},
+            storage_format, rowset->rowset_meta()->inverted_index_file_info(seg_id));
+    RETURN_IF_ERROR(out->reader->init(config::inverted_index_read_buffer_size));
+    auto dir = out->reader->open(index_meta);
+    if (!dir.has_value()) {
+        return Status::IOError("open geo index dir failed: {}", dir.error().to_string());
+    }
+    out->dir = std::move(dir.value());
+    try {
+        lucene::store::IndexInput* in = nullptr;
+        CLuceneError err;
+        if (!out->dir->openInput(segment_v2::geo_index_file_name, in, err)) {
+            return Status::IOError("open {} failed: {}", segment_v2::geo_index_file_name,
+                                   err.what());
+        }
+        out->in = in;
+        out->len = static_cast<uint64_t>(in->length());
+    } catch (CLuceneError& e) {
+        return Status::IOError("open {} failed: {}", segment_v2::geo_index_file_name, e.what());
+    }
+    return Status::OK();
+}
+
+segment_v2::HasiReadFn geo_hasi_read_fn(GeoHasiStream* s) {
+    return [s](uint64_t offset, size_t len, uint8_t* buf) -> Status {
+        try {
+            s->in->seek(static_cast<int64_t>(offset));
+            size_t done = 0;
+            while (done < len) {
+                const auto chunk = static_cast<int32_t>(std::min<size_t>(
+                        len - done, std::numeric_limits<int32_t>::max()));
+                s->in->readBytes(buf + done, chunk);
+                done += static_cast<size_t>(chunk);
+            }
+        } catch (CLuceneError& e) {
+            return Status::IOError("geo index read failed: {}", e.what());
+        }
+        return Status::OK();
+    };
+}
+
+} // namespace
+
+Status Compaction::do_geo_index_rollup() {
+    const auto& ctx = _output_rs_writer->context();
+    if (!ctx.geo_index_rollup) {
+        return Status::OK();
+    }
+    const int64_t start_ns = MonotonicNanos();
+    auto fail_round = [&](const std::string& msg) -> Status {
+        // Mirror inverted index compaction's failure semantics: fail this round
+        // and mark the inputs so the next attempt rebuilds inline.
+        for (auto& rowset : _input_rowsets) {
+            rowset->set_skip_index_compaction(_geo_rollup_col_uid);
+        }
+        return Status::InternalError("geo index rollup failed: {}. tablet={}", msg,
+                                     _tablet->tablet_id());
+    };
+    // Regression causal proof (HASI_POC.md §12.3): fails the round WITHOUT skip
+    // marks, so disabling the point re-arms the very next attempt.
+    DBUG_EXECUTE_IF("Compaction::do_geo_index_rollup_force_error", {
+        return Status::InternalError("debug point: geo index rollup forced error. tablet={}",
+                                     _tablet->tablet_id());
+    })
+    // Layer 1: row conservation -- theoretically unreachable under the arming
+    // gates (DUP, no deletes), kept as defense in depth.
+    if (_stats.merged_rows != 0 || _stats.filtered_rows != 0) {
+        return fail_round(fmt::format("rows dropped by the merge: merged={} filtered={}",
+                                      _stats.merged_rows, _stats.filtered_rows));
+    }
+    std::vector<uint32_t> dest_segment_num_rows;
+    RETURN_IF_ERROR(_output_rs_writer->get_segment_num_rows(&dest_segment_num_rows));
+    uint64_t out_total = 0;
+    for (uint32_t rows : dest_segment_num_rows) {
+        out_total += rows;
+    }
+    if (out_total != _geo_splice_plan.total_rows) {
+        return fail_round(fmt::format("output rows {} != planned rows {}", out_total,
+                                      _geo_splice_plan.total_rows));
+    }
+    if (dest_segment_num_rows.empty()) {
+        return Status::OK();
+    }
+    auto* writer = dynamic_cast<BaseBetaRowsetWriter*>(_output_rs_writer.get());
+    if (writer == nullptr) {
+        return fail_round("unexpected rowset writer type");
+    }
+    auto& index_file_writers = writer->index_file_writers();
+    if (index_file_writers.size() != dest_segment_num_rows.size()) {
+        return fail_round(fmt::format("index file writers {} != output segments {}",
+                                      index_file_writers.size(), dest_segment_num_rows.size()));
+    }
+    // Reopen the input streams (arming closed them after the dir-only parse).
+    std::vector<GeoHasiStream> streams;
+    streams.reserve(_geo_rollup_inputs.size());
+    std::vector<segment_v2::HasiReadFn> readers(_geo_rollup_inputs.size());
+    std::vector<const segment_v2::HasiDirView*> views(_geo_rollup_inputs.size());
+    for (size_t i = 0; i < _geo_rollup_inputs.size(); ++i) {
+        auto& input = _geo_rollup_inputs[i];
+        GeoHasiStream stream;
+        Status st = open_geo_hasi_stream(input.rowset, input.segment_id,
+                                         _cur_tablet_schema->get_inverted_index_storage_format(),
+                                         _geo_rollup_index_meta, &stream);
+        if (!st.ok()) {
+            return fail_round(st.to_string());
+        }
+        if (stream.len != input.view.file_len) {
+            return fail_round("input geo index file changed size since arming");
+        }
+        streams.push_back(std::move(stream));
+        views[i] = &input.view;
+    }
+    for (size_t i = 0; i < streams.size(); ++i) {
+        readers[i] = geo_hasi_read_fn(&streams[i]);
+    }
+    const uint32_t leaf_rows =
+            segment_v2::geo_index_leaf_rows(_geo_rollup_index_meta->properties());
+    auto write_blob_to_segment =
+            [&](size_t seg_idx,
+                const std::function<Status(const segment_v2::HasiSinkFn&)>& produce) -> Status {
+        auto it = index_file_writers.find(static_cast<int>(seg_idx));
+        if (it == index_file_writers.end()) {
+            return Status::InternalError("no index file writer for output segment {}", seg_idx);
+        }
+        auto dir_res = it->second->open(_geo_rollup_index_meta);
+        if (!dir_res.has_value()) {
+            return Status::IOError("open geo index output dir failed: {}",
+                                   dir_res.error().to_string());
+        }
+        lucene::store::IndexOutput* out = nullptr;
+        try {
+            out = dir_res.value()->createOutput(segment_v2::geo_index_file_name);
+            segment_v2::HasiSinkFn sink = [out](const uint8_t* data, size_t len) -> Status {
+                size_t done = 0;
+                while (done < len) {
+                    const auto chunk = static_cast<int32_t>(std::min<size_t>(
+                            len - done, std::numeric_limits<int32_t>::max()));
+                    out->writeBytes(data + done, chunk);
+                    done += static_cast<size_t>(chunk);
+                }
+                return Status::OK();
+            };
+            Status st = produce(sink);
+            out->close();
+            delete out;
+            return st;
+        } catch (CLuceneError& e) {
+            if (out != nullptr) {
+                try {
+                    out->close();
+                } catch (...) {
+                }
+                delete out;
+            }
+            return Status::IOError("write geo index failed: {}", e.what());
+        }
+    };
+    // Layer 2: output segment cuts must land exactly on input segment
+    // boundaries for the byte splice; otherwise stream-rebuild (v1, no
+    // sketches) each output segment from the decoded input streams.
+    bool aligned = true;
+    std::vector<segment_v2::HasiSplicePlan> sub_plans(dest_segment_num_rows.size());
+    {
+        size_t oi = 0;
+        for (size_t seg = 0; seg < dest_segment_num_rows.size() && aligned; ++seg) {
+            uint64_t need = dest_segment_num_rows[seg];
+            auto& sub = sub_plans[seg];
+            sub.with_measures = _geo_splice_plan.with_measures;
+            sub.measure_names = _geo_splice_plan.measure_names;
+            while (need > 0) {
+                if (oi >= _geo_splice_plan.order.size()) {
+                    aligned = false;
+                    break;
+                }
+                const size_t idx = _geo_splice_plan.order[oi];
+                const uint64_t rows = views[idx]->num_rows;
+                if (rows > need) {
+                    aligned = false;
+                    break;
+                }
+                sub.order.push_back(idx);
+                sub.total_rows += rows;
+                sub.total_leaves += views[idx]->leaves.size();
+                need -= rows;
+                ++oi;
+            }
+        }
+        if (oi != _geo_splice_plan.order.size()) {
+            aligned = false;
+        }
+    }
+    Status st = Status::OK();
+    if (aligned) {
+        for (size_t seg = 0; seg < dest_segment_num_rows.size() && st.ok(); ++seg) {
+            if (sub_plans[seg].total_rows == 0) {
+                continue;
+            }
+            st = write_blob_to_segment(seg, [&](const segment_v2::HasiSinkFn& sink) {
+                return segment_v2::hasi_splice(sub_plans[seg], views, readers, leaf_rows, sink);
+            });
+        }
+        if (st.ok()) {
+            DorisMetrics::instance()->geo_index_compaction_rollup_total->increment(1);
+            LOG(INFO) << "succeed to do geo index rollup (splice). tablet="
+                      << _tablet->tablet_id() << ", inputs=" << _geo_rollup_inputs.size()
+                      << ", rows=" << _geo_splice_plan.total_rows
+                      << ", leaves=" << _geo_splice_plan.total_leaves
+                      << ", measures=" << _geo_splice_plan.with_measures
+                      << ", output segments=" << dest_segment_num_rows.size();
+        }
+    } else {
+        st = segment_v2::hasi_stream_rebuild(
+                _geo_splice_plan, views, readers, leaf_rows, dest_segment_num_rows,
+                [&](size_t seg_idx, std::string&& blob) -> Status {
+                    if (blob.empty()) {
+                        return Status::OK();
+                    }
+                    return write_blob_to_segment(
+                            seg_idx, [&](const segment_v2::HasiSinkFn& sink) {
+                                return sink(reinterpret_cast<const uint8_t*>(blob.data()),
+                                            blob.size());
+                            });
+                });
+        if (st.ok()) {
+            DorisMetrics::instance()->geo_index_compaction_rollup_fallback_total->increment(1);
+            LOG(WARNING) << "geo index rollup fell back to stream rebuild (output cuts do not"
+                            " align with input segments; sketches dropped). tablet="
+                         << _tablet->tablet_id()
+                         << ", output segments=" << dest_segment_num_rows.size();
+        }
+    }
+    if (!st.ok()) {
+        return fail_round(st.to_string());
+    }
+    DorisMetrics::instance()->geo_index_compaction_rollup_ns_total->increment(MonotonicNanos() -
+                                                                              start_ns);
+    return Status::OK();
+}
+
 void Compaction::mark_skip_index_compaction(
         const RowsetWriterContext& context,
         const std::function<void(int64_t, int64_t)>& error_handler) {
@@ -1210,6 +1503,16 @@ Status CompactionMixin::construct_output_rowset_writer(RowsetWriterContext& ctx)
           _tablet->keys_type() == KeysType::DUP_KEYS))) {
         construct_index_compaction_columns(ctx);
     }
+    // HASI geo index rollup (HASI_POC.md §12): must arm BEFORE create_rowset_writer
+    // below -- the writer copies the context at init, so a flag set later is lost.
+    // The ordered-data path hard-links index files wholesale and never consumes
+    // the plan, so don't arm there.
+    if (!_in_ordered_data_compaction && _is_vertical &&
+        config::enable_geo_index_incremental_compaction &&
+        _tablet->keys_type() == KeysType::DUP_KEYS &&
+        _tablet->tablet_schema()->cluster_key_uids().empty()) {
+        construct_geo_index_rollup(ctx);
+    }
     ctx.version = _output_version;
     ctx.rowset_state = VISIBLE;
     ctx.segments_overlap = NONOVERLAPPING;
@@ -1221,6 +1524,133 @@ Status CompactionMixin::construct_output_rowset_writer(RowsetWriterContext& ctx)
     _output_rs_writer = DORIS_TRY(_tablet->create_rowset_writer(ctx, _is_vertical));
     _pending_rs_guard = _engine.add_pending_rowset(ctx);
     return Status::OK();
+}
+
+void CompactionMixin::construct_geo_index_rollup(RowsetWriterContext& ctx) {
+    const TabletSchemaSPtr& schema = _cur_tablet_schema;
+    if (schema == nullptr || !schema->has_geo_index() || schema->num_key_columns() == 0 ||
+        _input_row_num <= 0 || _input_rowsets.empty()) {
+        return;
+    }
+    auto reject = [&](const std::string& reason) {
+        LOG(INFO) << "geo index rollup not armed: " << reason
+                  << ". tablet=" << _tablet->tablet_id();
+    };
+    // The vertical heap merge orders rows by the FULL key tuple
+    // (vertical_merge_iterator compare_at over all key columns), so only a
+    // strictly-disjoint leading key column guarantees the output row stream is
+    // the per-segment concatenation: the geo index must sit on key column 0.
+    const TabletColumn& key0 = schema->column(0);
+    const TabletIndex* index_meta = schema->geo_index(key0);
+    if (index_meta == nullptr) {
+        return reject("geo index is not on the first key column");
+    }
+    // The skip flag is per-context (both segment writers skip EVERY geo index
+    // when armed) but the rollup only rewrites the first-key-column index: a
+    // second geo index would be silently lost. FE does not enforce the POC's
+    // one-geo-index-per-table assumption, so enforce it here.
+    size_t geo_index_count = 0;
+    for (size_t i = 0; i < schema->num_columns(); ++i) {
+        if (schema->geo_index(schema->column(i)) != nullptr) {
+            ++geo_index_count;
+        }
+    }
+    if (geo_index_count > 1) {
+        return reject("more than one geo index on the table");
+    }
+    const int32_t col_uid = key0.unique_id();
+    for (const auto& rowset : _input_rowsets) {
+        if (rowset->rowset_meta()->has_delete_predicate()) {
+            return reject("input rowset has a delete predicate");
+        }
+        if (rowset->rowset_meta()->is_segments_overlapping()) {
+            return reject("input rowset has overlapping segments");
+        }
+        if (rowset->is_skip_index_compaction(col_uid)) {
+            return reject("skip mark from a previous rollup failure");
+        }
+        const TabletIndex* rs_index = rowset->tablet_schema()->geo_index(col_uid);
+        if (rs_index == nullptr || rs_index->index_id() != index_meta->index_id() ||
+            rs_index->properties() != index_meta->properties()) {
+            return reject("input geo index meta differs from the current schema");
+        }
+    }
+    // Single-output-segment bound: the vertical writer cuts strictly above
+    // max_rows_per_segment and has no other cut trigger for DUP tables, so
+    // staying below the SIZE-based term guarantees one output segment. Do NOT
+    // use get_avg_segment_rows() here -- its min(..., N+1) clamp would make any
+    // fraction of it unsatisfiable (HASI_POC.md §12.5 blocker 2).
+    const int64_t avg_row_bytes = _input_rowsets_data_size / (_input_row_num + 1) + 1;
+    int64_t size_term = 0;
+    const auto& meta = _tablet->tablet_meta();
+    if (meta->compaction_policy() == CUMULATIVE_TIME_SERIES_POLICY) {
+        size_term = meta->time_series_compaction_goal_size_mbytes() * 1024 * 1024 * 2 /
+                    avg_row_bytes;
+    } else {
+        size_term = config::vertical_compaction_max_segment_size / avg_row_bytes;
+    }
+    const int64_t bound = std::min<int64_t>(size_term * 9 / 10,
+                                            static_cast<int64_t>(ctx.max_rows_per_segment));
+    if (_input_row_num > bound) {
+        return reject(fmt::format("input rows {} above the single-output-segment bound {}",
+                                  _input_row_num, bound));
+    }
+    // Directory-only views of every input segment's geo.hasi (cell streams stay
+    // on disk until the splice itself).
+    std::vector<GeoRollupInput> inputs;
+    for (const auto& rowset : _input_rowsets) {
+        for (int64_t seg = 0; seg < rowset->num_segments(); ++seg) {
+            GeoRollupInput input;
+            input.rowset = rowset;
+            input.segment_id = static_cast<uint32_t>(seg);
+            GeoHasiStream stream;
+            Status st = open_geo_hasi_stream(rowset, input.segment_id,
+                                             schema->get_inverted_index_storage_format(),
+                                             index_meta, &stream);
+            if (st.ok()) {
+                st = segment_v2::hasi_parse_dir_view(geo_hasi_read_fn(&stream), stream.len,
+                                                     &input.view);
+            }
+            if (!st.ok()) {
+                return reject(fmt::format("input segment index unreadable: {}", st.to_string()));
+            }
+            inputs.push_back(std::move(input));
+        }
+    }
+    if (inputs.empty()) {
+        return reject("no input segments");
+    }
+    std::vector<const segment_v2::HasiDirView*> views;
+    views.reserve(inputs.size());
+    for (const auto& input : inputs) {
+        views.push_back(&input.view);
+    }
+    segment_v2::HasiSplicePlan plan;
+    bool eligible = false;
+    std::string reason;
+    Status st = segment_v2::hasi_plan_splice(
+            views, segment_v2::geo_index_leaf_rows(index_meta->properties()),
+            segment_v2::kGeoKnnMaxLeaves, &plan, &eligible, &reason);
+    if (!st.ok()) {
+        return reject(st.to_string());
+    }
+    if (!eligible) {
+        return reject(reason);
+    }
+    if (plan.total_rows != static_cast<uint64_t>(_input_row_num)) {
+        return reject(fmt::format("indexed rows {} != input rows {}", plan.total_rows,
+                                  _input_row_num));
+    }
+    ctx.geo_index_rollup = true;
+    _geo_rollup_inputs = std::move(inputs);
+    _geo_splice_plan = std::move(plan);
+    _geo_rollup_index_meta = index_meta;
+    _geo_rollup_col_uid = col_uid;
+    LOG(INFO) << "geo index rollup armed. tablet=" << _tablet->tablet_id()
+              << ", input segments=" << _geo_rollup_inputs.size()
+              << ", rows=" << _geo_splice_plan.total_rows
+              << ", leaves=" << _geo_splice_plan.total_leaves
+              << ", measures=" << _geo_splice_plan.with_measures;
 }
 
 Status CompactionMixin::modify_rowsets() {

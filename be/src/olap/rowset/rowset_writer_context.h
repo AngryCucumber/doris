@@ -92,6 +92,10 @@ struct RowsetWriterContext {
     bool enable_unique_key_merge_on_write = false;
     // store column_unique_id to do index compaction
     std::set<int32_t> columns_to_do_index_compaction;
+    // HASI geo index splice (HASI_POC.md §12): when armed, segment writers skip
+    // the inline geo index build and Compaction::do_geo_index_rollup() writes the
+    // output index from the input segments' index files after the merge.
+    bool geo_index_rollup = false;
     DataWriteType write_type = DataWriteType::TYPE_DEFAULT;
     // need to figure out the sub type of compaction
     ReaderType compaction_type = ReaderType::UNKNOWN;

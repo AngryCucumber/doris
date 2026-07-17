@@ -1123,6 +1123,211 @@ num_leaves>65536（leaf_rows 极小）回退；DESC 不推；每段独立 top-k 
 （RuntimePredicate 明确排除虚拟槽目标，做共享界需自建机制，列 v3 调优项）；
 非字面量圆心/半径表达式不推（与谓词链路同口径）。
 
+## 12. v3 增量与调优（rev4 冻结设计：SPLICE 整叶拼接快路径）
+
+### 12.1 前提修正（测绘 workflow 全部经源码核对，推翻两条设计文档假设）
+
+1. **实现里没有 F 叉金字塔/NodeAgg 内部层、没有 HLL/t-digest**（`hasi_tree.h:42-46` 明示推迟）。
+   实际格式 = 24B 头 + 扁平叶目录（36B/叶：min/max_cell、rid_begin/end、null_count、cells_offset）
+   + 每叶自包含 zigzag-varint delta cell 流（每叶 delta 基准归零，`hasi_tree.cpp:175/:482`）
+   + v2 尾部 measures 段（28B/叶/measure：sum/min/max/non_null，全有或全无，`:329-333`）。
+   ⇒ compaction 内索引构建本来就便宜（无重 sketch 可省），"耗时 ≤50%" 门禁只对
+   **索引构建耗时指标本身**有意义，须新增计时指标度量。
+2. **GEO_POINT 存储 = 翻转 S2 cell 的 int64**（`olap/types.h:743-752`，signed 序 == Hilbert 序）
+   ⇒ compaction 喂索引不存在"每行重算 S2"开销，重放（REPLAY）路径无价值，砍掉；
+   且两种旗舰表（`duplicate key(__s2)` / `duplicate key(loc)`）的 key 序都是 cell 序。
+3. **有 key 表零删行也按 key 交错输出**（`vertical_block_reader.cpp:155-158` 堆归并；
+   仅无 key 表 FIFO `:149-153`）⇒ "输出叶=输入整叶并集"在输入 cell 区间重叠时不成立。
+   曾推演"按 cell 分量合并"（连通分量对齐叶边界 + sketch merge）：每批导入覆盖同一
+   地理区域时分量传递渗流成单一巨叶，聚合/检索粒度被摧毁，**此路不通**（记录在案防重蹈）。
+
+### 12.2 冻结设计：SPLICE 整叶拼接
+
+**快路径**：当且仅当下列**武装条件**全部成立（pre-merge，纯元数据判定），输出索引 =
+输入各段索引的**字节级拼接**——叶目录 rid/cells_offset 加常量重定位、cell 流按输入序
+分块流拷（不解码）、sketch 行同序拼接（**sketch 无损保留**）。索引构建 O(行)→O(叶+字节拷)。
+
+武装条件（`CompactionMixin::construct_output_rowset_writer`，倒排 gate `compaction.cpp:1207-1212` 旁；
+rev4.1 按设计评审修正，见 §12.5）：
+- `config::enable_geo_index_incremental_compaction`（新 mBool，默认 true）&& `_is_vertical`
+- DUP_KEYS && 非 MOW && 无 cluster key；所有输入 rowset `!has_delete_predicate()`
+  && `!is_segments_overlapping()`（保证段内序 = rid 序）
+- **geo 索引列必须是第一 key 列**（`unique_id == 首 key 列`；评审阻塞点 1：堆归并按
+  **全 key 元组**比较 `vertical_merge_iterator.cpp:297-313`，非 key / 非首 key 的 geo 列
+  下输出按其它 key 交错，拼接静默错乱；无 key 表走 FIFO 版本序也不等于 cell 序，同拒）
+- 全部输入段的 geo.hasi 可解析、版本一致、measure 名单**有序向量逐元素相等**且
+  **以各 blob 尾部实际名单为准**（属性名单可能已被 v1 降级偏离；v1/v2 混合 → 不武装）
+- 段级 cell 凸包 = 仅对**非哨兵叶**折叠；全 NULL 段（无值叶）视作含 NULL 段、不参与
+  区间链；空段（0 行）从排序与拼接中剔除。按非空 min_cell 排序后相邻段
+  `prev.max_cell < next.min_cell` **严格**不等（相等 cell 的堆归并 tie-break 依
+  iterator 序 ≠ cell 序，拒绝）
+- 含 NULL（null_count>0）的输入段 ≤1 个，且若存在必须整体居首（NULL key 全局排最前）
+- Σ输入行 ≤ 0.9×**按体积项**（`vertical_compaction_max_segment_size /
+  (输入数据字节/(输入行+1)+1)`，即 `get_avg_segment_rows()` **去掉 `min(…,N+1)` 钳制**——
+  评审阻塞点 2：带钳制的 0.9 界对 ≥10 行永假，快路径永不武装；同时须 ≤
+  `ctx.max_rows_per_segment`。切分判据是严格 `>`（`vertical_beta_rowset_writer.cpp:74`），
+  行数低于阈值时单输出段有确定性保证）
+- Σ输入叶 ≤ kGeoKnnMaxLeaves（防 kNN 叶数悬崖；常量从 segment_iterator 函数体提升到
+  `geo_index_properties.h` 共享）&& Σ输入叶 ≤ 4×⌈Σ输入行/leaf_rows⌉
+  （碎片化棘轮门：反复拼接小导入使叶数按导入数增长，超界即回退重建以合并整理）
+- 武装动作：RowsetWriterContext 新 flag（**必须在 `create_rowset_writer`（`:1221`）之前
+  设入 ctx**——writer 初始化时拷贝 ctx，事后设置会丢失）→ 两个 segment writer 不挂
+  内联 geo 构建（镜像 `skip_inverted_index`，`segment_writer.cpp:219-224` 形态）。
+  武装期解析仅做 **dir-only 读**（头 24B + 叶目录 + v2 尾部名单，经 IndexInput
+  seek/read），cell 流字节推迟到执行期分块流拷，拒绝武装时不产生大 I/O。
+
+**执行点**：新 `do_geo_index_rollup()`，`merge_input_rowsets` 内
+`do_inverted_index_compaction()`（`compaction.cpp:255`）之后、`build()`（`:262`）之前，
+经 `BaseBetaRowsetWriter::index_file_writers()`（`:838-839` 形态）写仍开启的输出索引文件。
+注意 `merge_input_rowsets` 是基类共享方法、**云路径也会走到该调用点**
+（`CloudCompactionMixin::execute_compact_impl` → `:1548`）：入口必须以 armed 标志
+（存 RowsetWriterContext，云侧 `construct_output_rowset_writer` 永不设置）守门，
+未武装即零成本返回。stream-rebuild 回退需要 `HasiTree` 补一个公开的逐行 cell
+解码入口（现 `_decode_leaf_cells` 为 private）；NULL 行重放已验证逐字节等价
+（`add_nulls(1)` ≡ `_append_cell(0)`，sign-flip 双射对 0 自反）。
+
+**Post-merge 校验与回退**（三层，防御纵深）：
+1. 行数守恒：`_stats.merged_rows==0 && filtered_rows==0` 且 Σ输出段行 == Σ输入行；
+2. 段切分对齐：每个输入段完整落入单一输出段（用实际输出段行数核对累计和）；
+3. 回退语义：
+   - 切分横跨（层 2 失败）→ **stream-rebuild**：按拼接序逐输入解码 cell 流重喂 builder，
+     按实际输出段边界重切叶（v1 输出，sketch 丢弃 + WARN + 计数器）——纯索引侧，无数据列回读；
+   - 行数守恒破坏（层 1 失败，先验 gate 下理论不可达）→ 本轮 compaction 报错 +
+     输入 rowset 内存 skip 标记（镜像倒排 `set_skip_index_compaction`，下轮内联重建）；
+   - 未武装 → 现状内联全量重建（基线，不变）。
+
+**价值定位**（rev4.1 按评审实测修正）：vs `handle_ordered_data_compaction` 硬链接路径——
+ordered 路径要求 rowset **版本序**上 key 有序（tidy）；SPLICE 允许"版本序 ≠ cell 序"。
+但评审用仓库 S2 库实测证伪了"东城一批、西城一批"的直觉：**经纬度矩形瓦片的叶级
+cell 凸包普遍互相重叠**（北京 8 相邻经度条带 13/28 对重叠、含全部相邻对；一个条带跨
+Hilbert 象限边界即吞掉后续多个条带区间）。诚实的触发面 =
+**按 S2 cell 对齐的分片导入**（各批数据落在互不为祖先的不同 S2 cell 内，构造性 0 重叠）、
+远距分城导入（数据相关、不保证）、以及按 __s2 分位数切分的回灌/重排管道；
+相邻行政区瓦片导入通常**不会**武装（武装 gate 即正确性兜底）。另一硬边界：默认
+`vertical_compaction_max_segment_size=1GiB` 下，快路径只对 **Σ输入压缩数据 ≲0.9GiB**
+的 compaction 生效（即小中型不相交导入的 cumulative 场景），大体量 full compaction
+不武装（基准须显式调大该 mInt64 或按此缩规模）。重叠交错输入走基线内联重建
+（实测其耗时占比，诚实报告）。
+
+**可观测性**：DorisMetrics 新计数器 `geo_index_compaction_rollup_total` /
+`geo_index_compaction_rollup_fallback_total` / `geo_index_compaction_build_ns_total`
+（内联+splice 路径均累计，仅 compaction 写型），回归经 `Suite.get_be_metric` 读增量断言；
+另 LOG(INFO) 两条（start/succeed，镜像倒排）+ DBUG_EXECUTE_IF 强制回退注入点。
+
+### 12.3 对拍与门禁口径
+
+- UT（`hasi_tree_test.cpp` 或新 `geo_rollup_test.cpp`）：splice 为纯函数
+  （输入 blob 数组 + 输出段行数 → 输出 blob 数组），**双 oracle 口径**（评审修正：
+  fold/aggregate 输出叶边界敏感，不能直接 splice-vs-rebuild 逐项比）：
+  ① **字节恒等 oracle**——仅当各输入行数均为 leaf_rows 整倍数（此时 splice 目录 ==
+  重建目录），全 blob 逐字节比对；② **通用尾叶 oracle**——search 命中/margin 集合
+  逐位相等（叶边界不变量已核）、kNN 按最终选中集比（复用 check_knn 端到端算法）、
+  fold/aggregate **端到端**比（折叠 measure + 边界行暴力 == 全行暴力；整数值 double
+  保逐位）、sketch 按 splice 树**自身**叶边界对原始数据聚合断言。测试矩阵必须含
+  非整倍数尾叶输入（现实常态）。拒绝用例：区间重叠、边界 cell 相等、双 NULL 输入、
+  全 NULL 段、空段、measure 名单不一致/**同名异序**、v1/v2 混合、非首 key 列几何表、
+  切分横跨→stream-rebuild 等价性、全 NULL 哨兵叶。
+- 回归（新 `geo_index_compaction.groovy`，`disable_auto_compaction=true` + 建议
+  nonConcurrent）：不相交（**按 S2 cell 对齐构造**）分块导入→触发断言用**双向
+  debug-point 因果证明**（enable 注入点使 rollup 内报错→触发 compaction 断言失败
+  =证明武装进入；disable 重触发→成功+查询电池对拍）——全局 metric 增量只做
+  `delta >= 期望` 辅助断言且经 show tablets 解析该 tablet 所在 BE；前后查询电池
+  on/off 对拍 + assertFolded 保 sketch；重叠导入/删除谓词/开关关→不武装且结果正确；
+  MOW 表→不武装。
+- 基准（数据配方按评审修正）：分块导入必须 **S2-cell 对齐**（各批在不同 level-k
+  cell 内取点，导入前 `SELECT min/max(st_s2_cellid(...))` 断言互不相交）且每批
+  单段或验证 NONOVERLAPPING（多 memtable 导入默认 OVERLAPPING 标记，
+  `rowset_builder.cpp:220`）；armed 场景规模适配单输出段预算（默认配置 8×3M=24M 行，
+  或运行时调大 `vertical_compaction_max_segment_size` 并记录）；另跑 1e8 全域重叠
+  full compaction 作为**不武装基线**诚实记录。门禁① armed 场景
+  `geo_index_compaction_build_ns_total` 增量比 ≤50%（splice 预期 ~O(叶)，远超达标）；
+  门禁② compaction 总耗时不劣化；门禁③ 压后查询电池（range/fold/kNN）±5% 内
+  （splice 叶数 ≈ Σ输入叶，12.5M/批形态下与重建叶数几乎相同；碎片化棘轮场景
+  由 α=4 武装门兜底，另测一组小导入连锁拼接的查询延迟如实记录）。
+- FP 边界（诚实记录）：拼接保留的 sketch sum 与重建 sum 在非整数值下可差 ULP
+  （加法结合序不同）；对拍口径用整数值测数据，文档标注。
+
+### 12.4 同批评估但推迟的 v3 条目（理由）
+
+- **学习导航层**：扁平目录的导航已是 O(叶) 线性扫 + 小常数，无金字塔前无收益空间；
+- **多 measure/多分辨率配置**：依赖重 sketch（HLL/t-digest）落地才有配置维度；
+- **跨段共享 kNN 阈值**：查询侧独立工程（需自建跨段界机制，v4 §11.5 已记）；
+- **分桶裁剪方案 A**：可选项，POC 推荐 B 已生效。
+
+### 12.5 设计评审记录（rev4→rev4.1，对抗式 workflow，3 视角均 needs-changes）
+
+实现前评审抓到并已回写修正的缺陷（全部源码/实验级证据）：
+- **阻塞 ×2**：武装缺"geo 列 = 首 key 列"（堆归并按全 key 元组交错→拼接静默错乱）；
+  行数界公式引用带 `min(…,N+1)` 钳制的 `get_avg_segment_rows()`（0.9 界永假→永不武装）。
+- **实测证伪 ×1**：经纬度瓦片 ≠ cell 区间不相交（S2 库编译实验：北京 8 相邻条带
+  13/28 对凸包重叠）→ 数据配方与适用面全部改按 S2 cell 对齐口径。
+- **major ×4**：1e8 基准在默认段限下不可武装（改 armed 24M + 未武装 1e8 双场景）；
+  fold/aggregate 对拍叶边界敏感（改双 oracle）；全局 metric 断言并发 flake
+  （改 debug-point 因果证明为主）；多段导入 rowset 可保持 OVERLAPPING（基准加验证步）。
+- **minor ×6**：云路径达调用点须 armed 守门（ctx 拷贝时机）、全 NULL/空段元数据推导、
+  measure 名单有序相等且以 blob 为准、碎片化棘轮 α 门、dir-only 武装解析、
+  公开解码 API + kGeoKnnMaxLeaves 提升共享头。
+评审同时独立确认：拼接字节格式自包含性、rid/cells_offset 重定位不变量、NULL 全局
+居首链路、等 cell tie-break 分析、ctx 生命周期、挂载窗口（footer 已写/IndexFileWriter
+仍开）、与其它索引零耦合、metric 注册链路——均可按图施工。
+
+### 12.6 v3 落地记录（rev4.2 实测）
+
+**交付内容**（BE-only，无 FE/thrift 改动）：
+- `hasi_format.h`（新）：格式常量 + varint/zigzag 编解码提取共享（hasi_tree.cpp 改为引用，逻辑零改动）；
+- `hasi_splice.{h,cpp}`（新）：dir-only 解析（武装期不读 cell 流）、纯元数据资格判定
+  `hasi_plan_splice`（§12.2 全部拒绝条件）、字节级拼接 `hasi_splice`（分块流拷，不解码）、
+  回退 `hasi_stream_rebuild`（按拼接序解码重喂，v1 输出）；
+- compaction 集成：`construct_geo_index_rollup` 武装（`construct_output_rowset_writer` 内、
+  `create_rowset_writer` 前设 ctx flag）+ `do_geo_index_rollup` 执行（`merge_input_rowsets`
+  内 inverted compaction 后、`build()` 前，经 `index_file_writers()` 写输出）；两个 segment
+  writer 按 ctx flag 跳过内联 geo 构建；`enable_geo_index_incremental_compaction`（mBool 默认
+  true）；ordered-data 硬链接路径不武装；失败语义 = 本轮报错 + 内存 skip 标记（注入点例外，
+  不留标记以支撑回归因果证明）；
+- 观测：DorisMetrics `geo_index_build_ns_total`（所有写路径的内联构建耗时，含 compaction 基线）、
+  `geo_index_compaction_rollup_total/_fallback_total/_ns_total`；armed/succeed/fallback 日志；
+  `DBUG_EXECUTE_IF("Compaction::do_geo_index_rollup_force_error")` 注入点；
+- 测试：`hasi_splice_test.cpp` 10 件（双 oracle：整倍数字节恒等 + 通用尾叶查询对拍；拒绝矩阵
+  9 类；stream-rebuild 与内联构建逐字节等价；哨兵叶；**非恒等 plan.order 执行级对拍**；
+  **空输入×NULL 输入哨兵碰撞回归**）；`geo_index_compaction.groovy`（双向 debug-point 因果证明 +
+  fold 值断言 + 重叠/删除谓词/开关关三反例）；`run_compaction_bench.py`（三门禁自动判定）。
+
+**自检环（用户要求"自我检查"）三层全部咬到真问题**：
+1. 设计评审（3 视角，44 万 token）：2 阻塞（首 key 列缺条件→静默错排；行界公式带 min(N+1)
+   钳制永假）+ S2 实验证伪经纬度瓦片假设 + 4 major + 6 minor，全部回写 §12.2/12.3（§12.5）；
+2. 代码评审（4 finder + 每发现 2 怀疑者投票，36 agent 249 万 token）：7 确认 / 9 证伪。
+   已修复：空输入使 null_bearing 哨兵（candidates.size()）与真实下标碰撞→绕过 NULL 排序门
+   （改 inputs.size() + 回归测试）；多 geo 索引表 blanket skip 丢第二索引（武装加单索引计数门）；
+   CLuceneError 下 IndexOutput 泄漏（catch 内清理）；ordered 路径白武装（_in_ordered_data_compaction
+   门）；两测试盲区补齐（非恒等 plan.order 执行级、groovy fold 值 oracle）；
+3. 回归假绿事件：首轮 geo_index_compaction "Success" 实为**框架汇总缺陷**——套件在
+   enableDebugPointForAllBEs 处抛异常（BE 未开 enable_debug_points）仍进 Success 列表且 runner
+   exit 0。教训固化：回归结论只认全量日志的 `Test N suites, failed M` 行 + ERROR 行；
+   BE conf 重置陷阱清单新增 enable_debug_points。
+
+**验证矩阵（最终二进制）**：BE gtest 73→75/75（7 geo 套件，535ms，llvm22 ASAN workaround）；
+回归 geo_index_p0 7/7 failed 0（两轮），BE 日志实证完整因果链：注入点下 armed→compaction 失败；
+解除→`succeed to do geo index rollup (splice) inputs=3 rows=2700 leaves=45 measures=1`；
+重叠表/删除谓词表/开关关均"not armed"且结果正确；fold 值断言 + GeoAggFoldedLeaves>0
+证 sketch 无损过拼接。
+
+**基准（8 分城瓦片 × 3M 行 = 24M，单段导入，full compaction，runs=40 交替计时）**：
+- 门禁① 索引耗时：splice **10.7ms** vs 内联重建 **232.3ms**（另两轮 247/254/258ms 同量级），
+  **ratio 0.044-0.046 ≪ 0.5 PASS**（O(行)→O(叶+字节拷)）；
+- 门禁② compaction 总墙钟：4.0s vs 4.0-5.0s，**不劣化 PASS**；
+- 门禁③ 压后查询电池（circle 聚合 + kNN×3 城，结果全部位相等）：**几何均值 1.000 PASS**；
+  单查询中位数散布 0.899-1.069——knn_0 连续偏慢经 profile 计数器排查为**非结构性**
+  （GeoKnnLeavesScanned 21 vs 20、RowsScored 1.251M vs 1.311M、SearchCosts 18.99 vs 20.15ms，
+  splice 侧反而更优；两物理 tablet 的磁盘/缓存局部性噪音），判据固化为几何均值并注释于脚本。
+  整数毫秒 FE time 字段 + 非交替测量会制造 ±17% 伪回退，脚本已改客户端亚毫秒交替计时。
+
+**已知边界（v3 口径，诚实记录）**：触发面 = S2-cell 对齐/经核验不相交的分片导入（经纬度相邻
+瓦片凸包普遍重叠，不武装）；默认段限下 Σ输入压缩数据 ≲0.9GiB（大体量 full compaction 走基线，
+其索引构建实测 ~232-258ms/24M 行，占 compaction 墙钟 ~5%）；MOW/AGG/cluster key/无 key/
+非首 key 几何列/多 geo 索引/删除谓词/重叠段均不武装；碎片化 α=4 门强制周期性重建合并；
+切分横跨回退产物为 v1（sketch 丢弃，计数器可见）；行数守恒破坏（先验门下不可达）= 本轮失败 +
+skip 标记。
+
 ## 附：关键源码锚点速查（rev2 全部经源码核对）
 | 用途 | 位置 |
 |---|---|

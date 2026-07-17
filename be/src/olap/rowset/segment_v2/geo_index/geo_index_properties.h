@@ -38,6 +38,11 @@ inline constexpr const char* kGeoIndexPropLatColumn = "lat_column";
 inline constexpr const char* kGeoIndexPropLeafRows = "leaf_rows";
 inline constexpr const char* kGeoIndexPropMeasures = "measures";
 
+// The kNN pushdown disables itself above this per-segment leaf count (the upfront
+// leaf-ranking pass is O(leaves); segment_iterator's gate). The compaction splice
+// arming check must not produce output segments beyond it (HASI_POC.md §12.2).
+inline constexpr uint32_t kGeoKnnMaxLeaves = 65536;
+
 // Comma-separated measure column names from the index properties (v2b).
 inline std::vector<std::string> geo_index_measures(
         const std::map<std::string, std::string>& properties) {

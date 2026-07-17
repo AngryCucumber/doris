@@ -152,6 +152,12 @@ DEFINE_COUNTER_METRIC_PROTOTYPE_5ARG(remote_compaction_write_rows_total, MetricU
                                      compaction_rows_total, Labels({{"type", "write"}}));
 DEFINE_COUNTER_METRIC_PROTOTYPE_5ARG(remote_compaction_write_bytes_total, MetricUnit::BYTES, "",
                                      compaction_bytes_total, Labels({{"type", "write"}}));
+DEFINE_COUNTER_METRIC_PROTOTYPE_2ARG(geo_index_build_ns_total, MetricUnit::NANOSECONDS);
+DEFINE_COUNTER_METRIC_PROTOTYPE_2ARG(geo_index_compaction_rollup_total, MetricUnit::NOUNIT);
+DEFINE_COUNTER_METRIC_PROTOTYPE_2ARG(geo_index_compaction_rollup_fallback_total,
+                                     MetricUnit::NOUNIT);
+DEFINE_COUNTER_METRIC_PROTOTYPE_2ARG(geo_index_compaction_rollup_ns_total,
+                                     MetricUnit::NANOSECONDS);
 
 DEFINE_COUNTER_METRIC_PROTOTYPE_2ARG(load_rows, MetricUnit::ROWS);
 DEFINE_COUNTER_METRIC_PROTOTYPE_2ARG(load_bytes, MetricUnit::BYTES);
@@ -312,6 +318,11 @@ DorisMetrics::DorisMetrics() : _metric_registry(_s_registry_name) {
     INT_COUNTER_METRIC_REGISTER(_server_metric_entity, remote_compaction_read_bytes_total);
     INT_COUNTER_METRIC_REGISTER(_server_metric_entity, remote_compaction_write_rows_total);
     INT_COUNTER_METRIC_REGISTER(_server_metric_entity, remote_compaction_write_bytes_total);
+
+    INT_COUNTER_METRIC_REGISTER(_server_metric_entity, geo_index_build_ns_total);
+    INT_COUNTER_METRIC_REGISTER(_server_metric_entity, geo_index_compaction_rollup_total);
+    INT_COUNTER_METRIC_REGISTER(_server_metric_entity, geo_index_compaction_rollup_fallback_total);
+    INT_COUNTER_METRIC_REGISTER(_server_metric_entity, geo_index_compaction_rollup_ns_total);
 
     INT_COUNTER_METRIC_REGISTER(_server_metric_entity, base_compaction_deltas_total);
     INT_COUNTER_METRIC_REGISTER(_server_metric_entity, base_compaction_bytes_total);

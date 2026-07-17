@@ -929,7 +929,7 @@ Status SegmentIterator::_apply_geo_topn_predicate() {
     const auto k = static_cast<uint32_t>(k64);
     // Flat leaf directory: the upfront ranking pass is O(num_leaves); tiny-leaf
     // configurations make it dominate, so leave those to the fallback path.
-    constexpr uint32_t kGeoKnnMaxLeaves = 65536;
+    // (kGeoKnnMaxLeaves is shared with the compaction splice arming check.)
     if (reader->num_leaves() > kGeoKnnMaxLeaves) {
         return Status::OK();
     }

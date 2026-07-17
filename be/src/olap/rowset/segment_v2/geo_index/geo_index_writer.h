@@ -85,6 +85,11 @@ public:
                _builder->measure_rows_fed() != _builder->num_rows();
     }
 
+    // Build-time accounting (v3 gate baseline): cell feed + measure feed +
+    // serialize/write, flushed into DorisMetrics::geo_index_build_ns_total at
+    // finish(). feed_block_measures adds its per-block loop through this.
+    void add_build_ns(int64_t ns) { _build_ns += ns; }
+
     // Block-level feeder used by both segment writers: resolves the geo writer
     // (from the current writer set or `retained_geo_writer`, the deferred writer a
     // previous column group released) and the FLOAT/DOUBLE measure columns lazily,
@@ -114,6 +119,7 @@ private:
     std::unique_ptr<HasiTreeBuilder> _builder;
     std::vector<std::string> _measure_names;
     int64_t _written_bytes = 0;
+    int64_t _build_ns = 0;
 };
 
 } // namespace doris::segment_v2

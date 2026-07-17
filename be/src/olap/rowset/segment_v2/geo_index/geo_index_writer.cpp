@@ -23,6 +23,8 @@
 #include "common/cast_set.h"
 #include "olap/rowset/segment_v2/column_writer.h"
 #include "olap/rowset/segment_v2/geo_index/geo_index_properties.h"
+#include "util/doris_metrics.h"
+#include "util/time.h"
 #include "vec/columns/column_nullable.h"
 #include "vec/columns/column_vector.h"
 #include "vec/core/block.h"
@@ -56,19 +58,24 @@ Status GeoIndexColumnWriter::init() {
 
 Status GeoIndexColumnWriter::add_values(const std::string name, const void* values,
                                         size_t count) {
+    const int64_t start_ns = MonotonicNanos();
     const auto* keys = reinterpret_cast<const int64_t*>(values);
     for (size_t i = 0; i < count; ++i) {
         _builder->add_value(keys[i]);
     }
+    _build_ns += MonotonicNanos() - start_ns;
     return Status::OK();
 }
 
 Status GeoIndexColumnWriter::add_nulls(uint32_t count) {
+    const int64_t start_ns = MonotonicNanos();
     _builder->add_nulls(count);
+    _build_ns += MonotonicNanos() - start_ns;
     return Status::OK();
 }
 
 Status GeoIndexColumnWriter::finish() {
+    const int64_t start_ns = MonotonicNanos();
     if (_builder->has_measures_attached() &&
         _builder->measure_rows_fed() != _builder->num_rows()) {
         // e.g. a write path without the block-level feeder (partial update) or a
@@ -96,6 +103,9 @@ Status GeoIndexColumnWriter::finish() {
     } catch (const std::exception& e) {
         return Status::IOError("Failed to write geo index: {}", e.what());
     }
+    _build_ns += MonotonicNanos() - start_ns;
+    DorisMetrics::instance()->geo_index_build_ns_total->increment(_build_ns);
+    _build_ns = 0;
     return Status::OK();
 }
 
@@ -190,6 +200,7 @@ Status GeoIndexColumnWriter::feed_block_measures(
             return Status::OK();
         }
     }
+    const int64_t start_ns = MonotonicNanos();
     const size_t m = state->block_cols.size();
     std::vector<const double*> f64(m, nullptr);
     std::vector<const float*> f32(m, nullptr);
@@ -221,6 +232,7 @@ Status GeoIndexColumnWriter::feed_block_measures(
         RETURN_IF_ERROR(state->writer->add_measure_row(rid_base + static_cast<uint32_t>(r),
                                                        values.data(), nulls.data()));
     }
+    state->writer->add_build_ns(MonotonicNanos() - start_ns);
     return Status::OK();
 }
 

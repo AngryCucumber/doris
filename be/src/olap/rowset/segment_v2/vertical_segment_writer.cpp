@@ -242,7 +242,10 @@ Status VerticalSegmentWriter::_create_column_writer(uint32_t cid, const TabletCo
         opts.index_file_writer = _index_file_writer;
     }
 
-    if (const auto& index = tablet_schema->geo_index(column); index != nullptr) {
+    // Armed geo rollup (HASI_POC.md §12): the compaction splices the input
+    // segments' geo index files post-merge instead of the inline build.
+    const bool skip_geo_index = _opts.rowset_ctx != nullptr && _opts.rowset_ctx->geo_index_rollup;
+    if (const auto& index = tablet_schema->geo_index(column); index != nullptr && !skip_geo_index) {
         opts.geo_index = index;
         opts.need_geo_index = true;
         DCHECK(_index_file_writer != nullptr);
