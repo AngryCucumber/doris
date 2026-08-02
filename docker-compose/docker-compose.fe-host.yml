@@ -1,0 +1,19 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements. The ASF licenses this file to You
+# under the Apache License, Version 2.0.
+
+services:
+  massdb-fe:
+    image: ${MASSDB_IMAGE:-massdb-sql:2.0.5}
+    platform: linux/arm64
+    container_name: massdb-fe
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      SERVICE_ROLE: fe
+      FE_IP: ${FE_IP:?Set FE_IP to the FE server address}
+      PRIORITY_NETWORKS: ${PRIORITY_NETWORKS:-}
+    volumes:
+      - ./conf/fe:/opt/massdb-config/fe:ro
+      - ${DATA_ROOT:-./data}/fe/meta:/opt/apache-doris/fe/doris-meta
+      - ${DATA_ROOT:-./data}/fe/log:/opt/apache-doris/fe/log
