@@ -1,0 +1,67 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements. The ASF licenses this file to You
+# under the Apache License, Version 2.0.
+
+services:
+  massdb-fe:
+    profiles: ["fe", "all"]
+    image: ${MASSDB_IMAGE:-massdb-sql:2.0.5}
+    platform: linux/arm64
+    container_name: massdb-fe
+    hostname: massdb-fe
+    restart: unless-stopped
+    environment:
+      SERVICE_ROLE: fe
+      FE_IP: 172.28.0.2
+      PRIORITY_NETWORKS: 172.28.0.0/24
+    ports:
+      - "8030:8030"
+      - "8070:8070"
+      - "9010:9010"
+      - "9020:9020"
+      - "9030:9030"
+    volumes:
+      - ./conf/fe:/opt/massdb-config/fe:ro
+      - massdb-fe-meta:/opt/apache-doris/fe/doris-meta
+      - massdb-fe-log:/opt/apache-doris/fe/log
+    networks:
+      massdb-net:
+        ipv4_address: 172.28.0.2
+
+  massdb-be:
+    profiles: ["be", "all"]
+    image: ${MASSDB_IMAGE:-massdb-sql:2.0.5}
+    platform: linux/arm64
+    container_name: massdb-be
+    hostname: massdb-be
+    restart: unless-stopped
+    environment:
+      SERVICE_ROLE: be
+      FE_HOST: 172.28.0.2
+      BE_IP: 172.28.0.3
+      PRIORITY_NETWORKS: 172.28.0.0/24
+    ports:
+      - "8040:8040"
+      - "8050:8050"
+      - "8060:8060"
+      - "9050:9050"
+      - "9060:9060"
+    volumes:
+      - ./conf/be:/opt/massdb-config/be:ro
+      - massdb-be-storage:/opt/apache-doris/be/storage
+      - massdb-be-log:/opt/apache-doris/be/log
+    networks:
+      massdb-net:
+        ipv4_address: 172.28.0.3
+
+networks:
+  massdb-net:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+volumes:
+  massdb-fe-meta:
+  massdb-fe-log:
+  massdb-be-storage:
+  massdb-be-log:
