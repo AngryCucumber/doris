@@ -72,9 +72,11 @@ public:
 
     // v4 kNN candidate collection (loads the index on first use).
     Status knn_candidates(double lng0, double lat0, uint32_t k, const roaring::Roaring* present,
-                          double slack_m, std::vector<std::pair<uint32_t, uint64_t>>* out,
-                          HasiKnnStats* stats) {
-        return _geo_reader->knn_candidates(lng0, lat0, k, present, slack_m, out, stats,
+                          double slack_m, double initial_bound_l2,
+                          std::vector<std::pair<uint32_t, uint64_t>>* out, HasiKnnStats* stats,
+                          double* local_kth_l2, bool* bound_pruned) {
+        return _geo_reader->knn_candidates(lng0, lat0, k, present, slack_m, initial_bound_l2,
+                                           out, stats, local_kth_l2, bound_pruned,
                                            _context ? _context->io_ctx : nullptr);
     }
 

@@ -1272,6 +1272,10 @@ DECLARE_mBool(inverted_index_compaction_enable);
 // segments' geo index files byte-wise when the arming conditions hold; false
 // falls back to the inline full rebuild unconditionally.
 DECLARE_mBool(enable_geo_index_incremental_compaction);
+// HASI v4.5 cross-segment shared kNN bound (HASI_POC.md §13.2): segments of one
+// scan share the k-th center-chord bound to prune each other's best-first walks.
+// Results are bit-identical either way; false is the attribution/rollback switch.
+DECLARE_mBool(enable_geo_knn_shared_bound);
 // Only for debug, do not use in production
 DECLARE_mBool(debug_inverted_index_compaction);
 // index by RAM directory

@@ -208,9 +208,12 @@ public class CheckCast implements ExpressionPatternRuleFactory {
         allowedTypes.add(VariantType.class);
         strictCastWhiteList.put(IPv6Type.class, allowedTypes);
 
-        // GEO_POINT: text form only ("[lon, lat]")
+        // GEO_POINT: text form ("[lon, lat]"), plus BIGINT -- the inverse of the
+        // BIGINT->GEO_POINT ingest direction: an identity passthrough of the stored
+        // flipped S2 cell key (st_s2_cellid domain), HASI_POC.md §13.3 F3a
         allowedTypes = Sets.newHashSet();
         allowedTypes.add(GeoPointType.class);
+        allowedTypes.add(BigIntType.class);
         allowToStringLikeType(allowedTypes);
         strictCastWhiteList.put(GeoPointType.class, allowedTypes);
 

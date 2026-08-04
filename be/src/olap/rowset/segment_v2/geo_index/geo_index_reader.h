@@ -68,10 +68,13 @@ public:
     // v4 kNN: candidate collection (see HasiTree::knn_candidates). num_rows/
     // num_leaves/num_nulls expose the loaded tree's gating facts to the caller.
     Status knn_candidates(double lng0, double lat0, uint32_t k, const roaring::Roaring* present,
-                          double slack_m, std::vector<std::pair<uint32_t, uint64_t>>* out,
-                          HasiKnnStats* stats, io::IOContext* io_ctx = nullptr) {
+                          double slack_m, double initial_bound_l2,
+                          std::vector<std::pair<uint32_t, uint64_t>>* out, HasiKnnStats* stats,
+                          double* local_kth_l2, bool* bound_pruned,
+                          io::IOContext* io_ctx = nullptr) {
         RETURN_IF_ERROR(load_index(io_ctx));
-        return _tree.knn_candidates(lng0, lat0, k, present, slack_m, out, stats);
+        return _tree.knn_candidates(lng0, lat0, k, present, slack_m, initial_bound_l2, out,
+                                    stats, local_kth_l2, bound_pruned);
     }
     uint32_t num_rows() const { return _tree.num_rows(); }
     uint32_t num_leaves() const { return _tree.num_leaves(); }

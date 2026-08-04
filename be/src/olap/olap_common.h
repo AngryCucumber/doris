@@ -417,6 +417,9 @@ struct OlapReaderStatistics {
     int64_t geo_knn_leaves_scanned = 0;
     int64_t geo_knn_rows_scored = 0;
     int64_t geo_knn_search_ns = 0;
+    // v4.5 F1: ranked leaves never scanned because the scan-shared bound closed
+    // the walk (the causal proof of cross-segment pruning).
+    int64_t geo_knn_bound_skipped_leaves = 0;
 
     int64_t output_index_result_column_timer = 0;
     // number of segment filtered by column stat when creating seg iterator

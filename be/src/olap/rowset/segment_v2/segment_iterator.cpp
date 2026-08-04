@@ -850,16 +850,24 @@ Status SegmentIterator::_apply_geo_topn_predicate() {
         !_opts.runtime_state->query_options().enable_geo_knn_pushdown) {
         return Status::OK();
     }
-    // POC scope: unfiltered kNN only. _remaining_conjunct_roots also covers the
-    // conjuncts a scanner keeps for POST-scan evaluation (enable_common_expr_pushdown
-    // off, or non-slot-acting exprs) -- they flow down as remaining roots even when
+    // _remaining_conjunct_roots also covers the conjuncts a scanner keeps for
+    // POST-scan evaluation (enable_common_expr_pushdown off, or non-slot-acting
+    // exprs) -- they flow down as remaining roots even when
     // _common_expr_ctxs_push_down is empty, and committing to a top-k before they
-    // filter would drop qualifying rows.
+    // filter would drop qualifying rows. A fully-consumed circle fence (v1.5) is
+    // ERASED from both lists, so fence+kNN passes here (v4.5 F2, §13.1); column
+    // predicates are handled below once the index identity is known.
     const bool has_common_expr_push_down =
             !_common_expr_ctxs_push_down.empty() || !_remaining_conjunct_roots.empty();
-    const bool has_column_predicate = std::any_of(_is_pred_column.begin(), _is_pred_column.end(),
-                                                  [](bool is_pred) { return is_pred; });
-    if (has_common_expr_push_down || has_column_predicate || !_geo_topn_runtime->is_asc()) {
+    if (has_common_expr_push_down || !_geo_topn_runtime->is_asc()) {
+        return Status::OK();
+    }
+    // v4.5 F2 (§13.1): version DELETE predicates live outside _col_predicates
+    // (invisible to the implication walk below) yet evaluate per batch only AFTER
+    // a committed top-k -- and a deleted near neighbor would poison the F1 shared
+    // bound for other segments. Always bail (fail-closed; mirrors the v2b fold gate).
+    if (_opts.delete_condition_predicates != nullptr &&
+        _opts.delete_condition_predicates->num_of_column_predicate() > 0) {
         return Status::OK();
     }
     auto iequals = [](const std::string& a, const std::string& b) {
@@ -870,6 +878,7 @@ Status SegmentIterator::_apply_geo_topn_predicate() {
     };
 
     GeoIndexIterator* geo_iterator = nullptr;
+    ColumnId knn_index_cid = 0; // the indexed column the kNN runs on (identity check)
     ColumnId geo_point_cid = 0;
     ColumnId lng_cid = 0;
     ColumnId lat_cid = 0;
@@ -878,6 +887,7 @@ Status SegmentIterator::_apply_geo_topn_predicate() {
             return Status::OK();
         }
         geo_point_cid = idx_to_cid[dist.geo_idx_in_block];
+        knn_index_cid = geo_point_cid;
         geo_iterator = dynamic_cast<GeoIndexIterator*>(_index_iterators[geo_point_cid].get());
     } else {
         if (dist.lng_idx_in_block < 0 || dist.lat_idx_in_block < 0 ||
@@ -913,10 +923,47 @@ Status SegmentIterator::_apply_geo_topn_predicate() {
                 }
             }
             geo_iterator = dynamic_cast<GeoIndexIterator*>(_index_iterators[cid].get());
+            knn_index_cid = cid;
         }
     }
     if (geo_iterator == nullptr) {
         return Status::OK();
+    }
+
+    // v4.5 F2 (§13.1): column predicates normally veto the pushdown -- they filter
+    // per batch AFTER a committed top-k, so any non-tautological predicate would
+    // drop qualifying rows. They are ignorable only when a single circle fence on
+    // THIS index was fully consumed (bitmap already fence-exact, every surviving
+    // key inside the covering hull) and evaluate_del over the hull proves the
+    // predicate holds on the whole interval -- the base-class default (false)
+    // keeps unknown predicate types fail-closed. Runtime filters always bail.
+    const bool fence_on_this_index = _consumed_geo_fence.has_value() &&
+                                     !_consumed_geo_fence_ambiguous &&
+                                     _consumed_geo_fence->index_cid == knn_index_cid;
+    const bool has_column_predicate = std::any_of(_is_pred_column.begin(), _is_pred_column.end(),
+                                                  [](bool is_pred) { return is_pred; });
+    if (has_column_predicate) {
+        if (!fence_on_this_index) {
+            return Status::OK();
+        }
+        ZoneMapInfo fence_hull;
+        fence_hull.has_null = false;
+        const int64_t key_lo = s2_key_from_cell(_consumed_geo_fence->covering_min_lo);
+        const int64_t key_hi = s2_key_from_cell(_consumed_geo_fence->covering_max_hi);
+        if (_opts.tablet_schema->column(knn_index_cid).type() ==
+            FieldType::OLAP_FIELD_TYPE_GEO_POINT) {
+            fence_hull.min_value = vectorized::Field::create_field<TYPE_GEO_POINT>(key_lo);
+            fence_hull.max_value = vectorized::Field::create_field<TYPE_GEO_POINT>(key_hi);
+        } else {
+            fence_hull.min_value = vectorized::Field::create_field<TYPE_BIGINT>(key_lo);
+            fence_hull.max_value = vectorized::Field::create_field<TYPE_BIGINT>(key_hi);
+        }
+        for (const auto& pred : _col_predicates) {
+            if (pred->is_runtime_filter() || pred->column_id() != knn_index_cid ||
+                !pred->evaluate_del(fence_hull)) {
+                return Status::OK();
+            }
+        }
     }
 
     SCOPED_RAW_TIMER(&_opts.stats->geo_knn_search_ns);
@@ -937,9 +984,14 @@ Status SegmentIterator::_apply_geo_topn_predicate() {
     // NULL rows: bail whenever a NULL row could belong to the output prefix.
     // (`present_card - num_nulls >= k` guarantees at least k non-NULL candidate
     // rows even if every NULL row survived in the bitmap.)
+    // v4.5 F2 (§13.1): a fence consumed on THIS index leaves only non-NULL rows in
+    // the bitmap (exact resolution requires lng/lat non-null; range hits come from
+    // cell>0 streams), so the surviving NULL population is 0 regardless of the
+    // segment-wide count.
     const uint64_t present_card = _row_bitmap.cardinality();
-    if (reader->num_nulls() > 0 &&
-        (_geo_topn_runtime->nulls_first() || present_card < k64 + reader->num_nulls())) {
+    const uint64_t index_nulls = fence_on_this_index ? 0 : reader->num_nulls();
+    if (index_nulls > 0 &&
+        (_geo_topn_runtime->nulls_first() || present_card < k64 + index_nulls)) {
         return Status::OK();
     }
     if (present_card < k64) {
@@ -949,13 +1001,32 @@ Status SegmentIterator::_apply_geo_topn_predicate() {
     // Candidate collection in the cell-center chord metric. The margin covers both
     // the (lon/lat mode) center quantization and the chord-vs-haversine numeric
     // divergence, so candidates are a superset of the exact top-k plus ties.
+    // v4.5 F1 (§13.2): seed the walk with the scan-shared bound and publish this
+    // segment's own k-th back -- pure pruning, the plan's TopN still merges.
+    const bool shared_bound_enabled = config::enable_geo_knn_shared_bound;
+    const double initial_bound_l2 = shared_bound_enabled
+                                            ? _geo_topn_runtime->shared_knn_bound_l2()
+                                            : std::numeric_limits<double>::infinity();
     std::vector<std::pair<uint32_t, uint64_t>> candidates;
     HasiKnnStats knn_stats;
+    double local_kth_l2 = std::numeric_limits<double>::infinity();
+    bool bound_pruned = false;
     RETURN_IF_ERROR(geo_iterator->knn_candidates(dist.lng0, dist.lat0, k, &_row_bitmap,
-                                                 kGeoIndexMarginMeters, &candidates, &knn_stats));
+                                                 kGeoIndexMarginMeters, initial_bound_l2,
+                                                 &candidates, &knn_stats, &local_kth_l2,
+                                                 &bound_pruned));
     _opts.stats->geo_knn_leaves_scanned += static_cast<int64_t>(knn_stats.leaves_scanned);
     _opts.stats->geo_knn_rows_scored += static_cast<int64_t>(knn_stats.rows_scored);
-    if (candidates.size() < k64) {
+    _opts.stats->geo_knn_bound_skipped_leaves +=
+            static_cast<int64_t>(knn_stats.leaves_bound_skipped);
+    if (shared_bound_enabled && std::isfinite(local_kth_l2)) {
+        _geo_topn_runtime->tighten_shared_knn_bound_l2(local_kth_l2);
+    }
+    // Under a valid external bound the candidate set is globally complete even
+    // below k -- but only accept it when nothing was lost to corruption (§13.2
+    // keep-all guard): no invalid-cell skips, and (below) every candidate rescored.
+    const bool accept_under_bound = bound_pruned && knn_stats.invalid_cells_skipped == 0;
+    if (candidates.size() < k64 && !accept_under_bound) {
         return Status::OK(); // defensive (decode anomalies); fallback stays correct
     }
     std::sort(candidates.begin(), candidates.end());
@@ -1005,11 +1076,19 @@ Status SegmentIterator::_apply_geo_topn_predicate() {
             valid_dists.push_back(exact[i]);
         }
     }
-    if (valid_dists.size() < k64) {
+    // v4.5 F1 (§13.2): under a valid external bound, <k survivors are the segment's
+    // COMPLETE global-top-k contribution -- keep them all (kth = +inf, no
+    // nth_element: indexing by k-1 below size() would be UB). The corruption guard
+    // still demands every candidate rescored valid; anything less falls back.
+    if (valid_dists.size() < k64 &&
+        !(accept_under_bound && valid_dists.size() == n_cand)) {
         return Status::OK(); // NULL-decoding rows would reach the output; fall back
     }
-    std::nth_element(valid_dists.begin(), valid_dists.begin() + (k - 1), valid_dists.end());
-    const double kth_dist = valid_dists[k - 1];
+    double kth_dist = std::numeric_limits<double>::infinity();
+    if (valid_dists.size() >= k64) {
+        std::nth_element(valid_dists.begin(), valid_dists.begin() + (k - 1), valid_dists.end());
+        kth_dist = valid_dists[k - 1];
+    }
 
     // Keep every row at or under the k-th distance (ALL ties included) so the
     // SortNode's tie-break key stays bit-exact against the full-sort plan.
@@ -1043,9 +1122,12 @@ Status SegmentIterator::_apply_geo_topn_predicate() {
     _opts.stats->rows_geo_knn_filtered +=
             static_cast<int64_t>(present_card - _row_bitmap.cardinality());
     pushdown_succeeded = true;
-    if (geo_point_mode) {
+    if (geo_point_mode && !_is_pred_column[geo_point_cid]) {
         // The stored value was fully consumed by the index: skip its data pages
-        // (same index-only-scan mechanism as ann topn).
+        // (same index-only-scan mechanism as ann topn). NOT when the column still
+        // carries live predicates (the F2 envelope): their per-batch evaluation
+        // must never run on _prune_column default-filled data (v4.5 §13.1; same
+        // hazard class as the v4 suppression bugs, §11.3).
         _need_read_data_indices[geo_point_cid] = false;
     }
     return Status::OK();
@@ -1283,6 +1365,7 @@ Status SegmentIterator::_apply_geo_predicate() {
         }
         const bool geo_point_mode = runtime.geo_idx_in_block >= 0;
         GeoIndexIterator* geo_iterator = nullptr;
+        ColumnId geo_index_cid = 0; // the indexed column, for the consumed-fence stash
         if (geo_point_mode) {
             if (static_cast<size_t>(runtime.geo_idx_in_block) >= idx_to_cid.size()) {
                 ++it;
@@ -1290,8 +1373,8 @@ Status SegmentIterator::_apply_geo_predicate() {
             }
             // GEO_POINT mode: the index is on the very column the predicate reads,
             // so matching is by column identity -- no recorded properties needed.
-            geo_iterator = dynamic_cast<GeoIndexIterator*>(
-                    _index_iterators[idx_to_cid[runtime.geo_idx_in_block]].get());
+            geo_index_cid = idx_to_cid[runtime.geo_idx_in_block];
+            geo_iterator = dynamic_cast<GeoIndexIterator*>(_index_iterators[geo_index_cid].get());
         } else if (runtime.lng_idx_in_block < 0 || runtime.lat_idx_in_block < 0 ||
                    static_cast<size_t>(runtime.lng_idx_in_block) >= idx_to_cid.size() ||
                    static_cast<size_t>(runtime.lat_idx_in_block) >= idx_to_cid.size()) {
@@ -1313,6 +1396,7 @@ Status SegmentIterator::_apply_geo_predicate() {
                 if (iequals(geo_index_property(props, kGeoIndexPropLngColumn), lng_name) &&
                     iequals(geo_index_property(props, kGeoIndexPropLatColumn), lat_name)) {
                     geo_iterator = candidate;
+                    geo_index_cid = cid;
                     break;
                 }
             }
@@ -1357,6 +1441,18 @@ Status SegmentIterator::_apply_geo_predicate() {
                 }
                 it = _common_expr_ctxs_push_down.erase(it);
                 erased = true;
+                // v4.5 F2 (§13.1): remember this fully-consumed fence for the kNN
+                // gate relaxation. A second consumed circle makes the single-fence
+                // proof ambiguous -- the gate then stays strict.
+                if (!covering.empty()) {
+                    if (_consumed_geo_fence.has_value()) {
+                        _consumed_geo_fence.reset();
+                        _consumed_geo_fence_ambiguous = true;
+                    } else if (!_consumed_geo_fence_ambiguous) {
+                        _consumed_geo_fence = ConsumedGeoFence {
+                                geo_index_cid, covering.front().lo, covering.back().hi};
+                    }
+                }
                 // Mark the expression index-answered for its slots, then let the
                 // standard all-conditions check decide whether those columns can
                 // skip materialization (they still read when another predicate or the

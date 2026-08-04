@@ -22,6 +22,9 @@ import org.apache.doris.nereids.rules.expression.ExpressionPatternRuleFactory;
 import org.apache.doris.nereids.rules.expression.ExpressionRuleType;
 import org.apache.doris.nereids.trees.expressions.Cast;
 import org.apache.doris.nereids.trees.expressions.Expression;
+import org.apache.doris.nereids.trees.expressions.TryCast;
+import org.apache.doris.nereids.trees.expressions.functions.scalar.Array;
+import org.apache.doris.nereids.trees.expressions.functions.scalar.GeoPoint;
 import org.apache.doris.nereids.trees.expressions.literal.BigIntLiteral;
 import org.apache.doris.nereids.trees.expressions.literal.CharLiteral;
 import org.apache.doris.nereids.trees.expressions.literal.DecimalLiteral;
@@ -36,9 +39,11 @@ import org.apache.doris.nereids.trees.expressions.literal.VarcharLiteral;
 import org.apache.doris.nereids.types.DataType;
 import org.apache.doris.nereids.types.DecimalV2Type;
 import org.apache.doris.nereids.types.DecimalV3Type;
+import org.apache.doris.nereids.types.DoubleType;
 import org.apache.doris.nereids.types.StringType;
 import org.apache.doris.nereids.types.VarBinaryType;
 import org.apache.doris.nereids.types.VarcharType;
+import org.apache.doris.nereids.util.TypeCoercionUtils;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.io.BaseEncoding;
@@ -73,6 +78,19 @@ public class SimplifyCastRule implements ExpressionPatternRuleFactory {
         // CAST(value as type), value is type
         if (cast.getDataType().equals(child.getDataType())) {
             return child;
+        }
+
+        // HASI v4.5 F3b (HASI_POC.md §13.3): CAST(array(lon, lat) AS geo_point)
+        // rides the geo_point(lon, lat) scalar -- covers the non-literal
+        // 2-element array-constructor ingest shape (array literals fold on the
+        // FE already; array COLUMNS remain a documented boundary). NOT for
+        // TryCast: the rewrite would replace its null-on-failure contract with
+        // the inner casts' strict-mode errors.
+        if (cast.getDataType().isGeoPointType() && !(cast instanceof TryCast)
+                && child instanceof Array && child.arity() == 2) {
+            return new GeoPoint(
+                    TypeCoercionUtils.castIfNotSameType(child.child(0), DoubleType.INSTANCE),
+                    TypeCoercionUtils.castIfNotSameType(child.child(1), DoubleType.INSTANCE));
         }
 
         if (child instanceof Literal) {

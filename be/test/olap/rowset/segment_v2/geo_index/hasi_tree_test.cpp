@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "geo/geo_types.h"
+#include "olap/comparison_predicate.h"
 #include "olap/rowset/segment_v2/geo_index/geo_range_runtime.h"
 #include "olap/rowset/segment_v2/geo_index/s2_covering.h"
 
@@ -602,9 +603,13 @@ void check_knn(const Dataset& data, uint32_t leaf_rows, const roaring::Roaring* 
 
     std::vector<std::pair<uint32_t, uint64_t>> candidates;
     HasiKnnStats stats;
+    double local_kth_l2 = std::numeric_limits<double>::infinity();
+    bool bound_pruned = false;
     ASSERT_TRUE(tree.knn_candidates(lng0, lat0, k, present, /*slack_m=*/kGeoIndexMarginMeters,
-                                    &candidates, &stats)
+                                    std::numeric_limits<double>::infinity(), &candidates, &stats,
+                                    &local_kth_l2, &bound_pruned)
                         .ok());
+    ASSERT_FALSE(bound_pruned); // no external bound supplied
 
     std::vector<std::pair<double, uint32_t>> oracle = knn_oracle(data, present, lng0, lat0);
     if (oracle.empty() || k == 0) {
@@ -707,13 +712,25 @@ TEST(HasiKnnTest, PresentBitmapAndNulls) {
     // k = 0 and empty-present degenerate cases.
     std::vector<std::pair<uint32_t, uint64_t>> out;
     HasiKnnStats stats;
-    ASSERT_TRUE(tree.knn_candidates(116.4, 39.9, 0, nullptr, 1.0, &out, &stats).ok());
+    const double kInf = std::numeric_limits<double>::infinity();
+    double kth_l2 = kInf;
+    bool pruned = false;
+    ASSERT_TRUE(tree.knn_candidates(116.4, 39.9, 0, nullptr, 1.0, kInf, &out, &stats, &kth_l2,
+                                    &pruned)
+                        .ok());
     ASSERT_TRUE(out.empty());
     roaring::Roaring empty;
-    ASSERT_TRUE(tree.knn_candidates(116.4, 39.9, 5, &empty, 1.0, &out, &stats).ok());
+    ASSERT_TRUE(tree.knn_candidates(116.4, 39.9, 5, &empty, 1.0, kInf, &out, &stats, &kth_l2,
+                                    &pruned)
+                        .ok());
     ASSERT_TRUE(out.empty());
-    // Invalid query rejected.
-    ASSERT_FALSE(tree.knn_candidates(500.0, 0.0, 5, nullptr, 1.0, &out, &stats).ok());
+    // Invalid query rejected; so is a negative/NaN external bound.
+    ASSERT_FALSE(tree.knn_candidates(500.0, 0.0, 5, nullptr, 1.0, kInf, &out, &stats, &kth_l2,
+                                     &pruned)
+                         .ok());
+    ASSERT_FALSE(tree.knn_candidates(116.4, 39.9, 5, nullptr, 1.0, -1.0, &out, &stats, &kth_l2,
+                                     &pruned)
+                         .ok());
 }
 
 TEST(HasiKnnTest, TiedDistances) {
@@ -733,6 +750,218 @@ TEST(HasiKnnTest, TiedDistances) {
     }
     for (uint32_t k : {1u, 2u, 3u, 10u}) {
         check_knn(data, 64, nullptr, 10.0, 20.0, k);
+    }
+}
+
+// v4.5 F1 (HASI_POC.md §13.2): external shared bound -- seeding tree B with a
+// bound derived from tree A must never lose a row of the MERGED top-k+ties,
+// while provably pruning B's walk. The injected bound is A's own full-heap kth,
+// which by construction (A strictly nearer to the query) is <= B's unbounded kth.
+TEST(HasiKnnTest, SharedBoundSeededPruning) {
+    std::mt19937_64 rng(42);
+    const double lng0 = 116.4;
+    const double lat0 = 39.9;
+    // A: tight cluster around the query center; B: far ring (Sydney-ish).
+    auto make_cluster = [&](double clng, double clat, size_t rows) {
+        std::vector<int64_t> keys;
+        std::uniform_real_distribution<double> jitter(-0.02, 0.02);
+        for (size_t i = 0; i < rows; ++i) {
+            keys.push_back(s2_key_from_cell(
+                    S2CellId(S2LatLng::FromDegrees(clat + jitter(rng), clng + jitter(rng))
+                                     .Normalized()
+                                     .ToPoint())
+                            .id()));
+        }
+        std::sort(keys.begin(), keys.end());
+        Dataset data;
+        for (int64_t k : keys) {
+            data.emplace_back(k);
+        }
+        return data;
+    };
+    const Dataset data_a = make_cluster(lng0, lat0, 500);
+    const Dataset data_b = make_cluster(151.1, -33.9, 500);
+    HasiTree tree_a;
+    HasiTree tree_b;
+    ASSERT_TRUE(tree_a.parse(build(data_a, 64)).ok());
+    ASSERT_TRUE(tree_b.parse(build(data_b, 64)).ok());
+
+    const double kInf = std::numeric_limits<double>::infinity();
+    const uint32_t k = 7;
+    auto run = [&](const HasiTree& tree, double bound,
+                   std::vector<std::pair<uint32_t, uint64_t>>* out, HasiKnnStats* stats,
+                   double* kth_l2, bool* pruned) {
+        ASSERT_TRUE(tree.knn_candidates(lng0, lat0, k, nullptr, kGeoIndexMarginMeters, bound, out,
+                                        stats, kth_l2, pruned)
+                            .ok());
+    };
+    std::vector<std::pair<uint32_t, uint64_t>> out_a;
+    HasiKnnStats stats_a;
+    double kth_a = kInf;
+    bool pruned_a = false;
+    run(tree_a, kInf, &out_a, &stats_a, &kth_a, &pruned_a);
+    ASSERT_FALSE(pruned_a);
+    ASSERT_TRUE(std::isfinite(kth_a)); // 500 rows >= k: the heap filled
+
+    std::vector<std::pair<uint32_t, uint64_t>> out_b_unbounded;
+    HasiKnnStats stats_b_unbounded;
+    double kth_b = kInf;
+    bool pruned_b = false;
+    run(tree_b, kInf, &out_b_unbounded, &stats_b_unbounded, &kth_b, &pruned_b);
+    ASSERT_TRUE(std::isfinite(kth_b));
+    ASSERT_LT(kth_a, kth_b); // A is strictly nearer: its kth is a tighter bound
+
+    std::vector<std::pair<uint32_t, uint64_t>> out_b_bounded;
+    HasiKnnStats stats_b_bounded;
+    double kth_b2 = kInf;
+    bool pruned_b2 = false;
+    run(tree_b, kth_a, &out_b_bounded, &stats_b_bounded, &kth_b2, &pruned_b2);
+    ASSERT_TRUE(pruned_b2);
+    // The bound prunes: fewer (or equal) leaves scanned, and here it is so tight
+    // that no B row can beat A's kth -- the walk should collapse early.
+    ASSERT_LE(stats_b_bounded.leaves_scanned, stats_b_unbounded.leaves_scanned);
+    ASSERT_GT(stats_b_bounded.leaves_bound_skipped, 0);
+
+    // Global completeness: merged bounded selections == oracle over A ++ B.
+    Dataset merged = data_a;
+    merged.insert(merged.end(), data_b.begin(), data_b.end());
+    std::vector<std::pair<double, uint32_t>> oracle = knn_oracle(merged, nullptr, lng0, lat0);
+    ASSERT_GE(oracle.size(), k);
+    const double global_kth = oracle[k - 1].first;
+    std::set<uint32_t> expected;
+    for (const auto& [d, rid] : oracle) {
+        if (d <= global_kth) {
+            expected.insert(rid);
+        }
+    }
+    // Rescore the union of candidates exactly (mirrors segment_iterator's C2 path)
+    // and keep rows <= global kth; every expected rid must be present.
+    std::set<uint32_t> got;
+    auto absorb = [&](const std::vector<std::pair<uint32_t, uint64_t>>& cands, uint32_t rid_off) {
+        for (const auto& [rid, cell] : cands) {
+            double lng = 0;
+            double lat = 0;
+            double d = 0;
+            ASSERT_TRUE(GeoPoint::DecodeS2CellKey(s2_key_from_cell(cell), &lng, &lat));
+            ASSERT_TRUE(GeoPoint::ComputeDistance(lng, lat, lng0, lat0, &d));
+            if (d <= global_kth) {
+                got.insert(rid + rid_off);
+            }
+        }
+    };
+    absorb(out_a, 0);
+    absorb(out_b_bounded, static_cast<uint32_t>(data_a.size()));
+    ASSERT_EQ(expected, got);
+}
+
+// Dirty (invalid non-zero) cells must be skipped before the chord heap -- they
+// would otherwise poison a published cross-segment bound. The caller-side guard
+// consumes the counter.
+TEST(HasiKnnTest, InvalidCellsSkippedCounter) {
+    std::mt19937_64 rng(43);
+    Dataset data = make_clustered(rng, 300, 0);
+    // Corrupt two interior rows with ids whose lowest set bit sits at an ODD bit
+    // position -- invalid at every level, yet numerically within +-3 of the valid
+    // neighbor, so they stay strictly inside their leaf (never the hull min/max,
+    // which would trip the leaf-range Corruption check instead of the row skip).
+    auto corrupt = [&](size_t idx) -> uint64_t {
+        const uint64_t cell = s2_cell_from_key(*data[idx]);
+        const uint64_t bad = (cell & ~uint64_t(3)) | 2; // lsb at bit 1: invalid
+        EXPECT_FALSE(S2CellId(bad).is_valid());
+        EXPECT_LT(s2_cell_from_key(*data[idx - 1]), bad);
+        EXPECT_GT(s2_cell_from_key(*data[idx + 1]), bad);
+        data[idx] = s2_key_from_cell(bad);
+        return bad;
+    };
+    const uint64_t bad1 = corrupt(10);
+    const uint64_t bad2 = corrupt(200);
+    HasiTree tree;
+    ASSERT_TRUE(tree.parse(build(data, 64)).ok());
+    std::vector<std::pair<uint32_t, uint64_t>> out;
+    HasiKnnStats stats;
+    const double kInf = std::numeric_limits<double>::infinity();
+    double kth_l2 = kInf;
+    bool pruned = false;
+    // k large enough that the best-first walk scans every leaf.
+    ASSERT_TRUE(tree.knn_candidates(116.4, 39.9, 300, nullptr, kGeoIndexMarginMeters, kInf, &out,
+                                    &stats, &kth_l2, &pruned)
+                        .ok());
+    ASSERT_EQ(2, stats.invalid_cells_skipped);
+    for (const auto& [rid, cell] : out) {
+        ASSERT_NE(bad1, cell);
+        ASSERT_NE(bad2, cell);
+    }
+}
+
+// v4.5 F2 (HASI_POC.md §13.4): the fence implication gate delegates "does this
+// predicate hold on EVERY key in the fence hull [lo, hi]" to
+// ColumnPredicate::evaluate_del over a ZoneMapInfo -- pin its truth table so an
+// upstream semantic drift (all-satisfy -> any-satisfy) cannot silently open the
+// kNN gate on non-implied predicates.
+TEST(GeoFenceImplicationTest, EvaluateDelTruthTable) {
+    const int64_t lo = -100;
+    const int64_t hi = 200;
+    ZoneMapInfo hull;
+    hull.has_null = false;
+    hull.min_value = vectorized::Field::create_field<TYPE_BIGINT>(lo);
+    hull.max_value = vectorized::Field::create_field<TYPE_BIGINT>(hi);
+
+    auto ge = [&](int64_t v) {
+        ComparisonPredicateBase<TYPE_BIGINT, PredicateType::GE> p(
+                0, "__s2", vectorized::Field::create_field<TYPE_BIGINT>(v));
+        return p.evaluate_del(hull);
+    };
+    auto le = [&](int64_t v) {
+        ComparisonPredicateBase<TYPE_BIGINT, PredicateType::LE> p(
+                0, "__s2", vectorized::Field::create_field<TYPE_BIGINT>(v));
+        return p.evaluate_del(hull);
+    };
+    auto eq = [&](int64_t v) {
+        ComparisonPredicateBase<TYPE_BIGINT, PredicateType::EQ> p(
+                0, "__s2", vectorized::Field::create_field<TYPE_BIGINT>(v));
+        return p.evaluate_del(hull);
+    };
+    // GE(v) tautological on [lo, hi] iff v <= lo.
+    ASSERT_TRUE(ge(lo));
+    ASSERT_TRUE(ge(lo - 1));
+    ASSERT_FALSE(ge(lo + 1));
+    ASSERT_FALSE(ge(hi));
+    // LE(v) tautological iff v >= hi.
+    ASSERT_TRUE(le(hi));
+    ASSERT_TRUE(le(hi + 1));
+    ASSERT_FALSE(le(hi - 1));
+    ASSERT_FALSE(le(lo));
+    // EQ collapses only on a degenerate hull.
+    ASSERT_FALSE(eq(lo));
+    {
+        ZoneMapInfo point;
+        point.has_null = false;
+        point.min_value = vectorized::Field::create_field<TYPE_BIGINT>(int64_t(7));
+        point.max_value = vectorized::Field::create_field<TYPE_BIGINT>(int64_t(7));
+        ComparisonPredicateBase<TYPE_BIGINT, PredicateType::EQ> p(
+                0, "__s2", vectorized::Field::create_field<TYPE_BIGINT>(int64_t(7)));
+        ASSERT_TRUE(p.evaluate_del(point));
+    }
+    // A hull carrying NULLs never proves anything (fail-closed).
+    ZoneMapInfo with_null = hull;
+    with_null.has_null = true;
+    {
+        ComparisonPredicateBase<TYPE_BIGINT, PredicateType::GE> p(
+                0, "__s2", vectorized::Field::create_field<TYPE_BIGINT>(lo - 1));
+        ASSERT_FALSE(p.evaluate_del(with_null));
+    }
+    // The geo_point storage type shares the int64 CppType: same table must hold.
+    ZoneMapInfo gp_hull;
+    gp_hull.has_null = false;
+    gp_hull.min_value = vectorized::Field::create_field<TYPE_GEO_POINT>(lo);
+    gp_hull.max_value = vectorized::Field::create_field<TYPE_GEO_POINT>(hi);
+    {
+        ComparisonPredicateBase<TYPE_GEO_POINT, PredicateType::GE> p(
+                0, "loc", vectorized::Field::create_field<TYPE_GEO_POINT>(lo));
+        ASSERT_TRUE(p.evaluate_del(gp_hull));
+        ComparisonPredicateBase<TYPE_GEO_POINT, PredicateType::GE> p2(
+                0, "loc", vectorized::Field::create_field<TYPE_GEO_POINT>(lo + 1));
+        ASSERT_FALSE(p2.evaluate_del(gp_hull));
     }
 }
 

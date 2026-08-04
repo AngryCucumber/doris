@@ -19,7 +19,9 @@ package org.apache.doris.nereids.trees.expressions.literal;
 
 import org.apache.doris.analysis.LiteralExpr;
 import org.apache.doris.nereids.exceptions.AnalysisException;
+import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.expressions.visitor.ExpressionVisitor;
+import org.apache.doris.nereids.types.DataType;
 import org.apache.doris.nereids.types.GeoPointType;
 
 import com.google.common.geometry.S2CellId;
@@ -132,6 +134,18 @@ public class GeoPointLiteral extends Literal implements ComparableLiteral {
     @Override
     public double getDouble() {
         return (double) value.toLong();
+    }
+
+    @Override
+    protected Expression uncheckedCastTo(DataType targetType) throws AnalysisException {
+        if (targetType.isBigIntType()) {
+            // Identity passthrough of the stored flipped S2 cell key (HASI_POC.md
+            // §13.3 F3a) -- the exact inverse of the BIGINT->GEO_POINT ingest cast.
+            // Without this, constant folding would fall back to text parsing of
+            // "[lon, lat]" and throw NumberFormatException instead of folding.
+            return new BigIntLiteral(value.toLong());
+        }
+        return super.uncheckedCastTo(targetType);
     }
 
     @Override

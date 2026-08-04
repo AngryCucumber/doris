@@ -17,6 +17,9 @@
 
 #pragma once
 
+#include <atomic>
+#include <limits>
+
 #include "olap/rowset/segment_v2/geo_index/geo_range_runtime.h"
 #include "runtime/runtime_state.h"
 #include "vec/exprs/vexpr_fwd.h"
@@ -25,10 +28,12 @@ namespace doris::segment_v2 {
 
 // HASI v4: parsed form of the geo kNN pushdown (thrift geo_sort_info/geo_sort_limit,
 // FE rule PushDownGeoTopNIntoOlapScan). Mirrors AnnTopNRuntime's role: one shared
-// instance per scan node, prepared once, consumed read-only by every segment
-// iterator. The actual best-first search + exact rescoring is orchestrated by
-// SegmentIterator::_apply_geo_topn_predicate (it needs column reads for the lon/lat
-// mode's exact distances), not here.
+// instance per scan-node LOCAL STATE (per pipeline task -- a tablet's scan ranges
+// belong to exactly one task, so every segment of a tablet aliases this object),
+// prepared once, consumed read-only by every segment iterator EXCEPT the v4.5
+// shared kNN bound atomic below. The actual best-first search + exact rescoring is
+// orchestrated by SegmentIterator::_apply_geo_topn_predicate (it needs column reads
+// for the lon/lat mode's exact distances), not here.
 class GeoTopNRuntime {
     ENABLE_FACTORY_CREATOR(GeoTopNRuntime);
 
@@ -53,6 +58,20 @@ public:
     const GeoRangeSearchRuntime& distance() const { return _distance; }
     vectorized::VExprContextSPtr order_by_expr_ctx() const { return _order_by_expr_ctx; }
 
+    // v4.5 F1 (HASI_POC.md §13.2): cross-segment shared kNN bound -- the raw k-th
+    // center-chord length2 published by any segment whose k-heap filled. Monotone
+    // CAS-min; every published value is independently a valid global upper bound,
+    // so relaxed ordering suffices. +inf = no bound yet.
+    double shared_knn_bound_l2() const {
+        return _shared_knn_bound_l2.load(std::memory_order_relaxed);
+    }
+    void tighten_shared_knn_bound_l2(double v) {
+        double cur = _shared_knn_bound_l2.load(std::memory_order_relaxed);
+        while (v < cur && !_shared_knn_bound_l2.compare_exchange_weak(
+                                  cur, v, std::memory_order_relaxed)) {
+        }
+    }
+
 private:
     const bool _asc;
     const bool _nulls_first;
@@ -60,6 +79,7 @@ private:
     vectorized::VExprContextSPtr _order_by_expr_ctx;
     size_t _dest_column_idx = size_t(-1);
     GeoRangeSearchRuntime _distance;
+    std::atomic<double> _shared_knn_bound_l2 {std::numeric_limits<double>::infinity()};
 };
 
 } // namespace doris::segment_v2

@@ -80,11 +80,17 @@ struct HasiLeafMeasure {
     }
 };
 
-// Per-query stats of HasiTree::knn_candidates (v4).
+// Per-query stats of HasiTree::knn_candidates (v4; v4.5 F1 additions).
 struct HasiKnnStats {
     uint64_t leaves_ranked = 0;  // leaves whose min chord distance was computed
     uint64_t leaves_scanned = 0; // leaves whose cell streams were decoded and scored
     uint64_t rows_scored = 0;    // rows whose center chord distance was computed
+    // v4.5 F1: ranked leaves never scanned because the EXTERNAL bound (not the
+    // local heap) closed the walk -- the direct causal proof of cross-segment pruning.
+    uint64_t leaves_bound_skipped = 0;
+    // Rows whose stored cell fails S2CellId::is_valid (skipped before scoring;
+    // corruption guard input for the caller's <k acceptance).
+    uint64_t invalid_cells_skipped = 0;
 };
 
 // Result of HasiTree::fold_inside (v2b query-side whole-leaf folding).
@@ -254,9 +260,23 @@ public:
     // >= 2 x (cell quantization + metric divergence) for a sound candidate superset.
     // NULL-cell rows never qualify (their distance is NULL; the caller owns NULL
     // ordering semantics and must bail out when NULLs could reach the top k).
+    //
+    // v4.5 F1 (HASI_POC.md §13.2) cross-segment shared bound:
+    //   initial_bound_l2: an EXTERNAL upper bound on the global k-th center chord
+    //     (S1ChordAngle length2 domain; +inf = none). The effective cutoff becomes
+    //     min(local k-th when the heap is full, external) -- the external value is
+    //     RAW (no slack); slack is added exactly once here, at the same strict->
+    //     comparisons, so boundary ties survive.
+    //   local_kth_l2 (out): this segment's raw k-th center chord length2, set only
+    //     when the heap filled (+inf otherwise). A valid global upper bound by the
+    //     subset argument; the caller may publish it.
+    //   bound_pruned (out): a finite external bound was supplied -- the caller must
+    //     then accept < k candidates instead of falling back (the candidate set is
+    //     still globally complete under a valid bound).
     Status knn_candidates(double lng0, double lat0, uint32_t k, const roaring::Roaring* present,
-                          double slack_m, std::vector<std::pair<uint32_t, uint64_t>>* out,
-                          HasiKnnStats* stats) const;
+                          double slack_m, double initial_bound_l2,
+                          std::vector<std::pair<uint32_t, uint64_t>>* out, HasiKnnStats* stats,
+                          double* local_kth_l2, bool* bound_pruned) const;
 
     // Total NULL-cell rows across all leaves (v4 NULL-ordering bail-out gate).
     uint64_t num_nulls() const { return _num_nulls; }

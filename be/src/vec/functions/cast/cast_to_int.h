@@ -23,6 +23,7 @@
 #include "common/status.h"
 #include "runtime/primitive_type.h"
 #include "vec/data_types/data_type_decimal.h"
+#include "vec/data_types/data_type_geo_point.h"
 #include "vec/data_types/data_type_number.h"
 
 namespace doris::vectorized {
@@ -230,11 +231,63 @@ public:
                                                                  input_rows_count);
     }
 };
+// geo_point -> bigint: identity passthrough of the stored flipped S2 cell key
+// (HASI_POC.md §13.3 F3a) -- the exact inverse of the bigint -> geo_point ingest
+// cast. Infallible: every stored geo_point already holds a valid key, so the
+// result is a plain non-nullable column (matching FE Cast.nullable()).
+template <CastModeType Mode>
+class CastToImpl<Mode, DataTypeGeoPoint, DataTypeInt64> : public CastToBase {
+public:
+    Status execute_impl(FunctionContext* context, Block& block, const ColumnNumbers& arguments,
+                        uint32_t result, size_t input_rows_count,
+                        const NullMap::value_type* null_map = nullptr) const override {
+        const auto* col_from = check_and_get_column<DataTypeGeoPoint::ColumnType>(
+                block.get_by_position(arguments[0]).column.get());
+        if (col_from == nullptr) {
+            return Status::InvalidArgument(
+                    "unexpected column {} for geo_point -> bigint cast",
+                    block.get_by_position(arguments[0]).column->get_name());
+        }
+        const auto& from_data = col_from->get_data();
+        const auto size = col_from->size();
+        auto col_to = DataTypeInt64::ColumnType::create(size);
+        auto& to_data = col_to->get_data();
+        for (size_t i = 0; i < size; ++i) {
+            to_data[i] = from_data[i];
+        }
+        block.get_by_position(result).column = std::move(col_to);
+        return Status::OK();
+    }
+};
+
 namespace CastWrapper {
 
 template <typename ToDataType>
 WrapperType create_int_wrapper(FunctionContext* context, const DataTypePtr& from_type) {
     std::shared_ptr<CastToBase> cast_impl;
+
+    // Narrow (GeoPoint, Int64) pair only (HASI_POC.md §13.3 F3a). Deliberately NOT
+    // via type_allow_cast_to_basic_number -- that would open geo_point ->
+    // float/decimal/date nonsense through the generic templates.
+    if constexpr (std::is_same_v<ToDataType, DataTypeInt64>) {
+        if (from_type->get_primitive_type() == PrimitiveType::TYPE_GEO_POINT) {
+            if (context->enable_strict_mode()) {
+                cast_impl = std::make_shared<
+                        CastToImpl<CastModeType::StrictMode, DataTypeGeoPoint, DataTypeInt64>>();
+            } else {
+                cast_impl = std::make_shared<CastToImpl<CastModeType::NonStrictMode,
+                                                        DataTypeGeoPoint, DataTypeInt64>>();
+            }
+        }
+    }
+    if (cast_impl != nullptr) {
+        return [cast_impl](FunctionContext* ctx, Block& block, const ColumnNumbers& arguments,
+                           uint32_t result, size_t input_rows_count,
+                           const NullMap::value_type* null_map = nullptr) {
+            return cast_impl->execute_impl(ctx, block, arguments, result, input_rows_count,
+                                           null_map);
+        };
+    }
 
     auto make_cast_wrapper = [&](const auto& types) -> bool {
         using Types = std::decay_t<decltype(types)>;

@@ -217,11 +217,14 @@ void check_knn_equal(const HasiTree& a, const HasiTree& b, uint64_t center_cell,
     std::vector<std::pair<uint32_t, uint64_t>> out_a;
     std::vector<std::pair<uint32_t, uint64_t>> out_b;
     HasiKnnStats stats;
-    ASSERT_TRUE(a.knn_candidates(ll.lng().degrees(), ll.lat().degrees(), k, nullptr, 1.0, &out_a,
-                                 &stats)
+    const double kInf = std::numeric_limits<double>::infinity();
+    double kth_l2 = kInf;
+    bool pruned = false;
+    ASSERT_TRUE(a.knn_candidates(ll.lng().degrees(), ll.lat().degrees(), k, nullptr, 1.0, kInf,
+                                 &out_a, &stats, &kth_l2, &pruned)
                         .ok());
-    ASSERT_TRUE(b.knn_candidates(ll.lng().degrees(), ll.lat().degrees(), k, nullptr, 1.0, &out_b,
-                                 &stats)
+    ASSERT_TRUE(b.knn_candidates(ll.lng().degrees(), ll.lat().degrees(), k, nullptr, 1.0, kInf,
+                                 &out_b, &stats, &kth_l2, &pruned)
                         .ok());
     std::sort(out_a.begin(), out_a.end());
     std::sort(out_b.begin(), out_b.end());

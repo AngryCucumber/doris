@@ -88,6 +88,12 @@ public class Cast extends Expression implements UnaryExpression, Monotonic {
         // StringLike to other type is always nullable.
         if (childDataType.isStringLikeType() && !targetType.isStringLikeType()) {
             return true;
+        } else if (targetType.isGeoPointType() && !childDataType.isGeoPointType()) {
+            // to GEO_POINT (from bigint/text/array): invalid keys become NULL in
+            // non-strict mode, and the BE cast returns a nullable column -- the
+            // declared type must agree (HASI_POC.md §13.3). geo_point -> bigint
+            // stays child-nullability (identity passthrough, infallible).
+            return true;
         } else if ((childDataType.isDateTimeType() || childDataType.isDateTimeV2Type()
                 || childDataType.isTimeStampTzType())
                 && (targetType.isDateTimeType() || targetType.isDateTimeV2Type())) {

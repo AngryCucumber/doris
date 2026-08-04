@@ -487,9 +487,16 @@ Status HasiTree::search(const std::vector<CellRange>& covering,
 
 Status HasiTree::knn_candidates(double lng0, double lat0, uint32_t k,
                                 const roaring::Roaring* present, double slack_m,
+                                double initial_bound_l2,
                                 std::vector<std::pair<uint32_t, uint64_t>>* out,
-                                HasiKnnStats* stats) const {
+                                HasiKnnStats* stats, double* local_kth_l2,
+                                bool* bound_pruned) const {
     out->clear();
+    *local_kth_l2 = std::numeric_limits<double>::infinity();
+    *bound_pruned = false;
+    if (std::isnan(initial_bound_l2) || initial_bound_l2 < 0.0) {
+        return Status::InvalidArgument("hasi knn bad external bound {}", initial_bound_l2);
+    }
     if (k == 0 || _num_rows == 0) {
         return Status::OK();
     }
@@ -500,6 +507,15 @@ Status HasiTree::knn_candidates(double lng0, double lat0, uint32_t k,
     }
     const S2Point query = S2LatLng::FromDegrees(lat0, lng0).Normalized().ToPoint();
     const S1ChordAngle slack = S2Earth::MetersToChordAngle(slack_m);
+    // §13.2: the external bound is a RAW upper bound on the global k-th center
+    // chord; slack is added exactly once at the comparisons below. Frozen
+    // over-approximation: a finite external bound flips bound_pruned regardless
+    // of whether it ended up tighter than the local heap -- the caller's keep-all
+    // is globally complete under any valid bound.
+    const S1ChordAngle external = std::isfinite(initial_bound_l2)
+                                          ? S1ChordAngle::FromLength2(initial_bound_l2)
+                                          : S1ChordAngle::Infinity();
+    *bound_pruned = external != S1ChordAngle::Infinity();
 
     // Rank each eligible leaf by its minimum chord distance to the query point.
     // The directory is flat (no internal nodes yet), so this upfront pass is
@@ -550,7 +566,14 @@ Status HasiTree::knn_candidates(double lng0, double lat0, uint32_t k,
     std::vector<uint64_t> cells;
     while (!leaf_queue.empty()) {
         const RankedLeaf top = leaf_queue.top();
-        if (kth_heap.size() == k && top.min_dist > kth_heap.top() + slack) {
+        const S1ChordAngle local =
+                kth_heap.size() == k ? kth_heap.top() : S1ChordAngle::Infinity();
+        const S1ChordAngle effective = std::min(local, external);
+        if (effective != S1ChordAngle::Infinity() && top.min_dist > effective + slack) {
+            if (external < local) {
+                // The external bound (not this segment's own heap) closed the walk.
+                stats->leaves_bound_skipped += leaf_queue.size();
+            }
             break;
         }
         leaf_queue.pop();
@@ -566,7 +589,15 @@ Status HasiTree::knn_candidates(double lng0, double lat0, uint32_t k,
             if (present != nullptr && !present->contains(rid)) {
                 continue;
             }
-            const S1ChordAngle dist(query, S2CellId(cell).ToPoint());
+            const S2CellId cell_id(cell);
+            if (!cell_id.is_valid()) {
+                // Corrupt stored cell: never let it into the chord heap -- a
+                // garbage-small chord would poison the published cross-segment
+                // bound (§13.2). The caller's keep-all guard reads this counter.
+                ++stats->invalid_cells_skipped;
+                continue;
+            }
+            const S1ChordAngle dist(query, cell_id.ToPoint());
             scored.push_back({rid, cell, dist});
             if (kth_heap.size() < k) {
                 kth_heap.push(dist);
@@ -578,12 +609,21 @@ Status HasiTree::knn_candidates(double lng0, double lat0, uint32_t k,
         }
         ++stats->leaves_scanned;
     }
+    // Publish material: the segment's own raw k-th center chord, valid as a
+    // GLOBAL upper bound only once the heap filled (subset k-th >= union k-th).
+    if (kth_heap.size() == k) {
+        *local_kth_l2 = kth_heap.top().length2();
+    }
     if (scored.empty()) {
         return Status::OK();
     }
 
-    const S1ChordAngle cutoff = kth_heap.size() == k ? kth_heap.top() + slack
-                                                     : S1ChordAngle::Infinity();
+    const S1ChordAngle local_kth =
+            kth_heap.size() == k ? kth_heap.top() : S1ChordAngle::Infinity();
+    const S1ChordAngle effective = std::min(local_kth, external);
+    const S1ChordAngle cutoff = effective != S1ChordAngle::Infinity()
+                                        ? effective + slack
+                                        : S1ChordAngle::Infinity();
     out->reserve(std::min<size_t>(scored.size(), k * 2));
     for (const Scored& s : scored) {
         if (s.dist <= cutoff) {

@@ -289,4 +289,251 @@ suite("geo_knn") {
     def offAfterDelete = sql q
     assertEquals(offAfterDelete, onAfterDelete, "mow delete: knn on/off mismatch")
     sql "set enable_geo_knn_pushdown=true;"
+
+    // ---- v4.5 F2: fence + kNN joint acceleration (HASI_POC.md §13.1) ----
+    // A fully-consumed circle fence must no longer veto the kNN pushdown: one
+    // tagged profile shows BOTH the fence (RowsGeoIndexFiltered) and the kNN
+    // (RowsGeoKnnFiltered) firing. Both rewrite states (ON: envelope predicates
+    // pass the implication test; OFF: no envelope -- the path v4 already allowed
+    // but never tested), both index modes.
+    def profileCounter = { String profileText, String counter ->
+        // exact value is the parenthesized form once K/M suffixes kick in
+        def total = 0L
+        profileText.split("\n").findAll { it.contains(counter) }.each { line ->
+            def exact = (line =~ /${counter}:\s*[0-9.]+[KMB]?\s*\((\d+)\)/)
+            def bare = (line =~ /${counter}:\s*(\d+)\s*$/)
+            if (exact.find()) {
+                total += Long.parseLong(exact.group(1))
+            } else if (bare.find()) {
+                total += Long.parseLong(bare.group(1))
+            }
+        }
+        return total
+    }
+    def taggedProfile = { String token ->
+        String profileId = ""
+        int attempts = 0
+        while (attempts < 10 && (profileId == null || profileId == "")) {
+            List profileData = new JsonSlurper().parseText(getProfileList()).data.rows
+            for (def profileItem in profileData) {
+                if (profileItem["Sql Statement"].toString().contains(token)) {
+                    profileId = profileItem["Profile ID"].toString()
+                    break
+                }
+            }
+            if (profileId == null || profileId == "") {
+                Thread.sleep(300)
+            }
+            attempts++
+        }
+        assertTrue(profileId != null && profileId != "", "profile not found for ${token}")
+        Thread.sleep(800)
+        return getProfile(profileId).toString()
+    }
+    def assertFenceKnnFired = { String table, boolean rewriteOn, boolean expectFence ->
+        sql "set profile_level=2;"
+        sql "set enable_profile=true;"
+        sql "set enable_geo_knn_pushdown=true;"
+        sql "set enable_geo_index_query=true;"
+        sql "set enable_geo_index_exact_filter=true;"
+        sql "set enable_geo_predicate_rewrite=${rewriteOn};"
+        def tag = "fenceknn_${table}_${rewriteOn}"
+        def d = String.format(distExpr(table), "116.40", "39.90")
+        def q2 = """select id, ${d} as dist from ${table}
+                    where ${d} < 50000 order by dist asc, id asc limit 10"""
+        if (expectFence) {
+            def token = "geo_${tag}_" + System.currentTimeMillis()
+            sql "select /* ${token} */ ${q2.substring(q2.indexOf('id'))}"
+            def profile = taggedProfile(token)
+            assertTrue(profileCounter(profile, "RowsGeoIndexFiltered") > 0,
+                    "[${tag}] fence never fired")
+            assertTrue(profileCounter(profile, "RowsGeoKnnFiltered") > 0,
+                    "[${tag}] knn never fired under a consumed fence")
+        }
+        // the answer stays bit-equal to the fallback in every configuration
+        def on = sql q2
+        sql "set enable_geo_knn_pushdown=false;"
+        def off = sql q2
+        sql "set enable_geo_knn_pushdown=true;"
+        assertEquals(off, on, "[${tag}] fence+knn changed results")
+        sql "set enable_profile=false;"
+        sql "set enable_geo_predicate_rewrite=true;"
+    }
+    // trio mode with rewrite=OFF: nothing pulls the __s2 column into the read
+    // schema, so _apply_geo_predicate finds no index iterator and the fence falls
+    // back to expression evaluation entirely (pre-existing v1.5 boundary, §13.1)
+    // -- correctness leg only. geo_point mode fires in both rewrite states.
+    assertFenceKnnFired("geo_knn_dup_t", true, true)
+    assertFenceKnnFired("geo_knn_dup_t", false, false)
+    assertFenceKnnFired("geo_knn_gp_t", true, true)
+    assertFenceKnnFired("geo_knn_gp_t", false, true)
+
+    // Adversarial: a user-written __s2 predicate has the ENVELOPE'S SHAPE but is
+    // not implied by the fence -- the gate must stay closed (correct results via
+    // fallback) under both rewrite states.
+    // The predicate value sits strictly INSIDE the fence circle's key range
+    // (min+1 over circle rows): the result set is non-empty, the predicate
+    // genuinely cuts into the fence (never implied), and a broken implication
+    // check would commit a top-k that wrongly contains the excluded minimum row.
+    def dupD = String.format(distExpr("geo_knn_dup_t"), "116.40", "39.90")
+    def s2cut = sql """select cast(min(__s2) + 1 as bigint) from geo_knn_dup_t
+                       where ${dupD} < 50000"""
+    [true, false].each { rw ->
+        sql "set enable_geo_predicate_rewrite=${rw};"
+        def q3 = """select id, ${dupD} as dist from geo_knn_dup_t
+                    where ${dupD} < 50000 and __s2 >= ${s2cut[0][0]}
+                    order by dist asc, id asc limit 10"""
+        sql "set enable_geo_knn_pushdown=true;"
+        def on = sql q3
+        sql "set enable_geo_knn_pushdown=false;"
+        def off = sql q3
+        sql "set enable_geo_knn_pushdown=true;"
+        assertTrue(on.size() > 0, "user __s2 predicate variant returned nothing (rewrite=${rw})")
+        assertEquals(off, on, "user __s2 predicate variant mismatch (rewrite=${rw})")
+    }
+    sql "set enable_geo_predicate_rewrite=true;"
+
+    // Adversarial: an active version DELETE predicate must keep the gate closed
+    // (deleted near neighbors must never surface, and RowsGeoKnnFiltered == 0).
+    sql "drop table if exists geo_knn_del_t"
+    sql """
+    create table geo_knn_del_t (
+        `__s2` bigint generated always as (st_s2_cellid(`lon`, `lat`)) null,
+        `id` bigint not null,
+        `lon` double null,
+        `lat` double null,
+        INDEX idx_geo(`__s2`) USING GEO PROPERTIES("leaf_rows" = "64")
+    ) engine=olap duplicate key(`__s2`)
+    distributed by hash(`id`) buckets 1
+    properties("replication_num" = "1", "disable_auto_compaction" = "true");
+    """
+    def delValues = []
+    long did = 0
+    for (double dLon = -0.2; dLon <= 0.2; dLon += 0.02) {
+        for (double dLat = -0.2; dLat <= 0.2; dLat += 0.02) {
+            delValues << "(${did++}, ${116.40 + dLon}, ${39.90 + dLat})"
+        }
+    }
+    sql "insert into geo_knn_del_t(id, lon, lat) values ${delValues.join(',')}"
+    def delNearest = sql """select id from geo_knn_del_t
+                            order by st_distance_sphere(lon, lat, 116.40, 39.90) asc, id asc limit 2"""
+    delNearest.each { row -> sql "delete from geo_knn_del_t where id = ${row[0]}" }
+    sql "sync"
+    sql "set profile_level=2;"
+    sql "set enable_profile=true;"
+    def delToken = "geo_delfence_" + System.currentTimeMillis()
+    def delQ = """select /* ${delToken} */ id, st_distance_sphere(lon, lat, 116.40, 39.90) as dist
+                  from geo_knn_del_t where st_distance_sphere(lon, lat, 116.40, 39.90) < 50000
+                  order by dist asc, id asc limit 10"""
+    def delOn = sql delQ
+    def delProfile = taggedProfile(delToken)
+    assertEquals(0L, profileCounter(delProfile, "RowsGeoKnnFiltered"),
+            "knn fired despite an active delete predicate")
+    delNearest.each { deleted ->
+        delOn.each { row ->
+            assertTrue(row[0] != deleted[0], "deleted row ${deleted[0]} surfaced under fence+knn")
+        }
+    }
+    sql "set enable_geo_knn_pushdown=false;"
+    def delOff = sql delQ.replace(delToken, delToken + "_off")
+    sql "set enable_geo_knn_pushdown=true;"
+    assertEquals(delOff, delOn, "delete-predicate fence variant mismatch")
+    sql "set enable_profile=false;"
+
+    // Adversarial: TWO geo indexes on different column pairs -- fence consumed on
+    // index A, kNN ordered by index B's columns. The identity check must keep the
+    // gate closed (results correct via fallback; B is nullable-free here but the
+    // stash cid != knn cid regardless).
+    sql "drop table if exists geo_knn_2idx_t"
+    sql """
+    create table geo_knn_2idx_t (
+        `__s2a` bigint generated always as (st_s2_cellid(`lon`, `lat`)) null,
+        `__s2b` bigint generated always as (st_s2_cellid(`lon2`, `lat2`)) null,
+        `id` bigint not null,
+        `lon` double null,
+        `lat` double null,
+        `lon2` double null,
+        `lat2` double null,
+        INDEX idx_a(`__s2a`) USING GEO PROPERTIES("leaf_rows" = "64"),
+        INDEX idx_b(`__s2b`) USING GEO PROPERTIES("leaf_rows" = "64")
+    ) engine=olap duplicate key(`__s2a`)
+    distributed by hash(`id`) buckets 1
+    properties("replication_num" = "1", "disable_auto_compaction" = "true");
+    """
+    def twoIdxValues = []
+    long tid = 0
+    for (double dLon = -0.2; dLon <= 0.2; dLon += 0.02) {
+        for (double dLat = -0.2; dLat <= 0.2; dLat += 0.02) {
+            // every 7th row: NULL (lon2, lat2) INSIDE the fence circle -- the
+            // detection teeth (review finding): if the identity guards were lost,
+            // the NULL-gate lift would let the kNN commit a top-k that drops these
+            // NULLS-FIRST rows, diverging from the fallback bit-exactly.
+            if (tid % 7 == 3) {
+                twoIdxValues << "(${tid++}, ${116.40 + dLon}, ${39.90 + dLat}, null, null)"
+            } else {
+                twoIdxValues << "(${tid++}, ${116.40 + dLon}, ${39.90 + dLat}, ${121.47 + dLon}, ${31.23 + dLat})"
+            }
+        }
+    }
+    sql "insert into geo_knn_2idx_t(id, lon, lat, lon2, lat2) values ${twoIdxValues.join(',')}"
+    sql "sync"
+    def q2idx = """select id, st_distance_sphere(lon2, lat2, 121.47, 31.23) as dist
+                   from geo_knn_2idx_t
+                   where st_distance_sphere(lon, lat, 116.40, 39.90) < 20000
+                   order by dist asc nulls first, id asc limit 10"""
+    sql "set enable_geo_knn_pushdown=true;"
+    def on2idx = sql q2idx
+    sql "set enable_geo_knn_pushdown=false;"
+    def off2idx = sql q2idx
+    sql "set enable_geo_knn_pushdown=true;"
+    assertEquals(off2idx, on2idx, "two-geo-index fence/knn identity variant mismatch")
+
+    // ---- v4.5 F1: cross-segment shared kNN bound (HASI_POC.md §13.2) ----
+    // Three disjoint far-apart tiles as three un-compacted single-segment rowsets;
+    // with serial scanning the tile-0 segment publishes a tight bound and the far
+    // segments' walks collapse: GeoKnnBoundSkippedLeaves > 0 is the causal proof.
+    sql "drop table if exists geo_knn_ms_t"
+    sql """
+    create table geo_knn_ms_t (
+        `__s2` bigint generated always as (st_s2_cellid(`lon`, `lat`)) null,
+        `id` bigint not null,
+        `lon` double null,
+        `lat` double null,
+        INDEX idx_geo(`__s2`) USING GEO PROPERTIES("leaf_rows" = "64")
+    ) engine=olap duplicate key(`__s2`)
+    distributed by hash(`id`) buckets 1
+    properties("replication_num" = "1", "disable_auto_compaction" = "true");
+    """
+    def msTiles = [[116.30, 39.85], [151.10, -33.90], [-46.70, -23.60]]
+    msTiles.eachWithIndex { tile, batch ->
+        def values = []
+        for (int i = 0; i < 900; i++) {
+            values << "(${batch * 1000000 + i}, ${tile[0] + (i % 50) * 0.0005}, ${tile[1] + ((int) (i / 50)) * 0.0005})"
+        }
+        sql "insert into geo_knn_ms_t(id, lon, lat) values ${values.join(',')}"
+    }
+    sql "sync"
+    sql "set enable_parallel_scan=false;"
+    sql "set parallel_pipeline_task_num=1;"
+    sql "set profile_level=2;"
+    sql "set enable_profile=true;"
+    def msQ = { String token ->
+        """select /* ${token} */ id, st_distance_sphere(lon, lat, 116.31, 39.86) as dist
+           from geo_knn_ms_t order by dist asc, id asc limit 20"""
+    }
+    def msFired = false
+    def msOn = null
+    for (int attempt = 0; attempt < 3 && !msFired; attempt++) {
+        def token = "geo_msbound_${attempt}_" + System.currentTimeMillis()
+        msOn = sql msQ(token)
+        def profile = taggedProfile(token)
+        msFired = profileCounter(profile, "GeoKnnBoundSkippedLeaves") > 0
+    }
+    assertTrue(msFired, "shared bound never pruned a far segment's walk")
+    sql "set enable_geo_knn_pushdown=false;"
+    def msOff = sql msQ("geo_msbound_off_" + System.currentTimeMillis())
+    sql "set enable_geo_knn_pushdown=true;"
+    assertEquals(msOff, msOn, "shared-bound multi-segment knn on/off mismatch")
+    sql "set enable_profile=false;"
+    sql "set enable_parallel_scan=true;"
 }

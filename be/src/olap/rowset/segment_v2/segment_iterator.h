@@ -23,6 +23,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <ostream>
 #include <roaring/roaring.hh>
 #include <set>
@@ -535,6 +536,22 @@ private:
 
     std::shared_ptr<segment_v2::AnnTopNRuntime> _ann_topn_runtime;
     std::shared_ptr<segment_v2::GeoTopNRuntime> _geo_topn_runtime;
+
+    // v4.5 F2 (HASI_POC.md §13.1): the circle fence _apply_geo_predicate fully
+    // consumed (exact verdict, conjunct erased). The kNN gate uses it to prove
+    // the FE envelope predicates tautological on every fence-surviving row and
+    // to lift the NULL gate -- both only when the kNN runs on the SAME index.
+    // Covering extremes stay in the raw uint64 cell domain; compare against
+    // predicate values after s2_key_from_cell.
+    struct ConsumedGeoFence {
+        ColumnId index_cid = 0;      // the indexed column (identity check)
+        uint64_t covering_min_lo = 0;
+        uint64_t covering_max_hi = 0;
+    };
+    std::optional<ConsumedGeoFence> _consumed_geo_fence;
+    // More than one circle consumed: the single-fence proof no longer applies;
+    // the kNN gate stays strict (fail-closed).
+    bool _consumed_geo_fence_ambiguous = false;
 
     // cid to virtual column expr
     std::map<ColumnId, vectorized::VExprContextSPtr> _virtual_column_exprs;

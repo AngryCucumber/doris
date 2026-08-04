@@ -274,4 +274,56 @@ suite("geo_point_type") {
     checkConfigs("compacted")
     aggBattery("compacted")
     assertFolded("compacted")
+
+    // ---- 5. v4.5 F3 cast hygiene (HASI_POC.md §13.3) ----
+    // F3a geo_point -> bigint: identity passthrough of the flipped key, the exact
+    // inverse of the ingest direction -- roundtrip against st_s2_cellid, both the
+    // column path (BE cast) and the constant path (FE fold).
+    def castMismatch = sql """select count(*) from geo_point_t
+                              where loc is not null
+                                and cast(loc as bigint) != st_s2_cellid(lon, lat)"""
+    assertEquals(0, (castMismatch[0][0] as long), "cast(loc as bigint) != st_s2_cellid roundtrip")
+    def foldedCast = sql "select cast(cast('[116.4, 39.9]' as geo_point) as bigint), st_s2_cellid(116.4, 39.9)"
+    assertEquals(foldedCast[0][1], foldedCast[0][0], "FE-folded gp->bigint != st_s2_cellid")
+    def doubleRoundtrip = sql """select count(*) from geo_point_t
+                                 where loc is not null
+                                   and cast(cast(loc as bigint) as geo_point) != loc"""
+    assertEquals(0, (doubleRoundtrip[0][0] as long), "gp->bigint->gp roundtrip drift")
+
+    // F3b non-literal array constructor: CAST(array(lon, lat) AS geo_point) rides
+    // the geo_point scalar; must equal the direct constructor on every row.
+    def arrayCast = sql """select count(*) from geo_point_t
+                           where lon is not null and lat is not null
+                             and cast(array(lon, lat) as geo_point) != geo_point(lon, lat)"""
+    assertEquals(0, (arrayCast[0][0] as long), "cast(array(lon,lat) as geo_point) != geo_point()")
+    // and it works as an INSERT...SELECT source (the ES-parity migration shape)
+    sql "drop table if exists geo_point_arrcast_t"
+    sql """
+    create table geo_point_arrcast_t (
+        `loc` geo_point null,
+        `id` bigint not null
+    ) engine=olap duplicate key(`loc`)
+    distributed by hash(`id`) buckets 1 properties("replication_num" = "1");
+    """
+    sql """insert into geo_point_arrcast_t
+           select cast(array(lon, lat) as geo_point), id from geo_point_t where lon is not null"""
+    def arrIngest = sql """select count(*) from geo_point_arrcast_t a
+                           join geo_point_t g on a.id = g.id
+                           where a.loc != geo_point(g.lon, g.lat)"""
+    assertEquals(0, (arrIngest[0][0] as long), "array-cast ingest drift vs geo_point()")
+
+    // Nullability probe (review finding): a NOT NULL bigint source cast to
+    // geo_point must run through the runtime path (non-nullable input, nullable
+    // declared result) without block type/column mismatch; ordinary ids are not
+    // valid cell keys, so every row yields NULL in non-strict mode.
+    def nnProbe = sql """select count(*), count(cast(id as geo_point))
+                         from geo_point_t where id is not null"""
+    assertTrue((nnProbe[0][0] as long) > 0, "nullability probe scanned nothing")
+    assertEquals(0, (nnProbe[0][1] as long), "invalid keys must cast to NULL, got non-NULL")
+    // valid keys through the same non-nullable runtime path stay non-NULL
+    def nnValid = sql """select count(*) from geo_point_t
+                         where lon is not null
+                           and cast(cast(st_s2_cellid(lon, lat) as bigint) as geo_point)
+                               != geo_point(lon, lat)"""
+    assertEquals(0, (nnValid[0][0] as long), "valid-key bigint->geo_point drift")
 }

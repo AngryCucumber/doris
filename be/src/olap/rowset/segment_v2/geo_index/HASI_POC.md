@@ -612,8 +612,9 @@ inline void recheck_circle_simd(const double* lat, const double* lon, size_t n,
 - 叶子扫点维护 k-堆；队首 min-dist ≥ 当前第 k 距离即终止。
 - **种子播种**：查询点所在叶子经二分定位，沿 Hilbert 序两侧各取若干行（~4k）先算距离得初始第 k 阈值，显著加速剪枝。
 - **最终排序值必须用 `GeoPoint::ComputeDistance` 重算**（与 `ST_Distance_Sphere` 逐位一致，契约 C2）。
-- 多 segment/tablet：每段 limit=k，上层 TopN 归并；段间共享阈值可挂 RuntimePredicate
-  （FE 规则仿 `PushDownVectorTopNIntoOlapScan.java`，thrift 仿 `ann_sort_info`，`PlanNodes.thrift:855-856`）。
+- 多 segment/tablet：每段 limit=k，上层 TopN 归并；~~段间共享阈值可挂 RuntimePredicate~~
+  （rev5 勘误：RuntimePredicate 要求非虚拟槽物理 key 列（runtime_predicate.h:122-125），
+  虚拟距离槽走不通；v4.5 §13 改为 GeoTopNRuntime 自建原子界）。
 - 多时间桶：各子树入同一个优先队列，共享 k-堆。
 
 ---
@@ -945,7 +946,8 @@ bbox 同尺度、多边形（凸 6 边/凹 50 边/带洞/跨反子午线）、kN
 - **cast 矩阵**：VARCHAR/STRING ↔ GEO_POINT（文本解析/输出）；BIGINT ↔ GEO_POINT
   （翻转键直通 + is_valid 校验，与 `st_s2_cellid` 输出同域 → 存量 `__s2` 数据可零成本迁移）；
   数组字面量 `[lon, lat]` → GEO_POINT 仅 FE 常量折叠路径（INSERT VALUES 可用；
-  非常量数组表达式 BE cast 不实现，报干净的 NotSupported，记为已知边界）。
+  非常量数组表达式 BE cast 不实现，报干净的错误——rev5 勘误：实际返回 InvalidArgument
+  而非 NotSupported（cast_base.cpp unsupported wrapper），记为已知边界，v4.5 §13 F3b 部分收窄）。
 - **函数**：`geo_point(lon, lat) → GEO_POINT`（构造，复用 ComputeS2CellKey）；
   `st_distance_sphere(GEO_POINT, DOUBLE, DOUBLE) → DOUBLE` 3 参重载（解码中心→同 4 参内核）；
   `geo_lon(gp)` / `geo_lat(gp)`（中心解码访问器，回归对拍与迁移逃生口）。
@@ -1327,6 +1329,144 @@ Hilbert 象限边界即吞掉后续多个条带区间）。诚实的触发面 =
 非首 key 几何列/多 geo 索引/删除谓词/重叠段均不武装；碎片化 α=4 门强制周期性重建合并；
 切分横跨回退产物为 v1（sketch 丢弃，计数器可见）；行数守恒破坏（先验门下不可达）= 本轮失败 +
 skip 标记。
+
+## 13. v4.5 查询侧收尾（rev5，冻结设计）
+
+范围 = F2 围栏+kNN 联合加速 → F1 跨段共享 kNN 阈值 → F3 cast 卫生项（实现顺序按此，
+F2 纯门逻辑先行，F1 三层签名穿线，二者天然组合：过围栏门的段照常参与共享界）。
+测绘 7 agent + 阻塞点行级复核（wf_73f34d73-877）；FE 零改动（TopN 规则带 filter 模式已
+下推 geo_sort_info，translator 无条件发射）。
+
+### 13.1 F2：围栏+kNN（BE-only，segment_iterator 三处）
+
+真凶（实锤，rev5.1 修正表述）：v1.5 精确消费后两个 conjunct 列表已空；**rewrite=ON 时**
+卡在 FE 包络 `__s2>=lo AND <=hi`（geo_point 模式落在 geo 列自身）成为
+`_col_predicates`→`_is_pred_column`→`has_column_predicate` bail（:860-862）。
+评审发现：**rewrite=OFF 时该联合路径在 v4 二进制中已可放行**——但实测精化（回归首轮）：
+仅 **geo_point 模式**如此（loc 列本身在读 schema、迭代器存在）；trio 模式 rewrite=OFF 时
+无包络谓词把 __s2 拉进读 schema，`_apply_geo_predicate` 只查已存在的迭代器（无 kNN 门
+的按需创建），围栏整体回退表达式求值（既有 v1.5 边界，非 v4.5 缺陷；扩展 = 给
+_apply_geo_predicate 补按需创建，挂账）。测试口径：trio×OFF 仅正确性腿，
+gp×两态 + trio×ON 双计数器腿。放行设计：
+1. **记录**：`_apply_geo_predicate` 完全消费分支（erased==true, :1352-1401）在迭代器上
+   暂存 {**被消费索引的 s2_cid（索引身份）**, covering_min_start, covering_max_end}。
+   域转换钉死：covering 极值是**裸 uint64 cell 域**（:1320-1324），谓词值是翻转 int64
+   键域——比较前对极值做 `s2_key_from_cell`（评审已验证幸存行满足
+   key ≥ flipped(covering_min_lo) 且 key ≤ flipped(covering_max_hi)）；
+2. **门改造**：:860-862 改**逐谓词 fail-closed 数值蕴含检验**——先置**无条件 bail**：
+   `_opts.delete_condition_predicates->num_of_column_predicate() > 0`（评审阻塞点：删除
+   条件谓词不在 `_col_predicates`、对蕴含循环不可见，却在 top-k 提交**之后**才逐批求值
+   （:3012）——漏检则删行泄漏进结果，且 F1 下被删近邻会毒化共享界殃及无删段；镜像
+   :678/:1455 的既有守卫）。然后对 `_col_predicates` 逐谓词：`is_runtime_filter()` → bail；
+   列 ≠ 记录的 s2_cid → bail；仅当 (GE 且 v ≤ flipped(covering_min_lo)) 或
+   (LE 且 v ≥ flipped(covering_max_hi)) 才忽略；其它类型（EQ/NE/IN/IS NULL/GT/LT/MATCH）
+   一律 bail。**形状匹配不可用**（用户手写 `__s2>=X` 形状同、蕴含不成立；FE 见他键谓词
+   即不注包络，RewriteGeoPredicate.java:139-141）。`_common_expr_ctxs_push_down` 门
+   **不动**（历史 bug#3 域）。`_col_predicates` **不删除**（保 per-batch 兜底、懒物化、
+   v2b fold 门逐位不变）；
+3. **NULL 门与索引身份**（评审 major）：表可建**多个 GEO 索引**（DDL 无禁令；§12.2 的
+   单索引门只管 compaction），围栏消费的索引与 kNN 用的索引可能不同——放行与 NULL 门
+   减免**都必须**先校验 kNN 迭代器的 cid == 记录的被消费索引 cid，不匹配走 v4 严格门。
+   同索引下 `num_nulls` 视为 0 成立（精确解析要求 lng/lat 非空、range 命中来自 cell>0
+   流，nulls_first 亦安全——评审已证）；
+4. **抑制交界**（历史 bug#1/2 同类雷）：成功路径 :1049 的
+   `_need_read_data_indices[geo_point_cid]=false` 须以 `!_is_pred_column[geo_point_cid]`
+   为条件——包络谓词仍活着，per-batch 求值不能踩 `_prune_column` 默认填充数据；
+   Defer 恢复守卫（:835-844）与 geo_topn_references 旁路（:1377-1401）不动。
+5. **待实现期核验的唯一假设**：geo_point 模式包络 GeoPointLiteral 谓词值序与翻转键域
+   一致（RewriteGeoPredicate.java:148 sargable 注释主张如此）——一条定向 UT/explain 探针闭合。
+6. 不放行面（照旧回退，§11.5 边界收窄而非消除）：超集回退（:1403-1408）、覆盖率门
+   （:1322-1326）、exact_filter/common_expr_pushdown 关、包装/非字面圆、多圆仅消费其一。
+
+### 13.2 F1：跨段共享 kNN 阈值（BE-only + 1 BE conf）
+
+作用域（实测并发模型）：`GeoTopNRuntime` 为 per-OlapScanLocalState 单实例、shared_ptr
+原样别名至每个 SegmentIterator；一个 tablet 只归属一个 task，ParallelScannerBuilder 的
+同 tablet 分段并发 scanner 共享该实例——**原子界挂此处即覆盖目标（未压多段 tablet）**；
+跨 task/跨 tablet 收紧显式出范围（正确性不依赖：上层 TopN 兜全局归并，界只剪不选）。
+1. **成员**：`std::atomic<double> _shared_knn_bound_l2{+inf}`，`tighten(v)` = CAS-min
+   （relaxed 足够：单调收紧、任意已发布值独立可靠）；头注释改"prepare 后只读，除此原子"；
+2. **发布域冻结**：仅发布**裸第 k center-chord length2**、仅当 k 堆满（子集第 k ≥ 全集
+   第 k）；永不发布 Infinity/未满堆/加 slack 值；消费端经既有严格 `>` 比较把
+   kGeoIndexMarginMeters slack **恰加一次**（并列保留契约不破）；
+3. **消费**：knn_candidates 新入参 `initial_bound_l2` + 出参 `local_kth_l2` + **出参
+   `bound_pruned`**。有效界 E=min(本地满堆顶, 外部界)，叶跳出 :553 与输出截止 :585 用 E。
+   **flag 冻结为过近似**（评审 major：堆满后外部界钳住截止同样把候选剪到 <k，"仅堆未满"
+   的定义会漏）——`bound_pruned` = 提供了有限外部界（有效界下的全保留对全局完备，与
+   计数跌破 k 的具体原因无关，最简且并列安全）。`bound_pruned` 置位时 :958/:1008 的
+   防御回退**改为接受并全保留**，实现结构钉死（评审 major：直接放行会让 nth_element
+   以 k-1 越界 = UB）：valid < k 时 kth_dist=+∞ 跳过 nth_element；候选为空时提交空选择
+   （空位图与 v1.5 零命中同态，VirtualColumnIterator n==0 路径评审已验证安全）。
+   **腐蚀护栏**（评审 minor×2）：接受 <k 仅当本段 is_valid 跳过计数为 0 **且**
+   精确复核全数有效（valid.size()==candidates.size()），否则维持回退——保住 :1008 对
+   解码异常行的安全网；
+4. **健壮性**：堆插入前补 `S2CellId(cell).is_valid()`（:569，跳过并计数）——跨段发布的
+   前置条件（防单段脏 cell 中毒全局界）；干净数据零行为变化（写路径只产合法 cell），
+   该计数同时供第 3 条腐蚀护栏使用；
+5. **签名穿线**：GeoIndexIterator → GeoIndexReader → HasiTree 三层 knn_candidates 带新
+   参（hasi_tree 不感知 GeoTopNRuntime）；发布时机 = knn_candidates 返回后（入口读一次
+   原子；每叶重读留作基准后的可选优化）；
+6. **开关**：BE mBool `enable_geo_knn_shared_bound`（默认 true，无 thrift 改动）；整链
+   A/B 沿用 `enable_geo_knn_pushdown`；
+7. **观测**：HasiKnnStats 补 `leaves_ranked` 导出 + `bound_skipped_leaves`；profile 计
+   GeoKnnBoundSkipped；共享界使叶/行计数依调度非确定——回归断言=结果相等 + 计数器不等式。
+
+### 13.3 F3：cast 卫生项（收窄后）
+
+- **F3a gp→bigint**（GO，半天，rev5.1 修正为**四件**缺一不可）：① FE CheckCast
+  GEO_POINT 源白名单加 BigIntType；② **GeoPointLiteral.uncheckedCastTo 覆写**——评审
+  勘误：字面量内部**本就存翻转键**（GeoPointKey.toLong），覆写就是一行
+  `new BigIntLiteral(value.toLong())`、无需 FE 侧 S2 计算；动机 = 使常量折叠可用 +
+  避免 fallback 路径的 NumberFormatException（并非此前所述"静默 NullLiteral"）；
+  ③ BE `CastToImpl<Mode, DataTypeGeoPoint, DataTypeInt64>` 恒等直通（翻转键，返回非空
+  普通列）；④ **BE 分派接线**（评审 major：缺此件则 FE 放行、BE 运行时 InvalidArgument，
+  比现状更糟）——create_int_wrapper 内 (GeoPoint, Int64) 窄对 if-constexpr 分支，
+  **不得**把 DataTypeGeoPoint 加入 type_allow_cast_to_basic_number。仅 BIGINT（§10 冻结）。
+  顺带定向探针：既有 bigint→geo_point 恒回 ColumnNullable 与 FE Cast.nullable()=false
+  的潜在错配（评审 minor），修齐或记录。
+- **F3b 非字面数组**（条件 GO）：只做 FE 改写变体 `Cast(Array(a,b) AS geo_point) →
+  GeoPoint(cast double, cast double)`——覆盖形态勘误（评审 minor）：列引用的中括号
+  写法 `[lon, lat]` 不可解析，实际覆盖的是 **`array(lon, lat)`** 拼写（中括号仅常量
+  可用、已走 §10 折叠路径），回归用 array() 拼写；完整 BE Array→GeoPoint cast
+  （TYPE_ARRAY 分派+嵌套强转+元数校验，~1 天）挂账为已知边界。
+
+### 13.4 验收与对拍口径
+
+- UT：hasi_tree_test 共享界注入——oracle 修正（评审 minor：外部界落在 (无界第k, 截止)
+  区间时**合法输出可比无界更大**，⊆ 断言对正确实现会假失败）：改为注入界 ≤ B 自身无界
+  第 k（构造 A 严格更近），断言 stats ≤ + **A∪B 合并选择 == 拼接数据集 oracle**；
+  is_valid 脏 cell；bound_pruned <k 全保留路径（含候选为空提交空选择、腐蚀护栏拒收）；
+  F2 蕴含检验真值表 UT + geo_point 域序假设定向验证（评审已代码级证实，UT 作守门）。
+- 回归 geo_knn.groovy：围栏+kNN 标记 profile 同时断言 RowsGeoIndexFiltered>0 与
+  RowsGeoKnnFiltered>0，**rewrite=ON 与 OFF 两腿都要**（OFF 腿覆盖 v4 已放行但未测路径）；
+  **必须继续回退**的对抗变体（用户 __s2 谓词、abs 包装、common_expr_pushdown=false、
+  exact_filter=false、runtime filter join、**活跃删除谓词**（阻塞点回归：不得泄漏被删近邻
+  且 RowsGeoKnnFiltered==0）、**双 GEO 索引异列**）在两改写态 × 两索引模式下 on/off 位相等；
+  F1 新多段表（disable_auto_compaction + 单段导入配方）：**钉住扫描并行度**（单 scanner
+  串行消费，界传播确定化——评审 minor：并发调度下严格下降断言会 flake）后断言结果位相等 +
+  GeoKnnLeavesScanned 下降；profile 计数解析取括号内精确值（K/M 后缀陷阱）。
+- 基准：F2 = run_bench.py 克隆 KNN 段加围栏+kNN 对（off=仅 v1.5 回退），1e8 表，门禁
+  风格同 v4（位相等 + 显著加速）；F1 = 8×3M 不相交瓦片未压多段 tablet，计数器优先归因
+  （叶排名本身便宜，墙钟差可能温和——按 §8.2 归因规则计数器为主、墙钟为辅），
+  BE conf 开关 A/B 位相等。
+- 云路径 scanner 链未审计（本地链已验证）；文档不主张云侧等价。
+
+### 13.5 设计评审记录（rev5→rev5.1，3 视角均 needs-changes，全部回写）
+
+- **阻塞 ×1（两视角同时命中）**：蕴含循环只看 `_col_predicates`，**删除条件谓词**
+  （`_opts.delete_condition_predicates`，top-k 提交后 :3012 才逐批求值）不可见——漏检
+  则删行泄漏进结果，F1 下被删近邻毒化共享界殃及无删段。修正：门首无条件 fail-closed bail。
+- **major ×4**：bound_pruned 定义漏堆满钳制情形（改过近似=有限外部界即置位）；<k 放行
+  直改会 nth_element 越界 UB + 空候选路径未指定（结构钉死）；双 GEO 索引下围栏索引 ≠
+  kNN 索引（stash 记索引身份并强校验）；F3a 缺第四件 BE 分派接线（缺则运行时报错更糟）。
+- **minor ×8**：rewrite=OFF 联合路径 v4 已放行未测（§11.5 收窄 + 补测试腿）；
+  GeoPointLiteral 本存翻转键（覆写一行化，动机勘误）；bigint→geo_point 空性错配探针；
+  F3b 覆盖拼写 array()；K/M 后缀解析；F1 回归钉并行度防 flake；UT ⊆ oracle 非不变量
+  （改注入界 ≤ 无界第 k + 合并选择 oracle）；<k 放行腐蚀护栏（is_valid 跳过=0 且复核全valid）。
+- 评审同时代码级证实：裸 chord 发布 + 消费端单次 slack 的并列安全性、E=外部界（堆未满）
+  可靠性、relaxed CAS-min 充分性、围栏窄化后发布仍为合法全局上界、包络=恰两条 GE/LE、
+  域转换 `s2_key_from_cell(covering 极值)`、GeoPointLiteral 键序=存储比较序、
+  MOW 位图在 kNN 前已扣除（唯一危险即版本删除谓词）、FE 零改动前提、:1049 仅 gp 模式触发。
 
 ## 附：关键源码锚点速查（rev2 全部经源码核对）
 | 用途 | 位置 |

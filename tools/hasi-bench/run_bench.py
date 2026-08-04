@@ -315,6 +315,45 @@ def main():
             print(f"{qname:<20} {KNN_K:>5} {base:>8.0f}ms {v4:>8.0f}ms "
                   f"{base / max(v4, 0.001):>5.1f}x")
 
+    # ---- v4.5 F2 fence + kNN (HASI_POC.md §13.1): WHERE circle ORDER BY dist ----
+    # off = the v4 behavior (kNN pushdown vetoed by the fence, v1.5 handles the
+    # filter, full sort on the survivors); on = joint acceleration.
+    for label, table, dist in [
+        ("fence+knn lon/lat", args.table, "st_distance_sphere(lon, lat, {lon0}, {lat0})"),
+        ("fence+knn geo_pt", args.gp_table, "st_distance_sphere(loc, {lon0}, {lat0})"),
+    ]:
+        if not table:
+            continue
+        print()
+        print(f"{label:<20} {'k':>5} {'off':>9} {'v45':>9} {'v45_x':>6}")
+        for qname, _table, lon0, lat0, radius in QUERIES:
+            if radius > 200000:
+                continue  # a near-global fence stops being a fence
+            d = dist.format(lon0=lon0, lat0=lat0)
+            results = {}
+            medians = {}
+            for cname, setvars in KNN_CONFIGS:
+                stmt = (f"select /*+ SET_VAR({setvars},enable_geo_index_query=true,"
+                        f"enable_geo_index_exact_filter=true) */ id, {d} as dist "
+                        f"from {table} where {d} < {radius} "
+                        f"order by dist asc, id asc limit {KNN_K}")
+                times = []
+                result = None
+                for i in range(args.runs + 1):
+                    data = run_stmt(args.fe, args.db, args.user, args.password, stmt)
+                    result = tuple(tuple(r) for r in data.get("data", []))
+                    if i > 0:
+                        times.append(data["time"])
+                results[cname] = result
+                medians[cname] = statistics.median(times)
+            if len(set(results.values())) != 1:
+                print(f"!! FENCE+KNN MISMATCH for {label}/{qname}", file=sys.stderr)
+                sys.exit(2)
+            base = medians["knn_off"]
+            v45 = medians["knn_v4"]
+            print(f"{qname:<20} {KNN_K:>5} {base:>8.0f}ms {v45:>8.0f}ms "
+                  f"{base / max(v45, 0.001):>5.1f}x")
+
 
 if __name__ == "__main__":
     main()

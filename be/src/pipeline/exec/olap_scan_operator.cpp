@@ -357,6 +357,8 @@ Status OlapScanLocalState::_init_profile() {
             ADD_COUNTER(_segment_profile, "GeoKnnLeavesScanned", TUnit::UNIT);
     _geo_knn_rows_scored_counter =
             ADD_COUNTER(_segment_profile, "GeoKnnRowsScored", TUnit::UNIT);
+    _geo_knn_bound_skipped_counter =
+            ADD_COUNTER(_segment_profile, "GeoKnnBoundSkippedLeaves", TUnit::UNIT);
     _geo_knn_search_costs = ADD_TIMER(_segment_profile, "GeoKnnSearchCosts");
     _ann_topn_filter_counter = ADD_COUNTER(_segment_profile, "AnnIndexTopNFiltered", TUnit::UNIT);
 
