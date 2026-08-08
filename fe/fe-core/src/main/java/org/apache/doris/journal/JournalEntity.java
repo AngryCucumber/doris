@@ -60,6 +60,7 @@ import org.apache.doris.load.StreamLoadRecordMgr.FetchStreamLoadRecord;
 import org.apache.doris.load.loadv2.LoadJob.LoadJobStateUpdateInfo;
 import org.apache.doris.load.loadv2.LoadJobFinalOperation;
 import org.apache.doris.load.routineload.RoutineLoadJob;
+import org.apache.doris.massdblicense.MassDbLicenseState;
 import org.apache.doris.load.sync.SyncJob;
 import org.apache.doris.mysql.privilege.UserPropertyInfo;
 import org.apache.doris.persist.AlterConstraintLog;
@@ -984,6 +985,11 @@ public class JournalEntity implements Writable {
             }
             case OperationType.OP_OPERATE_KEY: {
                 data = KeyOperationInfo.read(in);
+                isRead = true;
+                break;
+            }
+            case OperationType.OP_MASSDB_LICENSE_STATE: {
+                data = MassDbLicenseState.read(in);
                 isRead = true;
                 break;
             }

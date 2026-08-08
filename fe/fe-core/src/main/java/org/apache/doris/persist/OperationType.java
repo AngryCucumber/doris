@@ -417,6 +417,10 @@ public class OperationType {
 
     public static final short OP_OPERATE_KEY = 492;
 
+    // MassDB License replicated control-plane state. Older FE versions deliberately fail on this
+    // opcode, therefore the first write is protected by the all-member capability upgrade fence.
+    public static final short OP_MASSDB_LICENSE_STATE = 493;
+
     // For cloud.
     public static final short OP_UPDATE_CLOUD_REPLICA = 1000;
     @Deprecated

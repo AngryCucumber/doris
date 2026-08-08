@@ -84,6 +84,7 @@ import org.apache.doris.load.StreamLoadRecordMgr.FetchStreamLoadRecord;
 import org.apache.doris.load.loadv2.LoadJob.LoadJobStateUpdateInfo;
 import org.apache.doris.load.loadv2.LoadJobFinalOperation;
 import org.apache.doris.load.routineload.RoutineLoadJob;
+import org.apache.doris.massdblicense.MassDbLicenseState;
 import org.apache.doris.meta.MetaContext;
 import org.apache.doris.metric.MetricRepo;
 import org.apache.doris.mysql.privilege.UserPropertyInfo;
@@ -1413,6 +1414,10 @@ public class EditLog {
                     env.getKeyManager().replayKeyOperation(info);
                     break;
                 }
+                case OperationType.OP_MASSDB_LICENSE_STATE: {
+                    env.getMassDbLicenseManager().replay((MassDbLicenseState) journal.getData());
+                    break;
+                }
                 case OperationType.OP_BEGIN_SNAPSHOT: {
                     // SnapshotState info = (SnapshotState) journal.getData();
                     // TODO: implement
@@ -2499,6 +2504,10 @@ public class EditLog {
 
     public void logOperateKey(KeyOperationInfo info) {
         logEdit(OperationType.OP_OPERATE_KEY, info);
+    }
+
+    public void logMassDbLicenseState(MassDbLicenseState state) {
+        logEdit(OperationType.OP_MASSDB_LICENSE_STATE, state);
     }
 
     public long logBeginSnapshot(SnapshotState snapshotState) {

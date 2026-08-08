@@ -42,7 +42,8 @@ public class PersistMetaModules {
             "paloAuth", "transactionState", "colocateTableIndex", "routineLoadJobs", "loadJobV2", "smallFiles",
             "plugins", "deleteHandler", "sqlBlockRule", "policy", "globalFunction", "workloadGroups",
             "binlogs", "resourceGroups", "AnalysisMgrV2", "AsyncJobManager", "workloadSchedPolicy",
-            "insertOverwrite", "plsql", "dictionaryManager", "indexPolicy", "KeyManagerStore");
+            "insertOverwrite", "plsql", "dictionaryManager", "indexPolicy", "KeyManagerStore",
+            "massDbLicense");
 
     // The modules in `CloudEnv`.
     public static final ImmutableList<String> CLOUD_MODULE_NAMES = ImmutableList.of("cloudWarmUpJob");

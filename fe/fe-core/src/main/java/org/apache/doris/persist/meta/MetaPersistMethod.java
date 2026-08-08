@@ -272,6 +272,12 @@ public class MetaPersistMethod {
                 metaPersistMethod.writeMethod = Env.class.getDeclaredMethod("saveKeyManagerStore",
                     CountingDataOutputStream.class, long.class);
                 break;
+            case "massDbLicense":
+                metaPersistMethod.readMethod = Env.class.getDeclaredMethod("loadMassDbLicenseState",
+                        DataInputStream.class, long.class);
+                metaPersistMethod.writeMethod = Env.class.getDeclaredMethod("saveMassDbLicenseState",
+                        CountingDataOutputStream.class, long.class);
+                break;
             default:
                 break;
         }

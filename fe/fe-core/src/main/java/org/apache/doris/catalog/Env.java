@@ -138,6 +138,8 @@ import org.apache.doris.load.loadv2.LoadManager;
 import org.apache.doris.load.loadv2.LoadTask;
 import org.apache.doris.load.loadv2.ProgressManager;
 import org.apache.doris.load.routineload.RoutineLoadManager;
+import org.apache.doris.massdblicense.MassDbLicenseManager;
+import org.apache.doris.massdblicense.MassDbLicenseState;
 import org.apache.doris.load.routineload.RoutineLoadScheduler;
 import org.apache.doris.load.routineload.RoutineLoadTaskScheduler;
 import org.apache.doris.master.Checkpoint;
@@ -578,6 +580,8 @@ public class Env {
 
     private KeyManagerInterface keyManager;
 
+    private MassDbLicenseManager massDbLicenseManager;
+
     private StatisticsMetricCollector statisticsMetricCollector;
 
     private AgentTaskCleanupDaemon agentTaskCleanupDaemon;
@@ -841,6 +845,7 @@ public class Env {
         this.dictionaryManager = new DictionaryManager();
         this.keyManagerStore = new KeyManagerStore();
         this.keyManager = KeyManagerFactory.getKeyManager();
+        this.massDbLicenseManager = new MassDbLicenseManager();
         if (Config.agent_task_health_check_intervals_ms > 0) {
             this.agentTaskCleanupDaemon = new AgentTaskCleanupDaemon();
         }
@@ -1000,6 +1005,10 @@ public class Env {
 
     public KeyManagerStore getKeyManagerStore() {
         return keyManagerStore;
+    }
+
+    public MassDbLicenseManager getMassDbLicenseManager() {
+        return massDbLicenseManager;
     }
 
     // use this to get correct ClusterInfoService instance
@@ -2528,6 +2537,12 @@ public class Env {
         return checksum;
     }
 
+    public long loadMassDbLicenseState(DataInputStream in, long checksum) throws IOException {
+        this.massDbLicenseManager.replay(MassDbLicenseState.read(in));
+        LOG.info("finished replay MassDB License state from image");
+        return checksum;
+    }
+
     public long saveInsertOverwrite(CountingDataOutputStream out, long checksum) throws IOException {
         this.insertOverwriteManager.write(out);
         LOG.info("finished save iot to image");
@@ -2826,6 +2841,20 @@ public class Env {
     public long saveKeyManagerStore(CountingDataOutputStream out, long checksum) throws IOException {
         this.keyManagerStore.write(out);
         LOG.info("finished save KeyManager to image");
+        return checksum;
+    }
+
+    public long saveMassDbLicenseState(CountingDataOutputStream out, long checksum) throws IOException {
+        MassDbLicenseState snapshot = this.massDbLicenseManager.snapshot();
+        // Keep the new image module physically empty until the all-member upgrade fence permits
+        // the first License journal. Older FE versions skip empty unknown modules but fail closed
+        // on a non-empty unknown module.
+        if (!snapshot.isInitialized()) {
+            LOG.info("skip empty MassDB License image module before bootstrap");
+            return checksum;
+        }
+        snapshot.write(out);
+        LOG.info("finished save MassDB License state to image");
         return checksum;
     }
 
@@ -7401,4 +7430,3 @@ public class Env {
 
     protected void cloneClusterSnapshot() throws Exception {}
 }
-
