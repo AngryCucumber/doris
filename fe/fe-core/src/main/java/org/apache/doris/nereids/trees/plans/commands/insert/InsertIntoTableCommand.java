@@ -539,6 +539,7 @@ public class InsertIntoTableCommand extends Command implements NeedAuditEncrypti
 
         // step 1, 2, 3
         planner.plan(logicalPlanAdapter, ctx.getSessionVariable().toThrift());
+        stmtExecutor.preflightMassDbLicenseAnalyzedPlan(planner, true);
         if (LOG.isDebugEnabled()) {
             LOG.debug("insert into plan for query_id: {} is: {}.", DebugUtil.printId(ctx.queryId()),
                     planner.getPhysicalPlan().treeString());

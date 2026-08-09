@@ -18,6 +18,8 @@
 package org.apache.doris.httpv2.util.streamresponse;
 
 import org.apache.doris.httpv2.rest.RestApiStatusCode;
+import org.apache.doris.massdblicense.MassDbLicenseQueryGuard;
+import org.apache.doris.massdblicense.MassDbLicenseQueryGuard.QueryOrigin;
 
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
@@ -118,7 +120,7 @@ public class JsonStreamResponse extends StreamResponseInf {
     }
 
     private void writeResultSetData(ResultSet rs, JsonWriter jsonWriter, long startTime)
-                                    throws IOException, SQLException {
+                                    throws Exception {
         // data
         jsonWriter.name("data");
         jsonWriter.beginObject();
@@ -148,7 +150,9 @@ public class JsonStreamResponse extends StreamResponseInf {
         int bufferSize = 0;
         long firstRowTime = 0;
         boolean begin = false;
+        MassDbLicenseQueryGuard.enforceMetadataRead(QueryOrigin.EXTERNAL_MYSQL);
         while (rs.next()) {
+            MassDbLicenseQueryGuard.enforceMetadataRead(QueryOrigin.EXTERNAL_MYSQL);
             List<Object> row = Lists.newArrayListWithCapacity(colNum);
             // index start from 1
             for (int i = 1; i <= colNum; ++i) {

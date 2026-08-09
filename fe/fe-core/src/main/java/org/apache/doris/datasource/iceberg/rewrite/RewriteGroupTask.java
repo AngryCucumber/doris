@@ -168,7 +168,7 @@ public class RewriteGroupTask implements TransientTaskExecutor {
             RewriteTableCommand taskLogicalPlan,
             StatementBase taskParsedStmt) throws Exception {
         // Step 1: Create stmt executor
-        stmtExecutor = new StmtExecutor(taskConnectContext, taskParsedStmt);
+        stmtExecutor = StmtExecutor.createInternal(taskConnectContext, taskParsedStmt);
 
         // Step 2: Create insert executor
         AbstractInsertExecutor insertExecutor = taskLogicalPlan.initPlan(taskConnectContext, stmtExecutor);

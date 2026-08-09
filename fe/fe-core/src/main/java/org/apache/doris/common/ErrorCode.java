@@ -1233,7 +1233,10 @@ public enum ErrorCode {
     ERR_NO_CLUSTER_ERROR(5099, new byte[]{'4', '2', '0', '0', '0'}, "No compute group (cloud cluster) selected"),
 
     ERR_NOT_CLOUD_MODE(6000, new byte[]{'4', '2', '0', '0', '0'},
-            "Command only support in cloud mode.");
+            "Command only support in cloud mode."),
+
+    ERR_MASSDB_LICENSE_QUERY_DENIED(6001, new byte[]{'H', 'Y', '0', '0', '0'},
+            "MassDB License denies this business query: %s");
 
     // This is error code
     private final int code;

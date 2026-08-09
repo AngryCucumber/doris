@@ -25,6 +25,7 @@ import org.apache.doris.common.UserException;
 import org.apache.doris.common.profile.ExecutionProfile;
 import org.apache.doris.common.profile.ProfileManager;
 import org.apache.doris.common.util.DebugUtil;
+import org.apache.doris.massdblicense.MassDbLicenseQueryException;
 import org.apache.doris.metric.MetricRepo;
 import org.apache.doris.system.Backend;
 import org.apache.doris.thrift.TNetworkAddress;
@@ -310,6 +311,31 @@ public final class QeProcessorImpl implements QeProcessor {
             }
         }
         return retQueryInfoMap;
+    }
+
+    /** Cancels only query executors already classified as external protected reads. */
+    public int cancelMassDbLicenseProtectedReads(String errorCode) {
+        int cancelled = 0;
+        for (QueryInfo queryInfo : coordinatorMap.values()) {
+            ConnectContext context = queryInfo.getConnectContext();
+            StmtExecutor executor = context == null ? null : context.getExecutor();
+            if (executor == null) {
+                continue;
+            }
+            try {
+                if (executor.cancelMassDbLicenseProtectedRead(errorCode)) {
+                    cancelled++;
+                }
+            } catch (RuntimeException error) {
+                LOG.warn("Failed to cancel License-denied query {}: {}",
+                        queryInfo.getSql(), error.getMessage());
+            }
+        }
+        if (cancelled > 0) {
+            LOG.info("Cancelled {} protected queries because {}", cancelled,
+                    MassDbLicenseQueryException.message(errorCode));
+        }
+        return cancelled;
     }
 
     public static final class QueryInfo {

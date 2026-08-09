@@ -103,6 +103,7 @@ public class ExplainCommand extends Command implements NoForward {
             ctx.getStatementContext().addPlannerHook(InitMaterializationContextHook.INSTANCE);
         }
         planner.plan(logicalPlanAdapter, ctx.getSessionVariable().toThrift());
+        executor.preflightMassDbLicenseAnalyzedPlan(planner, false);
         executor.setPlanner(planner);
         // Skip SQL block rules check for EXPLAIN statements since they only show
         // the execution plan without actually executing the query

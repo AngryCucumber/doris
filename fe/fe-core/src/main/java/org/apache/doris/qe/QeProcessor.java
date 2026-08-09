@@ -46,4 +46,6 @@ public interface QeProcessor {
     List<Coordinator> getAllCoordinators();
 
     Map<String, QueryInfo> getQueryInfoMap();
+
+    int cancelMassDbLicenseProtectedReads(String errorCode);
 }

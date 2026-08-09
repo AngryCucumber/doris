@@ -124,7 +124,7 @@ public class StreamingJobUtils {
         String sql = String.format(SELECT_SPLITS_TABLE_TEMPLATE, jobId);
         try (AutoCloseConnectContext context
                 = new AutoCloseConnectContext(buildConnectContext())) {
-            StmtExecutor stmtExecutor = new StmtExecutor(context.connectContext, sql);
+            StmtExecutor stmtExecutor = StmtExecutor.createInternal(context.connectContext, sql);
             resultRows = stmtExecutor.executeInternalQuery();
         }
 
@@ -190,7 +190,7 @@ public class StreamingJobUtils {
     private static void execute(String sql) throws Exception {
         try (AutoCloseConnectContext context
                 = new AutoCloseConnectContext(buildConnectContext())) {
-            StmtExecutor stmtExecutor = new StmtExecutor(context.connectContext, sql);
+            StmtExecutor stmtExecutor = StmtExecutor.createInternal(context.connectContext, sql);
             stmtExecutor.execute();
         }
     }

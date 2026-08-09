@@ -62,6 +62,9 @@ import org.apache.doris.common.util.TimeUtils;
 import org.apache.doris.common.util.Util;
 import org.apache.doris.datasource.FileScanNode;
 import org.apache.doris.datasource.tvf.source.TVFScanNode;
+import org.apache.doris.massdblicense.MassDbLicenseQueryException;
+import org.apache.doris.massdblicense.MassDbLicenseQueryGuard;
+import org.apache.doris.massdblicense.MassDbLicenseQueryGuard.QueryOrigin;
 import org.apache.doris.metric.MetricRepo;
 import org.apache.doris.mysql.FieldInfo;
 import org.apache.doris.mysql.MysqlChannel;
@@ -187,6 +190,9 @@ public class StmtExecutor {
     private RedirectStatus redirectStatus = null;
     private Planner planner;
     private boolean isProxy;
+    private final QueryOrigin massDbLicenseQueryOrigin;
+    private volatile boolean massDbLicenseProtectedRead;
+    private volatile String massDbLicenseCancellationCode;
     private ShowResultSet proxyShowResultSet = null;
     private Data.PQueryStatistics.Builder statisticsForAuditLog;
     private boolean isCached;
@@ -211,6 +217,12 @@ public class StmtExecutor {
 
     // this constructor is mainly for proxy
     public StmtExecutor(ConnectContext context, OriginStatement originStmt, boolean isProxy) {
+        this(context, originStmt, isProxy,
+                isProxy ? QueryOrigin.FORWARDED_EXTERNAL : externalQueryOrigin(context));
+    }
+
+    private StmtExecutor(ConnectContext context, OriginStatement originStmt,
+            boolean isProxy, QueryOrigin queryOrigin) {
         Preconditions.checkState(context.getConnectType().equals(ConnectType.MYSQL));
         this.context = context;
         if (context != null) {
@@ -219,6 +231,7 @@ public class StmtExecutor {
         this.originStmt = originStmt;
         this.serializer = context.getMysqlChannel().getSerializer();
         this.isProxy = isProxy;
+        this.massDbLicenseQueryOrigin = queryOrigin;
         this.statementContext = new StatementContext(context, originStmt);
         this.context.setStatementContext(statementContext);
         this.profile = new Profile(
@@ -239,10 +252,16 @@ public class StmtExecutor {
     }
 
     public StmtExecutor(ConnectContext ctx, StatementBase parsedStmt, boolean isComStmtExecute) {
+        this(ctx, parsedStmt, isComStmtExecute, externalQueryOrigin(ctx));
+    }
+
+    private StmtExecutor(ConnectContext ctx, StatementBase parsedStmt,
+            boolean isComStmtExecute, QueryOrigin queryOrigin) {
         this.context = ctx;
         this.parsedStmt = parsedStmt;
         this.originStmt = parsedStmt.getOrigStmt();
         this.isComStmtExecute = isComStmtExecute;
+        this.massDbLicenseQueryOrigin = queryOrigin;
         if (context.getConnectType() == ConnectType.MYSQL) {
             this.serializer = context.getMysqlChannel().getSerializer();
         } else {
@@ -263,6 +282,32 @@ public class StmtExecutor {
                             context.getSessionVariable().enableProfile(),
                             context.getSessionVariable().getProfileLevel(),
                             context.getSessionVariable().getAutoProfileThresholdMs());
+    }
+
+    /** Trusted factory for FE background work; network callers cannot select this origin. */
+    public static StmtExecutor createInternal(ConnectContext context, String stmt) {
+        StmtExecutor executor = new StmtExecutor(context, new OriginStatement(stmt, 0),
+                false, QueryOrigin.INTERNAL);
+        executor.stmtName = stmt;
+        return executor;
+    }
+
+    /** Trusted factory for already-parsed FE background work. */
+    public static StmtExecutor createInternal(ConnectContext context, StatementBase parsedStmt) {
+        return new StmtExecutor(context, parsedStmt, false, QueryOrigin.INTERNAL);
+    }
+
+    /** Trusted factory used only by the dedicated HTTP Stream Load planning RPC. */
+    public static StmtExecutor createExternalHttpLoad(ConnectContext context, String stmt) {
+        StmtExecutor executor = new StmtExecutor(context, new OriginStatement(stmt, 0),
+                false, QueryOrigin.EXTERNAL_HTTP_LOAD);
+        executor.stmtName = stmt;
+        return executor;
+    }
+
+    private static QueryOrigin externalQueryOrigin(ConnectContext context) {
+        return context != null && context.getConnectType() == ConnectType.ARROW_FLIGHT_SQL
+                ? QueryOrigin.EXTERNAL_ARROW : QueryOrigin.EXTERNAL_MYSQL;
     }
 
     public boolean isProxy() {
@@ -636,6 +681,7 @@ public class StmtExecutor {
                     ? statementContext.getPlaceholders() : context.getStatementContext().getPlaceholders();
             logicalPlan = new PrepareCommand(prepareStmtName, logicalPlan, placeholders, originStmt);
         }
+        preflightMassDbLicenseParsedPlan(logicalPlan);
         // when we in transaction mode, we only support insert into command and transaction command
         if (context.isTxnModel()) {
             if (!(logicalPlan instanceof BatchInsertIntoTableCommand || logicalPlan instanceof InsertIntoTableCommand
@@ -690,6 +736,8 @@ public class StmtExecutor {
                 context.setState(e.getQueryState());
                 throw new NereidsException("Command(" + originStmt.originStmt + ") process failed",
                         new AnalysisException(e.getMessage(), e));
+            } catch (MassDbLicenseQueryException e) {
+                throw e;
             } catch (UserException e) {
                 // Return message to info client what happened.
                 if (LOG.isDebugEnabled()) {
@@ -747,7 +795,10 @@ public class StmtExecutor {
             try {
                 checkBlockRulesByRegex(originStmt);
                 planner.plan(parsedStmt, context.getSessionVariable().toThrift());
+                preflightMassDbLicenseAnalyzedPlan(planner, false);
                 checkBlockRulesByScan(planner);
+            } catch (MassDbLicenseQueryException e) {
+                throw e;
             } catch (Exception e) {
                 LOG.warn("Nereids plan query failed:\n{}", originStmt.originStmt, e);
                 throw new NereidsException(new AnalysisException(e.getMessage(), e));
@@ -1113,6 +1164,20 @@ public class StmtExecutor {
         cancel(cancelReason, true);
     }
 
+    /** Called by the component-local one-second License sweep; never cancels ingestion/internal work. */
+    public synchronized boolean cancelMassDbLicenseProtectedRead(String errorCode) {
+        if (!massDbLicenseProtectedRead || massDbLicenseQueryOrigin == QueryOrigin.INTERNAL) {
+            return false;
+        }
+        if (massDbLicenseCancellationCode != null) {
+            return false;
+        }
+        cancel(new Status(TStatusCode.CANCELLED,
+                MassDbLicenseQueryException.message(errorCode)), false);
+        massDbLicenseCancellationCode = errorCode;
+        return true;
+    }
+
     private Optional<InsertOverwriteTableCommand> getInsertOverwriteTableCommand() {
         if (parsedStmt instanceof LogicalPlanAdapter) {
             LogicalPlanAdapter logicalPlanAdapter = (LogicalPlanAdapter) parsedStmt;
@@ -1320,6 +1385,9 @@ public class StmtExecutor {
             while (true) {
                 // register the fetch result time.
                 profile.getSummaryProfile().setTempStartTime();
+                if (massDbLicenseProtectedRead) {
+                    MassDbLicenseQueryGuard.enforceCurrentDecision(massDbLicenseQueryOrigin);
+                }
                 batch = coordBase.getNext();
                 profile.getSummaryProfile().freshFetchResultConsumeTime();
 
@@ -1705,7 +1773,8 @@ public class StmtExecutor {
         } else if (context.getConnectType().equals(ConnectType.ARROW_FLIGHT_SQL)) {
             context.updateReturnRows(resultSet.getResultRows().size());
             context.getFlightSqlChannel()
-                    .addResult(DebugUtil.printId(context.queryId()), context.getRunningQuery(), resultSet);
+                    .addResult(DebugUtil.printId(context.queryId()), context.getRunningQuery(),
+                            resultSet, massDbLicenseProtectedRead);
             context.getState().setEof();
         } else {
             LOG.error("sendResultSet error connect type");
@@ -1822,7 +1891,8 @@ public class StmtExecutor {
             }
         } else if (context.getConnectType() == ConnectType.ARROW_FLIGHT_SQL) {
             context.getFlightSqlChannel()
-                    .addResult(DebugUtil.printId(context.queryId()), context.getRunningQuery(), metaData, result);
+                    .addResult(DebugUtil.printId(context.queryId()), context.getRunningQuery(),
+                            metaData, result, massDbLicenseProtectedRead);
             context.setReturnResultFromLocal(true);
         }
         context.getState().setEof();
@@ -1844,7 +1914,8 @@ public class StmtExecutor {
             }
         } else if (context.getConnectType() == ConnectType.ARROW_FLIGHT_SQL) {
             context.getFlightSqlChannel()
-                    .addResult(DebugUtil.printId(context.queryId()), context.getRunningQuery(), metaData, result);
+                    .addResult(DebugUtil.printId(context.queryId()), context.getRunningQuery(),
+                            metaData, result, massDbLicenseProtectedRead);
             context.setReturnResultFromLocal(true);
         }
         context.getState().setEof();
@@ -1889,8 +1960,10 @@ public class StmtExecutor {
         Preconditions.checkState(parsedStmt instanceof LogicalPlanAdapter,
                 "Nereids only process LogicalPlanAdapter,"
                         + " but parsedStmt is " + parsedStmt.getClass().getName());
+        preflightMassDbLicenseParsedPlan(((LogicalPlanAdapter) parsedStmt).getLogicalPlan());
         NereidsPlanner nereidsPlanner = new PrepareCommandPlanner(statementContext);
         nereidsPlanner.plan(parsedStmt, context.getSessionVariable().toThrift());
+        preflightMassDbLicenseAnalyzedPlan(nereidsPlanner, false);
         return nereidsPlanner.getCascadesContext().getRewritePlan().getOutput();
     }
 
@@ -1914,8 +1987,11 @@ public class StmtExecutor {
                 context.getState().setNereids(true);
                 context.getState().setIsQuery(true);
                 context.getState().setInternal(true);
+                preflightMassDbLicenseParsedPlan(
+                        ((LogicalPlanAdapter) parsedStmt).getLogicalPlan());
                 planner = new NereidsPlanner(statementContext);
                 planner.plan(parsedStmt, context.getSessionVariable().toThrift());
+                preflightMassDbLicenseAnalyzedPlan(planner, false);
             } catch (Exception e) {
                 LOG.warn("Failed to run internal SQL: {}", originStmt, e);
                 throw new RuntimeException("Failed to execute internal SQL. " + Util.getRootCauseMessage(e), e);
@@ -2027,6 +2103,11 @@ public class StmtExecutor {
                 "Nereids only process LogicalPlanAdapter, but parsedStmt is " + parsedStmt.getClass().getName());
         context.getState().setNereids(true);
         InsertIntoTableCommand insert = (InsertIntoTableCommand) ((LogicalPlanAdapter) parsedStmt).getLogicalPlan();
+        try {
+            preflightMassDbLicenseParsedPlan(insert);
+        } catch (UserException error) {
+            throw new NereidsException(new AnalysisException(error.getMessage(), error));
+        }
 
         try {
             if (!StringUtils.isEmpty(context.getSessionVariable().groupCommit)) {
@@ -2130,6 +2211,26 @@ public class StmtExecutor {
 
     public ConnectContext getContext() {
         return context;
+    }
+
+    /** Called by insert/rewrite commands after analysis and before executor/transaction creation. */
+    public void preflightMassDbLicenseAnalyzedPlan(Planner analyzedPlanner, boolean ingestionPlan)
+            throws UserException {
+        boolean protectedRead = MassDbLicenseQueryGuard.isProtectedAnalyzedPlan(
+                massDbLicenseQueryOrigin, analyzedPlanner.getScanNodes(), ingestionPlan);
+        massDbLicenseProtectedRead |= protectedRead;
+        if (protectedRead) {
+            MassDbLicenseQueryGuard.enforceCurrentDecision(massDbLicenseQueryOrigin);
+        }
+    }
+
+    private void preflightMassDbLicenseParsedPlan(LogicalPlan logicalPlan) throws UserException {
+        boolean protectedRead = MassDbLicenseQueryGuard.isProtectedParsedPlan(
+                massDbLicenseQueryOrigin, logicalPlan);
+        massDbLicenseProtectedRead |= protectedRead;
+        if (protectedRead) {
+            MassDbLicenseQueryGuard.enforceCurrentDecision(massDbLicenseQueryOrigin);
+        }
     }
 
     public OriginStatement getOriginStmt() {

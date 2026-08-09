@@ -69,6 +69,7 @@ import org.apache.doris.common.MetaNotFoundException;
 import org.apache.doris.common.Pair;
 import org.apache.doris.common.ThreadPoolManager;
 import org.apache.doris.common.UserException;
+import org.apache.doris.common.Version;
 import org.apache.doris.common.cache.NereidsSortedPartitionsCacheManager;
 import org.apache.doris.common.cache.NereidsSqlCacheManager;
 import org.apache.doris.common.io.CountingDataOutputStream;
@@ -138,10 +139,24 @@ import org.apache.doris.load.loadv2.LoadManager;
 import org.apache.doris.load.loadv2.LoadTask;
 import org.apache.doris.load.loadv2.ProgressManager;
 import org.apache.doris.load.routineload.RoutineLoadManager;
-import org.apache.doris.massdblicense.MassDbLicenseManager;
-import org.apache.doris.massdblicense.MassDbLicenseState;
 import org.apache.doris.load.routineload.RoutineLoadScheduler;
 import org.apache.doris.load.routineload.RoutineLoadTaskScheduler;
+import org.apache.doris.massdblicense.MassDbLicenseBootstrapCore;
+import org.apache.doris.massdblicense.MassDbLicenseBootstrapMarker;
+import org.apache.doris.massdblicense.MassDbLicenseBuildIdentity;
+import org.apache.doris.massdblicense.MassDbLicenseFeRoleClient;
+import org.apache.doris.massdblicense.MassDbLicenseFeRoleTransport;
+import org.apache.doris.massdblicense.MassDbLicenseImportCore;
+import org.apache.doris.massdblicense.MassDbLicenseJettyIdentityController;
+import org.apache.doris.massdblicense.MassDbLicenseLeaderReconciler;
+import org.apache.doris.massdblicense.MassDbLicenseLocalSnapshotStore;
+import org.apache.doris.massdblicense.MassDbLicenseManager;
+import org.apache.doris.massdblicense.MassDbLicenseReadApiCore;
+import org.apache.doris.massdblicense.MassDbLicenseRootTrustLoader;
+import org.apache.doris.massdblicense.MassDbLicenseState;
+import org.apache.doris.massdblicense.MassDbLicenseUpgradeCore;
+import org.apache.doris.massdblicense.MassDbLicenseUpgradeMarker;
+import org.apache.doris.massdblicense.MassDbLicenseUpgradeRuntime;
 import org.apache.doris.master.Checkpoint;
 import org.apache.doris.master.MetaHelper;
 import org.apache.doris.master.PartitionInfoCollector;
@@ -312,6 +327,7 @@ import java.io.File;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -580,7 +596,31 @@ public class Env {
 
     private KeyManagerInterface keyManager;
 
-    private MassDbLicenseManager massDbLicenseManager;
+    // Runtime-only License services. Authoritative state is journaled independently and these
+    // objects must never become part of an unrelated catalog Gson graph or image payload.
+    private transient MassDbLicenseManager massDbLicenseManager;
+
+    private transient MassDbLicenseImportCore massDbLicenseImportCore;
+
+    private transient MassDbLicenseBootstrapCore massDbLicenseBootstrapCore;
+
+    private transient MassDbLicenseBootstrapMarker.Attestation massDbLicenseBootstrapAttestation;
+
+    private transient MassDbLicenseUpgradeMarker.Attestation massDbLicenseUpgradeAttestation;
+
+    private transient MassDbLicenseUpgradeCore massDbLicenseUpgradeCore;
+
+    private transient MassDbLicenseReadApiCore massDbLicenseReadApiCore;
+
+    private transient MassDbLicenseLocalSnapshotStore massDbLicenseLocalSnapshotStore;
+
+    private transient MassDbLicenseLeaderReconciler massDbLicenseLeaderReconciler;
+
+    private transient MassDbLicenseFeRoleTransport massDbLicenseFeRoleTransport;
+
+    private transient MassDbLicenseFeRoleClient massDbLicenseFeRoleClient;
+
+    private transient MassDbLicenseJettyIdentityController massDbLicenseJettyIdentityController;
 
     private StatisticsMetricCollector statisticsMetricCollector;
 
@@ -846,6 +886,99 @@ public class Env {
         this.keyManagerStore = new KeyManagerStore();
         this.keyManager = KeyManagerFactory.getKeyManager();
         this.massDbLicenseManager = new MassDbLicenseManager();
+        this.massDbLicenseLeaderReconciler = new MassDbLicenseLeaderReconciler(
+                this.massDbLicenseManager);
+        boolean licenseBootstrapMarkerConfigured =
+                !Config.massdb_license_bootstrap_marker_file.trim().isEmpty();
+        boolean licenseUpgradeMarkerConfigured =
+                !Config.massdb_license_upgrade_marker_file.trim().isEmpty();
+        if (licenseBootstrapMarkerConfigured && licenseUpgradeMarkerConfigured) {
+            throw new IllegalStateException(
+                    "MassDB License bootstrap and existing-cluster upgrade markers are exclusive");
+        }
+        if ((licenseBootstrapMarkerConfigured || licenseUpgradeMarkerConfigured)
+                && (!Config.massdb_license_management_api_enabled
+                        || !Config.massdb_license_role_mtls_enabled)) {
+            throw new IllegalStateException(
+                    "MassDB License marker requires management API and role mTLS");
+        }
+        this.massDbLicenseImportCore = MassDbLicenseRootTrustLoader.loadImportCoreIfConfigured(
+                Config.massdb_license_root_trust_dir,
+                Config.massdb_license_max_term_seconds);
+        if (this.massDbLicenseImportCore != null) {
+            this.massDbLicenseBootstrapCore = new MassDbLicenseBootstrapCore(
+                    this.massDbLicenseImportCore);
+            this.massDbLicenseLocalSnapshotStore = new MassDbLicenseLocalSnapshotStore(
+                    new File(Config.meta_dir, "massdb-license").toPath());
+            if (licenseBootstrapMarkerConfigured) {
+                this.massDbLicenseBootstrapAttestation = MassDbLicenseBootstrapMarker.inspect(
+                        new File(Config.massdb_license_bootstrap_marker_file).toPath(),
+                        new File(Config.meta_dir).toPath());
+            }
+            MassDbLicenseBuildIdentity buildIdentity = null;
+            if (licenseUpgradeMarkerConfigured) {
+                buildIdentity = MassDbLicenseBuildIdentity.current();
+                this.massDbLicenseUpgradeAttestation = MassDbLicenseUpgradeMarker.inspect(
+                        new File(Config.massdb_license_upgrade_marker_file).toPath(),
+                        new File(Config.meta_dir).toPath(), buildIdentity,
+                        this.massDbLicenseLocalSnapshotStore.getNodeUuid(),
+                        Instant.now().getEpochSecond());
+            }
+            this.massDbLicenseReadApiCore = this.massDbLicenseImportCore.createReadApiCore(
+                    Version.DORIS_BUILD_VERSION);
+            this.massDbLicenseLeaderReconciler.setNormalImportCore(
+                    this.massDbLicenseImportCore);
+            this.massDbLicenseLeaderReconciler.setControlledImportCore(
+                    this.massDbLicenseImportCore.createCorrectionCore());
+            this.massDbLicenseLeaderReconciler.setClockRecoveryCore(
+                    this.massDbLicenseImportCore.createClockRecoveryCore());
+            this.massDbLicenseLeaderReconciler.setKeysetControlCore(
+                    this.massDbLicenseImportCore.createKeysetControlCore());
+            if (Config.massdb_license_role_mtls_enabled) {
+                this.massDbLicenseFeRoleTransport = new MassDbLicenseFeRoleTransport(
+                        this.massDbLicenseManager, true);
+                this.massDbLicenseLeaderReconciler.setTrustedRoleTransport(
+                        this.massDbLicenseFeRoleTransport);
+                this.massDbLicenseFeRoleClient = MassDbLicenseFeRoleClient.createConfigured(
+                        this.massDbLicenseManager, this.massDbLicenseImportCore,
+                        this.massDbLicenseLocalSnapshotStore);
+                this.massDbLicenseJettyIdentityController =
+                        new MassDbLicenseJettyIdentityController(
+                                this.massDbLicenseFeRoleClient.getIdentityProvider(),
+                                Config.massdb_license_role_exchange_interval_ms);
+                if (licenseUpgradeMarkerConfigured) {
+                    MassDbLicenseUpgradeRuntime upgradeRuntime =
+                            new MassDbLicenseUpgradeRuntime(this,
+                                    this.massDbLicenseLocalSnapshotStore,
+                                    this.massDbLicenseFeRoleClient.getIdentityProvider(),
+                                    Config.massdb_license_role_request_timeout_ms);
+                    this.massDbLicenseUpgradeCore = new MassDbLicenseUpgradeCore(
+                            this.massDbLicenseImportCore,
+                            this.massDbLicenseUpgradeAttestation,
+                            buildIdentity, upgradeRuntime, upgradeRuntime);
+                }
+            }
+            LOG.info("MassDB License root trust已加载，NORMAL coordinator已注册，maxTermSeconds={}",
+                    Config.massdb_license_max_term_seconds);
+        } else {
+            if (Config.massdb_license_role_mtls_enabled
+                    || Config.massdb_license_management_api_enabled) {
+                throw new IllegalStateException(
+                        "MassDB License role mTLS and management API require configured root trust");
+            }
+            LOG.info("MassDB License root trust未配置，保持旧集群兼容且管理写入口关闭");
+        }
+        if (Config.massdb_license_management_api_enabled) {
+            if (!Config.massdb_license_role_mtls_enabled) {
+                throw new IllegalStateException(
+                        "MassDB License management API requires role mTLS");
+            }
+            if (Config.massdb_license_operation_ack_deadline_seconds < 300
+                    || Config.massdb_license_operation_ack_deadline_seconds > 3600) {
+                throw new IllegalStateException(
+                        "MassDB License operation ACK deadline must be between 300 and 3600 seconds");
+            }
+        }
         if (Config.agent_task_health_check_intervals_ms > 0) {
             this.agentTaskCleanupDaemon = new AgentTaskCleanupDaemon();
         }
@@ -1009,6 +1142,59 @@ public class Env {
 
     public MassDbLicenseManager getMassDbLicenseManager() {
         return massDbLicenseManager;
+    }
+
+    public MassDbLicenseImportCore getMassDbLicenseImportCore() {
+        return massDbLicenseImportCore;
+    }
+
+    public MassDbLicenseBootstrapCore getMassDbLicenseBootstrapCore() {
+        return massDbLicenseBootstrapCore;
+    }
+
+    public MassDbLicenseBootstrapMarker.Attestation getMassDbLicenseBootstrapAttestation() {
+        return massDbLicenseBootstrapAttestation;
+    }
+
+    public MassDbLicenseUpgradeMarker.Attestation getMassDbLicenseUpgradeAttestation() {
+        return massDbLicenseUpgradeAttestation;
+    }
+
+    public MassDbLicenseUpgradeCore getMassDbLicenseUpgradeCore() {
+        return massDbLicenseUpgradeCore;
+    }
+
+    public MassDbLicenseReadApiCore getMassDbLicenseReadApiCore() {
+        return massDbLicenseReadApiCore;
+    }
+
+    public MassDbLicenseLocalSnapshotStore getMassDbLicenseLocalSnapshotStore() {
+        return massDbLicenseLocalSnapshotStore;
+    }
+
+    public MassDbLicenseLeaderReconciler getMassDbLicenseLeaderReconciler() {
+        return massDbLicenseLeaderReconciler;
+    }
+
+    public MassDbLicenseFeRoleTransport getMassDbLicenseFeRoleTransport() {
+        return massDbLicenseFeRoleTransport;
+    }
+
+    public MassDbLicenseJettyIdentityController getMassDbLicenseJettyIdentityController() {
+        return massDbLicenseJettyIdentityController;
+    }
+
+    /** Returns null on old/unconfigured clusters so introducing the guard remains backward compatible. */
+    public MassDbLicenseLocalSnapshotStore.QueryDecision evaluateMassDbLicenseLocalQuery() {
+        return massDbLicenseFeRoleClient == null
+                ? null : massDbLicenseFeRoleClient.evaluateLocalQuery();
+    }
+
+    /** Called after every public business-read entrypoint has installed its component-local guard. */
+    public void markMassDbLicenseQueryGuardInstalled() {
+        if (massDbLicenseFeRoleClient != null) {
+            massDbLicenseFeRoleClient.markQueryGuardInstalled();
+        }
     }
 
     // use this to get correct ClusterInfoService instance
@@ -1876,6 +2062,11 @@ public class Env {
 
     // start all daemon threads only running on Master
     protected void startMasterOnlyDaemonThreads() {
+        // Record OPEN before any Master-only background service can create additional
+        // consistency state. The durable local first-start claim makes a crash before this
+        // journal retryable without treating an arbitrary existing image/BDB as fresh.
+        openMassDbLicenseBootstrapIfEligible();
+
         // start checkpoint thread
         checkpointer = new Checkpoint(editLog);
         checkpointer.setMetaContext(metaContext);
@@ -1889,6 +2080,9 @@ public class Env {
         // heartbeat mgr
         heartbeatMgr.setMaster(clusterId, token, epoch);
         heartbeatMgr.start();
+
+        // The reconciler waits for catalog readiness and mutates only through the FE journal.
+        massDbLicenseLeaderReconciler.start();
 
         // alive session of all fes' mgr
         feSessionMgr.setClusterId(clusterId);
@@ -1975,8 +2169,56 @@ public class Env {
         agentTaskCleanupDaemon.start();
     }
 
+    private void openMassDbLicenseBootstrapIfEligible() {
+        if (massDbLicenseBootstrapCore == null) {
+            return;
+        }
+        MassDbLicenseBootstrapMarker.Attestation attestation =
+                massDbLicenseBootstrapAttestation;
+        MassDbLicenseState current = massDbLicenseManager.snapshot();
+        if (current.isInitialized()) {
+            // A crash can happen after the OPEN journal is accepted but before the local
+            // claim is marked. Reconcile only an exact marker/deployment/plan match.
+            if (attestation != null && attestation.isEligible()
+                    && attestation.bootstrapMarkerId.equals(current.getBootstrapMarkerId())
+                    && attestation.licenseControlDeploymentUuid.equals(
+                            current.getLicenseControlDeploymentUuid())
+                    && attestation.bootstrapPlanSha256.equals(
+                            current.getBootstrapPlanSha256())) {
+                massDbLicenseBootstrapAttestation =
+                        MassDbLicenseBootstrapMarker.markOpenRecorded(
+                                new File(Config.massdb_license_bootstrap_marker_file).toPath(),
+                                new File(Config.meta_dir).toPath(), attestation,
+                                Math.max(Instant.now().getEpochSecond(),
+                                        current.getBootstrapMarkerCreatedAt()));
+            }
+            return;
+        }
+        if (attestation == null || !attestation.isEligible()) {
+            if (attestation != null && attestation.status
+                    == MassDbLicenseBootstrapMarker.Status.SEALED) {
+                LOG.warn("MassDB License bootstrap保持关闭，首启证据无效 code={}",
+                        attestation.reasonCode);
+            }
+            return;
+        }
+        MassDbLicenseState opened = massDbLicenseManager.transition(state -> state.openBootstrap(
+                attestation.bootstrapMarkerId, attestation.licenseControlDeploymentUuid,
+                attestation.bootstrapPlanSha256, attestation.createdAt));
+        massDbLicenseBootstrapAttestation = MassDbLicenseBootstrapMarker.markOpenRecorded(
+                new File(Config.massdb_license_bootstrap_marker_file).toPath(),
+                new File(Config.meta_dir).toPath(), attestation,
+                Math.max(Instant.now().getEpochSecond(), attestation.createdAt));
+        LOG.info("MassDB License bootstrap已进入OPEN，markerId={} planSha256={} generation={}",
+                opened.getBootstrapMarkerId(), opened.getBootstrapPlanSha256(),
+                opened.getBootstrapSealGeneration());
+    }
+
     // start threads that should run on all FE
     protected void startNonMasterDaemonThreads() {
+        if (massDbLicenseFeRoleClient != null) {
+            massDbLicenseFeRoleClient.start();
+        }
         // start load manager thread
         tokenManager.start();
         loadManager.start();

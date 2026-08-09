@@ -167,7 +167,7 @@ public class InsertTask extends AbstractTask {
     }
 
     public static StmtExecutor makeStmtExecutor(ConnectContext ctx) {
-        return new StmtExecutor(ctx, (String) null);
+        return StmtExecutor.createInternal(ctx, (String) null);
     }
 
     @Override
@@ -183,7 +183,8 @@ public class InsertTask extends AbstractTask {
             this.command = (InsertIntoTableCommand) parser.parseSingle(sql);
             this.command.setLabelName(Optional.of(getJobId() + LABEL_SPLITTER + getTaskId()));
             this.command.setJobId(getTaskId());
-            stmtExecutor = new StmtExecutor(ctx, new LogicalPlanAdapter(command, ctx.getStatementContext()));
+            stmtExecutor = StmtExecutor.createInternal(
+                    ctx, new LogicalPlanAdapter(command, ctx.getStatementContext()));
         }
 
         super.before();

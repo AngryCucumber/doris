@@ -150,7 +150,7 @@ public class ExportTaskExecutor implements TransientTaskExecutor {
 
             try (AutoCloseConnectContext r = buildConnectContext()) {
                 LOG.debug("[Export Task] taskId: {} executing", taskId);
-                stmtExecutor = new StmtExecutor(r.connectContext, selectStmt.get());
+                stmtExecutor = StmtExecutor.createInternal(r.connectContext, selectStmt.get());
                 stmtExecutor.execute();
                 if (r.connectContext.getState().getStateType() == MysqlStateType.ERR) {
                     LOG.debug("[Export Task] taskId: {} failed with MySQL error: {}", taskId,

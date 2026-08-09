@@ -61,8 +61,10 @@ public final class MassDbLicenseProtocolV1 {
     public static final String KEYSET_TYPE = "MASSDB_TRUSTED_KEYSET";
     public static final String CLOCK_RECOVERY_TYPE = "MASSDB_CLOCK_RECOVERY";
     public static final String RECOVERY_BUNDLE_TYPE = "MASSDB_KEYSET_LICENSE_RECOVERY_BUNDLE";
+    public static final String IDENTITY_PACKAGE_TYPE = "MASSDB_IDENTITY_PACKAGE";
     public static final long ISSUED_AT_FUTURE_TOLERANCE_SECONDS = 300;
     public static final long MAX_CLOCK_RECOVERY_TERM_SECONDS = 259_200;
+    public static final long MAX_IDENTITY_TERM_SECONDS = 2_592_000;
     public static final int MAX_ARTIFACT_BYTES = 65_536;
 
     private static final int KIND_UNSIGNED = 0;
@@ -271,8 +273,20 @@ public final class MassDbLicenseProtocolV1 {
             return recoverySequence;
         }
 
+        public long getObservedMaxSeenWallClock() {
+            return observedMaxSeenWallClock;
+        }
+
         public long getResetMaxSeenWallClockTo() {
             return resetMaxSeenWallClockTo;
+        }
+
+        public long getIssuedAt() {
+            return issuedAt;
+        }
+
+        public long getArtifactExpiresAt() {
+            return artifactExpiresAt;
         }
     }
 
@@ -310,6 +324,155 @@ public final class MassDbLicenseProtocolV1 {
         }
 
         public ClockRecovery getPayload() {
+            return payload;
+        }
+
+        public String getKid() {
+            return kid;
+        }
+
+        public String getSha256() {
+            return sha256;
+        }
+    }
+
+    public static final class VerifiedRecoveryBundle {
+        private final VerifiedKeyset keyset;
+        private final VerifiedLicense license;
+        private final byte[] keysetArtifact;
+        private final byte[] licenseArtifact;
+        private final String sha256;
+
+        private VerifiedRecoveryBundle(VerifiedKeyset keyset, VerifiedLicense license,
+                byte[] keysetArtifact, byte[] licenseArtifact, String sha256) {
+            this.keyset = keyset;
+            this.license = license;
+            this.keysetArtifact = keysetArtifact.clone();
+            this.licenseArtifact = licenseArtifact.clone();
+            this.sha256 = sha256;
+        }
+
+        public VerifiedKeyset getKeyset() {
+            return keyset;
+        }
+
+        public VerifiedLicense getLicense() {
+            return license;
+        }
+
+        public byte[] getKeysetArtifact() {
+            return keysetArtifact.clone();
+        }
+
+        public byte[] getLicenseArtifact() {
+            return licenseArtifact.clone();
+        }
+
+        public String getSha256() {
+            return sha256;
+        }
+    }
+
+    /** Signed transport identity package. It never contains the node private key. */
+    public static final class IdentityPackage {
+        private final long generation;
+        private final long issuedAt;
+        private final long notBefore;
+        private final long notAfter;
+        private final String component;
+        private final String deploymentUuid;
+        private final String role;
+        private final String nodeUuid;
+        private final byte[] csrSha256;
+        private final String leafCertificatePem;
+        private final List<String> chainPem;
+        private final List<String> trustBundles;
+        private final List<String> revocations;
+
+        private IdentityPackage(long generation, long issuedAt, long notBefore, long notAfter,
+                String component, String deploymentUuid, String role, String nodeUuid,
+                byte[] csrSha256, String leafCertificatePem, List<String> chainPem,
+                List<String> trustBundles, List<String> revocations) {
+            this.generation = generation;
+            this.issuedAt = issuedAt;
+            this.notBefore = notBefore;
+            this.notAfter = notAfter;
+            this.component = component;
+            this.deploymentUuid = deploymentUuid;
+            this.role = role;
+            this.nodeUuid = nodeUuid;
+            this.csrSha256 = csrSha256.clone();
+            this.leafCertificatePem = leafCertificatePem;
+            this.chainPem = Collections.unmodifiableList(new ArrayList<>(chainPem));
+            this.trustBundles = Collections.unmodifiableList(new ArrayList<>(trustBundles));
+            this.revocations = Collections.unmodifiableList(new ArrayList<>(revocations));
+        }
+
+        public long getGeneration() {
+            return generation;
+        }
+
+        public long getIssuedAt() {
+            return issuedAt;
+        }
+
+        public long getNotBefore() {
+            return notBefore;
+        }
+
+        public long getNotAfter() {
+            return notAfter;
+        }
+
+        public String getComponent() {
+            return component;
+        }
+
+        public String getDeploymentUuid() {
+            return deploymentUuid;
+        }
+
+        public String getRole() {
+            return role;
+        }
+
+        public String getNodeUuid() {
+            return nodeUuid;
+        }
+
+        public byte[] getCsrSha256() {
+            return csrSha256.clone();
+        }
+
+        public String getLeafCertificatePem() {
+            return leafCertificatePem;
+        }
+
+        public List<String> getChainPem() {
+            return chainPem;
+        }
+
+        public List<String> getTrustBundles() {
+            return trustBundles;
+        }
+
+        public List<String> getRevocations() {
+            return revocations;
+        }
+    }
+
+    public static final class VerifiedIdentityPackage {
+        private final IdentityPackage payload;
+        private final String kid;
+        private final String sha256;
+
+        private VerifiedIdentityPackage(IdentityPackage payload, String kid, String sha256) {
+            this.payload = payload;
+            this.kid = kid;
+            this.sha256 = sha256;
+        }
+
+        public IdentityPackage getPayload() {
             return payload;
         }
 
@@ -425,6 +588,12 @@ public final class MassDbLicenseProtocolV1 {
 
     public static VerifiedLicense verifyRecoveryBundle(byte[] artifact,
             Map<String, PublicKey> roots, long effectiveNow, long maxTerm, long currentVersion) {
+        return verifyRecoveryBundleFull(artifact, roots, effectiveNow,
+                maxTerm, currentVersion).getLicense();
+    }
+
+    public static VerifiedRecoveryBundle verifyRecoveryBundleFull(byte[] artifact,
+            Map<String, PublicKey> roots, long effectiveNow, long maxTerm, long currentVersion) {
         Value root = decodeAll(artifact);
         Map<Long, Value> fields = exactMap(root, 1, 2, 3, 4);
         requireKind(fields.get(1L), KIND_UNSIGNED, "bundle version");
@@ -435,9 +604,82 @@ public final class MassDbLicenseProtocolV1 {
                 || !RECOVERY_BUNDLE_TYPE.equals(fields.get(2L).text)) {
             fail("MASSDB_LICENSE_FILE_INVALID", "recovery bundle字段错误");
         }
+        byte[] keysetArtifact = fields.get(3L).bytes;
+        byte[] licenseArtifact = fields.get(4L).bytes;
         VerifiedKeyset keyset = verifyKeyset(
-                fields.get(3L).bytes, roots, effectiveNow, currentVersion);
-        return verifyLicense(fields.get(4L).bytes, keyset, effectiveNow, maxTerm, null);
+                keysetArtifact, roots, effectiveNow, currentVersion);
+        VerifiedLicense license = verifyLicense(
+                licenseArtifact, keyset, effectiveNow, maxTerm, null);
+        return new VerifiedRecoveryBundle(keyset, license, keysetArtifact,
+                licenseArtifact, sha256Hex(artifact));
+    }
+
+    /**
+     * Verifies the dedicated Identity Artifact signature and its exact node/CSR binding.
+     * Certificate-chain and local-private-key checks are intentionally performed by the
+     * component identity store immediately before atomic activation.
+     */
+    public static VerifiedIdentityPackage verifyIdentityPackage(byte[] artifact,
+            Map<String, PublicKey> identityArtifactRoots, long effectiveNow,
+            Long currentGeneration, String expectedComponent, String expectedDeploymentUuid,
+            String expectedRole, String expectedNodeUuid, byte[] expectedCsrSha256) {
+        return verifyIdentityPackageInternal(artifact, identityArtifactRoots, effectiveNow,
+                currentGeneration, expectedComponent, expectedDeploymentUuid, expectedRole,
+                expectedNodeUuid, expectedCsrSha256, true);
+    }
+
+    /** Verifies signed local identity metadata for status even after its validity window ends. */
+    static VerifiedIdentityPackage inspectIdentityPackage(byte[] artifact,
+            Map<String, PublicKey> identityArtifactRoots,
+            String expectedComponent, String expectedDeploymentUuid,
+            String expectedRole, String expectedNodeUuid, byte[] expectedCsrSha256) {
+        return verifyIdentityPackageInternal(artifact, identityArtifactRoots, 0, null,
+                expectedComponent, expectedDeploymentUuid, expectedRole,
+                expectedNodeUuid, expectedCsrSha256, false);
+    }
+
+    private static VerifiedIdentityPackage verifyIdentityPackageInternal(byte[] artifact,
+            Map<String, PublicKey> identityArtifactRoots, long effectiveNow,
+            Long currentGeneration, String expectedComponent, String expectedDeploymentUuid,
+            String expectedRole, String expectedNodeUuid, byte[] expectedCsrSha256,
+            boolean requireUsable) {
+        if (identityArtifactRoots == null || identityArtifactRoots.isEmpty()
+                || expectedCsrSha256 == null || expectedCsrSha256.length != 32) {
+            fail("MASSDB_LICENSE_FILE_INVALID", "Identity Artifact root或CSR摘要未配置");
+        }
+        CoseMessage message = parseCose(artifact);
+        PublicKey root = identityArtifactRoots.get(message.kid);
+        if (root == null) {
+            fail("MASSDB_LICENSE_SIGNATURE_INVALID", "未知Identity Artifact root kid");
+        }
+        verifyCose(message, root);
+        IdentityPackage payload = decodeIdentityPackage(message.payload);
+        if (!payload.component.equals(expectedComponent)
+                || !payload.deploymentUuid.equals(expectedDeploymentUuid)
+                || !payload.role.equals(expectedRole)
+                || !payload.nodeUuid.equals(expectedNodeUuid)) {
+            fail("MASSDB_LICENSE_MTLS_IDENTITY_MISMATCH", "身份包与组件本地CSR目标不匹配");
+        }
+        if (!Arrays.equals(payload.csrSha256, expectedCsrSha256)) {
+            fail("MASSDB_LICENSE_ROLE_IDENTITY_CSR_MISMATCH", "身份包CSR摘要与本地待激活CSR不匹配");
+        }
+        if (requireUsable) {
+            if (payload.issuedAt > saturatedAdd(effectiveNow,
+                    ISSUED_AT_FUTURE_TOLERANCE_SECONDS)
+                    || payload.notBefore > saturatedAdd(
+                            effectiveNow, ISSUED_AT_FUTURE_TOLERANCE_SECONDS)) {
+                fail("MASSDB_LICENSE_ISSUED_AT_IN_FUTURE",
+                        "身份包签发或生效时间超过未来容差");
+            }
+            if (effectiveNow >= payload.notAfter) {
+                fail("MASSDB_LICENSE_ROLE_IDENTITY_EXPIRED", "身份包已过期");
+            }
+            if (currentGeneration != null && payload.generation <= currentGeneration) {
+                fail("MASSDB_LICENSE_ROLE_IDENTITY_GENERATION_ROLLBACK",
+                        "身份包generation必须严格递增");
+            }
+        }
+        return new VerifiedIdentityPackage(payload, message.kid, sha256Hex(artifact));
     }
 
     private static License decodeLicense(byte[] payloadBytes) {
@@ -548,6 +790,74 @@ public final class MassDbLicenseProtocolV1 {
             fail("MASSDB_LICENSE_FILE_INVALID", "clock固定字段或时间边界错误");
         }
         return value;
+    }
+
+    private static IdentityPackage decodeIdentityPackage(byte[] payloadBytes) {
+        Map<Long, Value> fields = exactMap(decodeAll(payloadBytes),
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);
+        int[] uintKeys = {1, 4, 5, 6, 7};
+        for (int key : uintKeys) {
+            requireKind(fields.get((long) key), KIND_UNSIGNED, "identity uint");
+        }
+        int[] textKeys = {2, 3, 8, 9, 10, 11, 13};
+        for (int key : textKeys) {
+            requireKind(fields.get((long) key), KIND_TEXT, "identity text");
+        }
+        requireKind(fields.get(12L), KIND_BYTES, "identity csrSha256");
+        requireKind(fields.get(14L), KIND_ARRAY, "identity chainPem");
+        requireKind(fields.get(15L), KIND_ARRAY, "identity trustBundles");
+        requireKind(fields.get(16L), KIND_ARRAY, "identity revocations");
+        List<String> chain = textArray(fields.get(14L), "identity chainPem", 8, false);
+        List<String> trust = textArray(fields.get(15L), "identity trustBundles", 4, true);
+        List<String> revocations = textArray(fields.get(16L), "identity revocations", 128, false);
+        IdentityPackage value = new IdentityPackage(fields.get(4L).number,
+                fields.get(5L).number, fields.get(6L).number, fields.get(7L).number,
+                fields.get(8L).text, fields.get(9L).text, fields.get(10L).text,
+                fields.get(11L).text, fields.get(12L).bytes, fields.get(13L).text,
+                chain, trust, revocations);
+        if (fields.get(1L).number != FORMAT_VERSION
+                || !IDENTITY_PACKAGE_TYPE.equals(fields.get(2L).text)
+                || !PRODUCT.equals(fields.get(3L).text)
+                || value.generation == 0 || value.csrSha256.length != 32
+                || value.issuedAt >= value.notAfter || value.notBefore >= value.notAfter
+                || value.notAfter - value.notBefore > MAX_IDENTITY_TERM_SECONDS
+                || value.leafCertificatePem.isEmpty()) {
+            fail("MASSDB_LICENSE_FILE_INVALID", "身份包固定字段、期限或CSR摘要错误");
+        }
+        MassDbLicenseSpiffeIdentity.Identity identity = MassDbLicenseSpiffeIdentity.parse(
+                "spiffe://" + MassDbLicenseSpiffeIdentity.TRUST_DOMAIN
+                        + "/license/component/" + value.component + "/"
+                        + value.deploymentUuid + "/" + value.role + "/" + value.nodeUuid);
+        if (!identity.component.equals(value.component)
+                || !identity.deploymentUuid.equals(value.deploymentUuid)
+                || !identity.role.equals(value.role) || !identity.nodeUuid.equals(value.nodeUuid)) {
+            fail("MASSDB_LICENSE_MTLS_IDENTITY_INVALID", "身份包SPIFFE字段错误");
+        }
+        String previous = "";
+        for (String revoked : value.revocations) {
+            if (revoked.compareTo(previous) <= 0) {
+                fail("MASSDB_LICENSE_FILE_INVALID", "身份包revocations必须严格排序且不重复");
+            }
+            MassDbLicenseManagementIdentity.validateKnownIdentity(revoked);
+            previous = revoked;
+        }
+        return value;
+    }
+
+    private static List<String> textArray(Value value, String label, int maximum,
+            boolean requireNonEmpty) {
+        if (value.array.size() > maximum || requireNonEmpty && value.array.isEmpty()) {
+            fail("MASSDB_LICENSE_FILE_INVALID", label + "数量错误");
+        }
+        List<String> result = new ArrayList<>(value.array.size());
+        for (Value item : value.array) {
+            requireKind(item, KIND_TEXT, label);
+            if (item.text.isEmpty()) {
+                fail("MASSDB_LICENSE_FILE_INVALID", label + "包含空值");
+            }
+            result.add(item.text);
+        }
+        return result;
     }
 
     private static final class CoseMessage {

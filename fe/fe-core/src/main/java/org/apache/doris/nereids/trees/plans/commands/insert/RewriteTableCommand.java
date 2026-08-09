@@ -219,6 +219,7 @@ public class RewriteTableCommand extends Command implements NeedAuditEncryption,
         };
 
         planner.plan(logicalPlanAdapter, ctx.getSessionVariable().toThrift());
+        stmtExecutor.preflightMassDbLicenseAnalyzedPlan(planner, true);
         if (LOG.isDebugEnabled()) {
             LOG.debug("rewrite plan for query_id: {} is: {}.", DebugUtil.printId(ctx.queryId()),
                     planner.getPhysicalPlan().treeString());

@@ -511,7 +511,7 @@ public class InternalSchemaInitializer extends Thread {
         try (AutoCloseConnectContext r = StatisticsUtil.buildConnectContext(false)) {
             NereidsParser nereidsParser = new NereidsParser();
             LogicalPlan parsed = nereidsParser.parseSingle(sql);
-            StmtExecutor stmtExecutor = new StmtExecutor(r.connectContext, sql);
+            StmtExecutor stmtExecutor = StmtExecutor.createInternal(r.connectContext, sql);
             if (parsed instanceof CreateTableCommand) {
                 ((CreateTableCommand) parsed).run(r.connectContext, stmtExecutor);
             }

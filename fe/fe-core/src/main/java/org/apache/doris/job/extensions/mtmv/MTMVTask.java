@@ -334,7 +334,8 @@ public class MTMVTask extends AbstractTask {
                 .from(mtmv, mtmv.getMvPartitionInfo().getPartitionType() != MTMVPartitionType.SELF_MANAGE
                         ? refreshPartitionNames : Sets.newHashSet(), tableWithPartKey, statementContext);
         try {
-            executor = new StmtExecutor(ctx, new LogicalPlanAdapter(command, ctx.getStatementContext()));
+            executor = StmtExecutor.createInternal(
+                    ctx, new LogicalPlanAdapter(command, ctx.getStatementContext()));
             ctx.setExecutor(executor);
             ctx.setQueryId(queryId);
             ctx.getState().setNereids(true);

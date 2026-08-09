@@ -40,6 +40,9 @@ import org.apache.doris.common.util.SqlUtils;
 import org.apache.doris.common.util.Util;
 import org.apache.doris.datasource.CatalogIf;
 import org.apache.doris.datasource.InternalCatalog;
+import org.apache.doris.massdblicense.MassDbLicenseQueryException;
+import org.apache.doris.massdblicense.MassDbLicenseQueryGuard;
+import org.apache.doris.massdblicense.MassDbLicenseQueryGuard.QueryOrigin;
 import org.apache.doris.metric.MetricRepo;
 import org.apache.doris.mysql.MysqlChannel;
 import org.apache.doris.mysql.MysqlCommand;
@@ -514,6 +517,14 @@ public abstract class ConnectProcessor {
     // Get the column definitions of a table
     @SuppressWarnings("rawtypes")
     protected void handleFieldList(String tableName) throws ConnectionException {
+        try {
+            QueryOrigin origin = connectType == ConnectType.ARROW_FLIGHT_SQL
+                    ? QueryOrigin.EXTERNAL_ARROW : QueryOrigin.EXTERNAL_MYSQL;
+            MassDbLicenseQueryGuard.enforceMetadataRead(origin);
+        } catch (MassDbLicenseQueryException error) {
+            ctx.getState().setError(error.getMysqlErrorCode(), error.getMessage());
+            return;
+        }
         // Already get command code.
         if (Strings.isNullOrEmpty(tableName)) {
             ctx.getState().setError(ErrorCode.ERR_UNKNOWN_TABLE, "Empty tableName");
@@ -797,4 +808,3 @@ public abstract class ConnectProcessor {
         throw new NotSupportedException("Just MysqlConnectProcessor support execute");
     }
 }
-

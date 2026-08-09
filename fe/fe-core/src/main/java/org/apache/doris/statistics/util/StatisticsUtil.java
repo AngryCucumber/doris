@@ -166,7 +166,7 @@ public class StatisticsUtil {
                     return Collections.emptyList();
                 }
             }
-            StmtExecutor stmtExecutor = new StmtExecutor(r.connectContext, sql);
+            StmtExecutor stmtExecutor = StmtExecutor.createInternal(r.connectContext, sql);
             return stmtExecutor.executeInternalQuery();
         }
     }
@@ -175,7 +175,7 @@ public class StatisticsUtil {
         StmtExecutor stmtExecutor = null;
         AutoCloseConnectContext r = StatisticsUtil.buildConnectContext(false);
         try {
-            stmtExecutor = new StmtExecutor(r.connectContext, sql);
+            stmtExecutor = StmtExecutor.createInternal(r.connectContext, sql);
             stmtExecutor.execute();
             QueryState state = r.connectContext.getState();
             if (state.getStateType().equals(QueryState.MysqlStateType.ERR)) {

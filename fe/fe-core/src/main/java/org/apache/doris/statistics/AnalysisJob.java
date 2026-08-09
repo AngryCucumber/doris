@@ -131,7 +131,7 @@ public class AnalysisJob {
             try (AutoCloseConnectContext r = StatisticsUtil.buildConnectContext(false)) {
                 ConnectContext context = r.connectContext;
                 context.setSqlHash(DigestUtils.md5Hex(insertStmt));
-                stmtExecutor = new StmtExecutor(context, insertStmt);
+                stmtExecutor = StmtExecutor.createInternal(context, insertStmt);
                 executeWithExceptionOnFail(stmtExecutor);
             } catch (Exception t) {
                 throw new RuntimeException("Failed to analyze: " + t.getMessage());

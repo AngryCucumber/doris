@@ -421,7 +421,7 @@ public class DictionaryManager extends MasterDaemon implements Writable {
         String insertSql = "insert into " + dictionary.getDbName() + "." + dictionary.getName() + " select * from "
                 + dictionary.getSourceCtlName() + "." + dictionary.getSourceDbName() + "."
                 + dictionary.getSourceTableName();
-        StmtExecutor executor = new StmtExecutor(ctx, insertSql);
+        StmtExecutor executor = StmtExecutor.createInternal(ctx, insertSql);
         NereidsParser parser = new NereidsParser();
         InsertIntoTableCommand baseCommand = (InsertIntoTableCommand) parser.parseSingle(insertSql);
         LOG.info("Loading to dictionary {} with query {}. adaptive: {}", dictionary.getName(), ctx.queryId(),

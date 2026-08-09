@@ -45,8 +45,14 @@ public class MassDbLicenseManager {
 
     public synchronized MassDbLicenseState transition(
             Function<MassDbLicenseState, MassDbLicenseState> transition) {
+        MassDbLicenseState transitionBase = state.advanceControlPlaneRevision();
         MassDbLicenseState next = Objects.requireNonNull(
-                transition.apply(state.copy()), "transition result");
+                transition.apply(transitionBase), "transition result");
+        if (next.getControlPlaneRevision() != transitionBase.getControlPlaneRevision()) {
+            throw new MassDbLicenseException(
+                    "MASSDB_LICENSE_CONTROL_PLANE_REVISION_INVALID",
+                    "journal transition不能覆盖预分配的控制面revision");
+        }
         journalWriter.accept(next.copy());
         state = next;
         return next.copy();

@@ -896,6 +896,9 @@ public class Role implements GsonPostProcessable {
             return;
         }
         existingPriv.remove(privs);
+        if (existingPriv.isEmpty()) {
+            workloadGroupPatternToPrivs.remove(workloadGroupPattern);
+        }
         revokePrivs(workloadGroupPattern, privs);
     }
 

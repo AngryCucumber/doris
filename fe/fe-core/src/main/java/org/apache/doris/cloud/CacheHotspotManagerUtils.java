@@ -188,7 +188,7 @@ public class CacheHotspotManagerUtils {
 
     public static void execUpdate(String sql) throws Exception {
         try (AutoCloseConnectContext r = buildConnectContext()) {
-            StmtExecutor stmtExecutor = new StmtExecutor(r.connectContext, sql);
+            StmtExecutor stmtExecutor = StmtExecutor.createInternal(r.connectContext, sql);
             stmtExecutor.execute();
         }
     }
@@ -208,7 +208,7 @@ public class CacheHotspotManagerUtils {
     public static void execCreateCacheTable() throws Exception {
         try (AutoCloseConnectContext r = buildConnectContext()) {
             execCreateDatabase();
-            StmtExecutor stmtExecutor = new StmtExecutor(r.connectContext, CREATE_CACHE_TABLE);
+            StmtExecutor stmtExecutor = StmtExecutor.createInternal(r.connectContext, CREATE_CACHE_TABLE);
             stmtExecutor.execute();
         }
         Database db = Env.getCurrentInternalCatalog().getDbNullable(FeConstants.INTERNAL_DB_NAME);

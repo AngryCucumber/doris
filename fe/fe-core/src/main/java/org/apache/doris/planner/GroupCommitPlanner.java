@@ -220,7 +220,7 @@ public class GroupCommitPlanner {
                 reuse = true;
             } else {
                 // call nereids planner to check to sql
-                command.initPlan(ctx, new StmtExecutor(new ConnectContext(), ""), false);
+                command.initPlan(ctx, StmtExecutor.createInternal(new ConnectContext(), ""), false);
                 List<String> targetColumnNames = command.getTargetColumns();
                 groupCommitPlanner = EnvFactory.getInstance()
                         .createGroupCommitPlanner((Database) table.getDatabase(), table,

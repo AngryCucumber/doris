@@ -22,6 +22,9 @@ package org.apache.doris.service.arrowflight;
 
 import org.apache.doris.common.util.DebugUtil;
 import org.apache.doris.common.util.Util;
+import org.apache.doris.massdblicense.MassDbLicenseQueryException;
+import org.apache.doris.massdblicense.MassDbLicenseQueryGuard;
+import org.apache.doris.massdblicense.MassDbLicenseQueryGuard.QueryOrigin;
 import org.apache.doris.mysql.MysqlCommand;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.qe.QueryState.MysqlStateType;
@@ -42,6 +45,7 @@ import org.apache.arrow.flight.Criteria;
 import org.apache.arrow.flight.FlightDescriptor;
 import org.apache.arrow.flight.FlightEndpoint;
 import org.apache.arrow.flight.FlightInfo;
+import org.apache.arrow.flight.FlightRuntimeException;
 import org.apache.arrow.flight.FlightStream;
 import org.apache.arrow.flight.Location;
 import org.apache.arrow.flight.PutResult;
@@ -131,6 +135,19 @@ public class DorisFlightSqlProducer implements FlightSqlProducer, AutoCloseable 
         }
     }
 
+    private static void requireMassDbLicenseMetadataRead() {
+        try {
+            MassDbLicenseQueryGuard.enforceMetadataRead(QueryOrigin.EXTERNAL_ARROW);
+        } catch (MassDbLicenseQueryException error) {
+            throw licenseDenied(error);
+        }
+    }
+
+    private static FlightRuntimeException licenseDenied(MassDbLicenseQueryException error) {
+        return CallStatus.UNAUTHORIZED.withDescription(error.getMessage())
+                .withCause(error).toRuntimeException();
+    }
+
     private void getStreamStatementResult(String handle, ServerStreamListener listener) {
         String[] handleParts = handle.split(":");
         String executedPeerIdentity = handleParts[0];
@@ -140,16 +157,22 @@ public class DorisFlightSqlProducer implements FlightSqlProducer, AutoCloseable 
         try {
             final FlightSqlResultCacheEntry flightSqlResultCacheEntry = Objects.requireNonNull(
                     connectContext.getFlightSqlChannel().getResult(queryId));
+            if (flightSqlResultCacheEntry.isMassDbLicenseProtectedRead()) {
+                requireMassDbLicenseMetadataRead();
+            }
             final VectorSchemaRoot vectorSchemaRoot = flightSqlResultCacheEntry.getVectorSchemaRoot();
             listener.start(vectorSchemaRoot);
             listener.putNext();
+            listener.completed();
         } catch (Throwable e) {
+            if (e instanceof FlightRuntimeException) {
+                handleStreamException(e, "", listener);
+            }
             String errMsg = "get stream statement failed, " + e.getMessage() + ", " + Util.getRootCauseMessage(e)
                     + ", error code: " + connectContext.getState().getErrorCode() + ", error msg: "
                     + connectContext.getState().getErrorMessage();
             handleStreamException(e, errMsg, listener);
         } finally {
-            listener.completed();
             // The result has been sent or sent failed, delete it.
             connectContext.getFlightSqlChannel().invalidate(queryId);
         }
@@ -280,6 +303,13 @@ public class DorisFlightSqlProducer implements FlightSqlProducer, AutoCloseable 
                 }
             }
         } catch (Throwable e) {
+            MassDbLicenseQueryException licenseError = findLicenseDenial(e);
+            if (licenseError != null) {
+                throw licenseDenied(licenseError);
+            }
+            if (e instanceof FlightRuntimeException) {
+                throw (FlightRuntimeException) e;
+            }
             String errMsg = "get flight info statement failed, " + e.getMessage() + ", " + Util.getRootCauseMessage(e)
                     + ", error code: " + connectContext.getState().getErrorCode() + ", error msg: "
                     + connectContext.getState().getErrorMessage();
@@ -297,6 +327,9 @@ public class DorisFlightSqlProducer implements FlightSqlProducer, AutoCloseable 
             ConnectContext connectContext = flightSessionsManager.getConnectContext(context.peerIdentity());
             return executeQueryStatement(context.peerIdentity(), connectContext, request.getQuery(), descriptor);
         } catch (Throwable e) {
+            if (e instanceof FlightRuntimeException) {
+                throw (FlightRuntimeException) e;
+            }
             String errMsg = "get flight info statement failed, " + e.getMessage();
             LOG.error(errMsg, e);
             throw CallStatus.INTERNAL.withDescription(errMsg).withCause(e).toRuntimeException();
@@ -432,35 +465,41 @@ public class DorisFlightSqlProducer implements FlightSqlProducer, AutoCloseable 
     @Override
     public FlightInfo getFlightInfoSqlInfo(final CommandGetSqlInfo request, final CallContext context,
             final FlightDescriptor descriptor) {
+        requireMassDbLicenseMetadataRead();
         return getFlightInfoForSchema(request, descriptor, Schemas.GET_SQL_INFO_SCHEMA);
     }
 
     @Override
     public void getStreamSqlInfo(final CommandGetSqlInfo command, final CallContext context,
             final ServerStreamListener listener) {
+        requireMassDbLicenseMetadataRead();
         this.sqlInfoBuilder.send(command.getInfoList(), listener);
     }
 
     @Override
     public FlightInfo getFlightInfoTypeInfo(CommandGetXdbcTypeInfo request, CallContext context,
             FlightDescriptor descriptor) {
+        requireMassDbLicenseMetadataRead();
         return getFlightInfoForSchema(request, descriptor, Schemas.GET_TYPE_INFO_SCHEMA);
     }
 
     @Override
     public void getStreamTypeInfo(CommandGetXdbcTypeInfo request, CallContext context, ServerStreamListener listener) {
+        requireMassDbLicenseMetadataRead();
         throw CallStatus.UNIMPLEMENTED.withDescription("getStreamTypeInfo unimplemented").toRuntimeException();
     }
 
     @Override
     public FlightInfo getFlightInfoCatalogs(final CommandGetCatalogs request, final CallContext context,
             final FlightDescriptor descriptor) {
+        requireMassDbLicenseMetadataRead();
         return getFlightInfoForSchema(request, descriptor, Schemas.GET_CATALOGS_SCHEMA);
     }
 
     @Override
     public void getStreamCatalogs(final CallContext context, final ServerStreamListener listener) {
         try {
+            requireMassDbLicenseMetadataRead();
             ConnectContext connectContext = flightSessionsManager.getConnectContext(context.peerIdentity());
             FlightSqlSchemaHelper flightSqlSchemaHelper = new FlightSqlSchemaHelper(connectContext);
             final Schema schema = Schemas.GET_CATALOGS_SCHEMA;
@@ -480,6 +519,7 @@ public class DorisFlightSqlProducer implements FlightSqlProducer, AutoCloseable 
     @Override
     public FlightInfo getFlightInfoSchemas(final CommandGetDbSchemas request, final CallContext context,
             final FlightDescriptor descriptor) {
+        requireMassDbLicenseMetadataRead();
         return getFlightInfoForSchema(request, descriptor, Schemas.GET_SCHEMAS_SCHEMA);
     }
 
@@ -487,6 +527,7 @@ public class DorisFlightSqlProducer implements FlightSqlProducer, AutoCloseable 
     public void getStreamSchemas(final CommandGetDbSchemas command, final CallContext context,
             final ServerStreamListener listener) {
         try {
+            requireMassDbLicenseMetadataRead();
             ConnectContext connectContext = flightSessionsManager.getConnectContext(context.peerIdentity());
             FlightSqlSchemaHelper flightSqlSchemaHelper = new FlightSqlSchemaHelper(connectContext);
             flightSqlSchemaHelper.setParameterForGetDbSchemas(command);
@@ -507,6 +548,7 @@ public class DorisFlightSqlProducer implements FlightSqlProducer, AutoCloseable 
     @Override
     public FlightInfo getFlightInfoTables(final CommandGetTables request, final CallContext context,
             final FlightDescriptor descriptor) {
+        requireMassDbLicenseMetadataRead();
         Schema schemaToUse = Schemas.GET_TABLES_SCHEMA;
         if (!request.getIncludeSchema()) {
             schemaToUse = Schemas.GET_TABLES_SCHEMA_NO_SCHEMA;
@@ -518,6 +560,7 @@ public class DorisFlightSqlProducer implements FlightSqlProducer, AutoCloseable 
     public void getStreamTables(final CommandGetTables command, final CallContext context,
             final ServerStreamListener listener) {
         try {
+            requireMassDbLicenseMetadataRead();
             ConnectContext connectContext = flightSessionsManager.getConnectContext(context.peerIdentity());
             FlightSqlSchemaHelper flightSqlSchemaHelper = new FlightSqlSchemaHelper(connectContext);
             flightSqlSchemaHelper.setParameterForGetTables(command);
@@ -539,59 +582,69 @@ public class DorisFlightSqlProducer implements FlightSqlProducer, AutoCloseable 
     @Override
     public FlightInfo getFlightInfoTableTypes(final CommandGetTableTypes request, final CallContext context,
             final FlightDescriptor descriptor) {
+        requireMassDbLicenseMetadataRead();
         return getFlightInfoForSchema(request, descriptor, Schemas.GET_TABLE_TYPES_SCHEMA);
     }
 
     @Override
     public void getStreamTableTypes(final CallContext context, final ServerStreamListener listener) {
+        requireMassDbLicenseMetadataRead();
         throw CallStatus.UNIMPLEMENTED.withDescription("getStreamTableTypes unimplemented").toRuntimeException();
     }
 
     @Override
     public FlightInfo getFlightInfoPrimaryKeys(final CommandGetPrimaryKeys request, final CallContext context,
             final FlightDescriptor descriptor) {
+        requireMassDbLicenseMetadataRead();
         return getFlightInfoForSchema(request, descriptor, Schemas.GET_PRIMARY_KEYS_SCHEMA);
     }
 
     @Override
     public void getStreamPrimaryKeys(final CommandGetPrimaryKeys command, final CallContext context,
             final ServerStreamListener listener) {
+        requireMassDbLicenseMetadataRead();
         throw CallStatus.UNIMPLEMENTED.withDescription("getStreamPrimaryKeys unimplemented").toRuntimeException();
     }
 
     @Override
     public FlightInfo getFlightInfoExportedKeys(final CommandGetExportedKeys request, final CallContext context,
             final FlightDescriptor descriptor) {
+        requireMassDbLicenseMetadataRead();
         return getFlightInfoForSchema(request, descriptor, Schemas.GET_EXPORTED_KEYS_SCHEMA);
     }
 
     @Override
     public void getStreamExportedKeys(final CommandGetExportedKeys command, final CallContext context,
             final ServerStreamListener listener) {
+        requireMassDbLicenseMetadataRead();
         throw CallStatus.UNIMPLEMENTED.withDescription("getStreamExportedKeys unimplemented").toRuntimeException();
     }
 
     @Override
     public FlightInfo getFlightInfoImportedKeys(final CommandGetImportedKeys request, final CallContext context,
             final FlightDescriptor descriptor) {
+        requireMassDbLicenseMetadataRead();
         return getFlightInfoForSchema(request, descriptor, Schemas.GET_IMPORTED_KEYS_SCHEMA);
     }
 
     @Override
     public void getStreamImportedKeys(final CommandGetImportedKeys command, final CallContext context,
             final ServerStreamListener listener) {
+        requireMassDbLicenseMetadataRead();
         throw CallStatus.UNIMPLEMENTED.withDescription("getStreamImportedKeys unimplemented").toRuntimeException();
     }
 
     @Override
     public FlightInfo getFlightInfoCrossReference(CommandGetCrossReference request, CallContext context,
             FlightDescriptor descriptor) {
+        requireMassDbLicenseMetadataRead();
         return getFlightInfoForSchema(request, descriptor, Schemas.GET_CROSS_REFERENCE_SCHEMA);
     }
 
     @Override
     public void getStreamCrossReference(CommandGetCrossReference command, CallContext context,
             ServerStreamListener listener) {
+        requireMassDbLicenseMetadataRead();
         throw CallStatus.UNIMPLEMENTED.withDescription("getStreamCrossReference unimplemented").toRuntimeException();
     }
 
@@ -623,8 +676,23 @@ public class DorisFlightSqlProducer implements FlightSqlProducer, AutoCloseable 
     }
 
     private static void handleStreamException(Throwable e, String errMsg, ServerStreamListener listener) {
+        if (e instanceof FlightRuntimeException) {
+            listener.error(e);
+            throw (FlightRuntimeException) e;
+        }
         LOG.error(errMsg, e);
         listener.error(CallStatus.INTERNAL.withDescription(errMsg).withCause(e).toRuntimeException());
         throw CallStatus.INTERNAL.withDescription(errMsg).withCause(e).toRuntimeException();
+    }
+
+    private static MassDbLicenseQueryException findLicenseDenial(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof MassDbLicenseQueryException) {
+                return (MassDbLicenseQueryException) current;
+            }
+            current = current.getCause();
+        }
+        return null;
     }
 }

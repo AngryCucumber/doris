@@ -45,12 +45,17 @@ import java.util.stream.Stream;
 
 public class ConfigBase {
     private static final Logger LOG = LogManager.getLogger(ConfigBase.class);
+    private static final String SENSITIVE_CONF_MASK = "******";
 
     @Retention(RetentionPolicy.RUNTIME)
     public @interface ConfField {
         boolean mutable() default false;
 
         boolean masterOnly() default false;
+
+        // Sensitive values remain available to the process but are masked from
+        // Config.dump() and SHOW FRONTEND CONFIG style display paths.
+        boolean sensitive() default false;
 
         String comment() default "";
 
@@ -176,6 +181,10 @@ public class ConfigBase {
 
     public static String getConfValue(Field field) {
         try {
+            ConfField confField = field.getAnnotation(ConfField.class);
+            if (confField != null && confField.sensitive()) {
+                return SENSITIVE_CONF_MASK;
+            }
             if (field.getType().isArray()) {
                 switch (field.getType().getSimpleName()) {
                     case "boolean[]":

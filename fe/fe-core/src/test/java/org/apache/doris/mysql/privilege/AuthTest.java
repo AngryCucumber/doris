@@ -26,6 +26,7 @@ import org.apache.doris.utframe.TestWithFeService;
 import org.junit.Assert;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Set;
 
 public class AuthTest extends TestWithFeService {
@@ -62,6 +63,27 @@ public class AuthTest extends TestWithFeService {
         Assert.assertEquals(3, roleNames.size());
         roleNames = Env.getCurrentEnv().getAuth().getRoleNamesByUserWithLdap(new UserIdentity("u2", "%"), false);
         Assert.assertEquals(2, roleNames.size());
+    }
+
+    @Test
+    public void testMassDbBootstrapIngestAccountIsIdempotentAndLoadOnly() throws Exception {
+        Auth auth = Env.getCurrentEnv().getAuth();
+        UserIdentity user = UserIdentity.createAnalyzedUserIdentWithIp(
+                "massdb_ingest", "10.%");
+        byte[] passwordHash = ("*0123456789ABCDEF0123456789ABCDEF01234567")
+                .getBytes(StandardCharsets.US_ASCII);
+
+        Assert.assertTrue(auth.canEnsureMassDbBootstrapIngestAccount(user, passwordHash));
+        Assert.assertFalse(auth.isMassDbBootstrapIngestAccountExact(user, passwordHash));
+        auth.ensureMassDbBootstrapIngestAccount(user, passwordHash);
+        auth.ensureMassDbBootstrapIngestAccount(user, passwordHash);
+
+        Assert.assertTrue(auth.isMassDbBootstrapIngestAccountExact(user, passwordHash));
+        Assert.assertTrue(auth.checkGlobalPriv(user, PrivPredicate.LOAD));
+        Assert.assertFalse(auth.checkGlobalPriv(user, PrivPredicate.SELECT));
+        byte[] differentHash = ("*89ABCDEF0123456789ABCDEF0123456789ABCDEF")
+                .getBytes(StandardCharsets.US_ASCII);
+        Assert.assertFalse(auth.canEnsureMassDbBootstrapIngestAccount(user, differentHash));
     }
 
 }

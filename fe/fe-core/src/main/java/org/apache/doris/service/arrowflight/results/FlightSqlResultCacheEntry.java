@@ -26,10 +26,17 @@ public final class FlightSqlResultCacheEntry implements AutoCloseable {
 
     private final VectorSchemaRoot vectorSchemaRoot;
     private final String query;
+    private final boolean massDbLicenseProtectedRead;
 
     public FlightSqlResultCacheEntry(final VectorSchemaRoot vectorSchemaRoot, final String query) {
+        this(vectorSchemaRoot, query, false);
+    }
+
+    public FlightSqlResultCacheEntry(final VectorSchemaRoot vectorSchemaRoot, final String query,
+            boolean massDbLicenseProtectedRead) {
         this.vectorSchemaRoot = Objects.requireNonNull(vectorSchemaRoot, "result cannot be null.");
         this.query = query;
+        this.massDbLicenseProtectedRead = massDbLicenseProtectedRead;
     }
 
     public VectorSchemaRoot getVectorSchemaRoot() {
@@ -38,6 +45,10 @@ public final class FlightSqlResultCacheEntry implements AutoCloseable {
 
     public String getQuery() {
         return query;
+    }
+
+    public boolean isMassDbLicenseProtectedRead() {
+        return massDbLicenseProtectedRead;
     }
 
     @Override

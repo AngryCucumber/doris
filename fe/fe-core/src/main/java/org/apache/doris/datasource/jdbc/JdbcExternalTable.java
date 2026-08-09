@@ -244,7 +244,7 @@ public class JdbcExternalTable extends ExternalTable {
         try (AutoCloseConnectContext r = StatisticsUtil.buildConnectContext(false)) {
             StringSubstitutor stringSubstitutor = new StringSubstitutor(params);
             String sql = stringSubstitutor.replace(FETCH_ROW_COUNT_TEMPLATE);
-            StmtExecutor stmtExecutor = new StmtExecutor(r.connectContext, sql);
+            StmtExecutor stmtExecutor = StmtExecutor.createInternal(r.connectContext, sql);
             List<ResultRow> resultRows = stmtExecutor.executeInternalQuery();
             if (resultRows == null || resultRows.size() != 1) {
                 LOG.info("No status found for table {}.{}.{}", catalog.getName(), dbName, name);

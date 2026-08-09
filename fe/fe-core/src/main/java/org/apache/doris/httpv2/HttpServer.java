@@ -18,22 +18,33 @@
 package org.apache.doris.httpv2;
 
 import org.apache.doris.DorisFE;
+import org.apache.doris.catalog.Env;
 import org.apache.doris.common.Config;
 import org.apache.doris.common.FeConstants;
 import org.apache.doris.httpv2.config.SpringLog4j2Config;
+import org.apache.doris.massdblicense.MassDbLicenseJettyIdentityController;
 import org.apache.doris.service.FrontendOptions;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.eclipse.jetty.server.Connector;
+import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.SslConnectionFactory;
+import org.eclipse.jetty.util.ssl.SslContextFactory;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.web.embedded.jetty.JettyWebServer;
 import org.springframework.boot.web.servlet.ServletComponentScan;
+import org.springframework.boot.web.servlet.context.ServletWebServerApplicationContext;
 import org.springframework.boot.web.servlet.support.SpringBootServletInitializer;
 import org.springframework.context.ConfigurableApplicationContext;
 
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
+import javax.net.ssl.SSLContext;
 
 @SpringBootApplication
 @EnableConfigurationProperties
@@ -53,6 +64,7 @@ public class HttpServer extends SpringBootServletInitializer {
     private String keyStoreType;
     private String keyStoreAlias;
     private boolean enableHttps;
+    private MassDbLicenseJettyIdentityController licenseIdentityController;
 
     private int minThreads;
     private int maxThreads;
@@ -142,7 +154,32 @@ public class HttpServer extends SpringBootServletInitializer {
             properties.put("server.ssl.key-store-type", keyStoreType);
             properties.put("server.ssl.keyalias", keyStoreAlias);
             properties.put("server.ssl.enabled", enableHttps);
+            if (Config.massdb_license_role_mtls_enabled
+                    && Config.massdb_license_role_mtls_development_keystore_enabled) {
+                if (!Config.enable_debug_points) {
+                    throw new IllegalStateException(
+                            "Development License role key stores require enable_debug_points");
+                }
+                if (Config.massdb_license_role_mtls_trust_store_path == null
+                        || Config.massdb_license_role_mtls_trust_store_path.trim().isEmpty()) {
+                    throw new IllegalStateException(
+                            "massdb_license_role_mtls_trust_store_path must be configured");
+                }
+                // WANT preserves ordinary HTTPS clients; the internal controller still requires
+                // a chain-verified certificate and exact MassDB SQL FE SPIFFE identity.
+                properties.put("server.ssl.client-auth", "want");
+                properties.put("server.ssl.trust-store",
+                        Config.massdb_license_role_mtls_trust_store_path);
+                properties.put("server.ssl.trust-store-password",
+                        Config.massdb_license_role_mtls_trust_store_password);
+                properties.put("server.ssl.trust-store-type",
+                        Config.massdb_license_role_mtls_trust_store_type);
+            }
         } else {
+            if (Config.massdb_license_role_mtls_enabled) {
+                throw new IllegalStateException(
+                        "MassDB License role mTLS requires enable_https=true");
+            }
             properties.put("server.port", port);
             properties.put("server.ssl.enabled", enableHttps);
         }
@@ -190,6 +227,37 @@ public class HttpServer extends SpringBootServletInitializer {
                 // Disable the automatic shutdown hook registration, there is a shutdown hook in DorisFE.
                 .registerShutdownHook(false)
                 .run();
+        if (enableHttps && Config.massdb_license_role_mtls_enabled) {
+            bindMassDbLicenseRoleIdentity();
+        }
+        Env.getServingEnv().markMassDbLicenseQueryGuardInstalled();
+    }
+
+    private void bindMassDbLicenseRoleIdentity() {
+        MassDbLicenseJettyIdentityController controller =
+                Env.getServingEnv().getMassDbLicenseJettyIdentityController();
+        if (controller == null) {
+            LOG.error("MassDB License Jetty角色身份控制器未初始化，普通HTTPS继续运行");
+            return;
+        }
+        try {
+            if (!(applicationContext instanceof ServletWebServerApplicationContext)) {
+                throw new IllegalStateException("Spring servlet web server context unavailable");
+            }
+            org.springframework.boot.web.server.WebServer webServer =
+                    ((ServletWebServerApplicationContext) applicationContext).getWebServer();
+            if (!(webServer instanceof JettyWebServer)) {
+                throw new IllegalStateException("embedded Jetty web server unavailable");
+            }
+            JettyRoleTlsTarget target = JettyRoleTlsTarget.find(
+                    ((JettyWebServer) webServer).getServer());
+            controller.bind(target, Instant.now().getEpochSecond());
+            controller.startPolling();
+            licenseIdentityController = controller;
+        } catch (Exception error) {
+            controller.close();
+            LOG.error("MassDB License Jetty角色身份接线失败，普通HTTPS继续运行", error);
+        }
     }
 
     /**
@@ -197,10 +265,91 @@ public class HttpServer extends SpringBootServletInitializer {
      * This method should be called by the main process (DorisFE) after its graceful shutdown is complete.
      */
     public void shutdown() {
+        if (licenseIdentityController != null) {
+            licenseIdentityController.close();
+            licenseIdentityController = null;
+        }
         if (applicationContext != null) {
             LOG.info("Shutting down HTTP server gracefully...");
             applicationContext.close();
             LOG.info("HTTP server shutdown complete");
+        }
+    }
+
+    /** Atomically switches Jetty between component identity and the original HTTPS context. */
+    static final class JettyRoleTlsTarget
+            implements MassDbLicenseJettyIdentityController.ServerTlsTarget {
+        private final SslContextFactory.Server contextFactory;
+        private final SSLContext ordinaryHttpsContext;
+        private boolean roleIdentityEnabled;
+        private long generation;
+
+        JettyRoleTlsTarget(SslContextFactory.Server contextFactory) {
+            this.contextFactory = Objects.requireNonNull(contextFactory, "contextFactory");
+            this.ordinaryHttpsContext = Objects.requireNonNull(
+                    contextFactory.getSslContext(), "ordinaryHttpsContext");
+            this.roleIdentityEnabled = contextFactory.getNeedClientAuth()
+                    || contextFactory.getWantClientAuth();
+        }
+
+        static JettyRoleTlsTarget find(Server server) {
+            SslContextFactory.Server selected = null;
+            for (Connector connector : server.getConnectors()) {
+                SslConnectionFactory ssl = connector.getConnectionFactory(
+                        SslConnectionFactory.class);
+                if (ssl == null) {
+                    continue;
+                }
+                if (selected != null) {
+                    throw new IllegalStateException(
+                            "MassDB License requires exactly one Jetty HTTPS connector");
+                }
+                selected = ssl.getSslContextFactory();
+            }
+            if (selected == null) {
+                throw new IllegalStateException("Jetty HTTPS connector not found");
+            }
+            return new JettyRoleTlsTarget(selected);
+        }
+
+        @Override
+        public synchronized void enableRoleIdentity(long replacementGeneration,
+                SSLContext sslContext) throws Exception {
+            if (replacementGeneration <= 0) {
+                throw new IllegalArgumentException("identity generation must be positive");
+            }
+            SSLContext replacement = Objects.requireNonNull(sslContext, "sslContext");
+            contextFactory.reload(factory -> {
+                factory.setSslContext(replacement);
+                SslContextFactory.Server server = (SslContextFactory.Server) factory;
+                server.setNeedClientAuth(false);
+                server.setWantClientAuth(true);
+            });
+            generation = replacementGeneration;
+            roleIdentityEnabled = true;
+        }
+
+        @Override
+        public synchronized void disableRoleIdentity() throws Exception {
+            if (!roleIdentityEnabled) {
+                return;
+            }
+            contextFactory.reload(factory -> {
+                factory.setSslContext(ordinaryHttpsContext);
+                SslContextFactory.Server server = (SslContextFactory.Server) factory;
+                server.setNeedClientAuth(false);
+                server.setWantClientAuth(false);
+            });
+            generation = 0;
+            roleIdentityEnabled = false;
+        }
+
+        boolean isRoleIdentityEnabled() {
+            return roleIdentityEnabled;
+        }
+
+        long getGeneration() {
+            return generation;
         }
     }
 }

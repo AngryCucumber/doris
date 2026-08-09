@@ -60,6 +60,11 @@ public class ExecuteCommand extends Command {
         return stmtName;
     }
 
+    /** Exposes the prepared logical plan to trusted pre-execution policy gates. */
+    public LogicalPlan getLogicalPlan() {
+        return prepareCommand.getLogicalPlan();
+    }
+
     @Override
     public <R, C> R accept(PlanVisitor<R, C> visitor, C context) {
         return visitor.visit(this, context);

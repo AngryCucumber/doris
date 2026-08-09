@@ -239,6 +239,109 @@ public class Config extends ConfigBase {
     @ConfField(description = {"元数据的存储目录", "The directory to save Doris meta data"})
     public static String meta_dir =  EnvUtils.getDorisHome() + "/doris-meta";
 
+    @ConfField(description = {
+            "MassDB License离线keyset root公钥目录；为空时保持旧集群兼容且不启用License写入",
+            "Absolute directory containing immutable MassDB License keyset-root public keys; "
+                    + "empty keeps legacy compatibility and disables License writes"})
+    public static String massdb_license_root_trust_dir = "";
+
+    @ConfField(description = {
+            "MassDB License允许的最大期限，单位秒；必须与root trust目录同时显式配置",
+            "Maximum MassDB License term in seconds; must be explicitly configured with root trust"})
+    public static long massdb_license_max_term_seconds = 0L;
+
+    @ConfField(description = {
+            "是否启用MassDB SQL FE内部License mTLS角色通道",
+            "Whether to enable the MassDB SQL FE internal License mTLS role channel"})
+    public static boolean massdb_license_role_mtls_enabled = false;
+
+    @ConfField(description = {
+            "是否在FE HTTPS端口启用MassDB License组件原生管理API；默认关闭以兼容旧集群",
+            "Whether to enable the component-native MassDB License management API on FE HTTPS; "
+                    + "disabled by default for legacy compatibility"})
+    public static boolean massdb_license_management_api_enabled = false;
+
+    @ConfField(description = {
+            "MassDB License首启一次性bootstrap marker绝对路径；为空或缺失时不得打开bootstrap窗口",
+            "Absolute one-time MassDB License bootstrap marker path; empty or absent keeps the "
+                    + "bootstrap window closed"})
+    public static String massdb_license_bootstrap_marker_file = "";
+
+    @ConfField(description = {
+            "MassDB License存量集群一次性upgrade marker绝对路径；必须在每个FE本机创建",
+            "Absolute one-time MassDB License existing-cluster upgrade marker path; it must be "
+                    + "created locally on every FE"})
+    public static String massdb_license_upgrade_marker_file = "";
+
+    @ConfField(description = {
+            "MassDB License普通导入等待入口ACK的deadline，单位秒，允许300至3600",
+            "Deadline in seconds for a normal MassDB License import to collect ingress ACKs; "
+                    + "allowed range is 300 through 3600"})
+    public static long massdb_license_operation_ack_deadline_seconds = 900L;
+
+    @ConfField(description = {
+            "仅开发测试允许使用磁盘key store模拟MassDB License角色身份；生产禁止启用",
+            "Development-only gate for disk key stores that simulate MassDB License role identities; "
+                    + "must never be enabled in production"})
+    public static boolean massdb_license_role_mtls_development_keystore_enabled = false;
+
+    @ConfField(description = {
+            "MassDB License组件原生身份库绝对路径；为空时使用meta_dir/massdb-license-identity",
+            "Absolute component-native MassDB License identity store directory; empty uses "
+                    + "meta_dir/massdb-license-identity"})
+    public static String massdb_license_identity_store_dir = "";
+
+    @ConfField(description = {
+            "MassDB License Identity Artifact root公钥绝对目录",
+            "Absolute directory containing immutable MassDB License Identity Artifact root keys"})
+    public static String massdb_license_identity_artifact_root_dir = "";
+
+    @ConfField(description = {
+            "MassDB License身份库启动凭据文件绝对路径；文件内容不会进入配置展示",
+            "Absolute startup credential file for the MassDB License identity store; its content "
+                    + "is never exposed through configuration APIs"})
+    public static String massdb_license_identity_secret_file = "";
+
+    @ConfField(description = {
+            "MassDB License角色mTLS trust store绝对路径",
+            "Absolute trust store path for the MassDB License role mTLS channel"})
+    public static String massdb_license_role_mtls_trust_store_path = "";
+
+    @ConfField(sensitive = true, description = {
+            "MassDB License角色mTLS trust store密码",
+            "Trust store password for the MassDB License role mTLS channel"})
+    public static String massdb_license_role_mtls_trust_store_password = "";
+
+    @ConfField(description = {
+            "MassDB License角色mTLS trust store类型",
+            "Trust store type for the MassDB License role mTLS channel"})
+    public static String massdb_license_role_mtls_trust_store_type = "PKCS12";
+
+    @ConfField(description = {
+            "本FE的MassDB License角色mTLS key store绝对路径",
+            "Absolute key store path for this FE's MassDB License role mTLS identity"})
+    public static String massdb_license_role_mtls_key_store_path = "";
+
+    @ConfField(sensitive = true, description = {
+            "本FE的MassDB License角色mTLS key store密码",
+            "Key store password for this FE's MassDB License role mTLS identity"})
+    public static String massdb_license_role_mtls_key_store_password = "";
+
+    @ConfField(description = {
+            "本FE的MassDB License角色mTLS key store类型",
+            "Key store type for this FE's MassDB License role mTLS identity"})
+    public static String massdb_license_role_mtls_key_store_type = "PKCS12";
+
+    @ConfField(description = {
+            "MassDB License FE角色与Leader交换周期，单位毫秒",
+            "MassDB License FE role-to-Leader exchange interval in milliseconds"})
+    public static long massdb_license_role_exchange_interval_ms = 1_000L;
+
+    @ConfField(description = {
+            "MassDB License FE角色mTLS请求超时，单位毫秒",
+            "MassDB License FE role mTLS request timeout in milliseconds"})
+    public static int massdb_license_role_request_timeout_ms = 5_000;
+
     @ConfField(description = {"临时文件的存储目录", "The directory to save Doris temp data"})
     public static String tmp_dir =  EnvUtils.getDorisHome() + "/temp_dir";
 
@@ -408,7 +511,7 @@ public class Config extends ConfigBase {
     public static String key_store_path =  EnvUtils.getDorisHome()
             + "/conf/ssl/doris_ssl_certificate.keystore";
 
-    @ConfField(description = {"FE https 服务的 key store 密码",
+    @ConfField(sensitive = true, description = {"FE https 服务的 key store 密码",
             "The key store password of FE https service"})
     public static String key_store_password = "";
 

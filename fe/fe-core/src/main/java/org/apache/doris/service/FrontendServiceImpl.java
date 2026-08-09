@@ -2180,7 +2180,7 @@ public class FrontendServiceImpl implements FrontendService.Iface {
                 Thread.sleep(1000);
                 LOG.info("block initHttpStreamPlan");
             }
-            StmtExecutor executor = new StmtExecutor(ctx, originStmt);
+            StmtExecutor executor = StmtExecutor.createExternalHttpLoad(ctx, originStmt);
             httpStreamParams = executor.generateHttpStreamPlan(ctx.queryId());
 
             Coordinator coord = new Coordinator(ctx, executor.planner());

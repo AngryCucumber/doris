@@ -17,16 +17,22 @@
 
 package org.apache.doris.httpv2.rest;
 
+import org.apache.doris.analysis.StatementBase;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.TableIf;
 import org.apache.doris.common.Config;
 import org.apache.doris.datasource.InternalCatalog;
 import org.apache.doris.httpv2.entity.ResponseEntityBuilder;
+import org.apache.doris.httpv2.interceptor.MassDbLicenseHttpQueryInterceptor;
 import org.apache.doris.httpv2.util.ExecutionResultSet;
 import org.apache.doris.httpv2.util.StatementSubmitter;
+import org.apache.doris.massdblicense.MassDbLicenseQueryException;
+import org.apache.doris.massdblicense.MassDbLicenseQueryGuard;
+import org.apache.doris.massdblicense.MassDbLicenseQueryGuard.QueryOrigin;
 import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.nereids.NereidsPlanner;
 import org.apache.doris.nereids.StatementContext;
+import org.apache.doris.nereids.glue.LogicalPlanAdapter;
 import org.apache.doris.nereids.parser.NereidsParser;
 import org.apache.doris.nereids.properties.PhysicalProperties;
 import org.apache.doris.nereids.trees.plans.commands.ExplainCommand;
@@ -47,6 +53,8 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.jetbrains.annotations.NotNull;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -55,7 +63,9 @@ import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.lang.reflect.Type;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.stream.Collectors;
@@ -106,6 +116,10 @@ public class StmtExecutionAction extends RestBaseController {
 
         if (Strings.isNullOrEmpty(stmtRequestBody.stmt)) {
             return ResponseEntityBuilder.badRequest("Missing statement request body");
+        }
+        ResponseEntity<?> licenseDenial = preflightMassDbLicenseSql(stmtRequestBody.stmt);
+        if (licenseDenial != null) {
+            return licenseDenial;
         }
         LOG.info("stmt: {}, isSync:{}, limit: {}", stmtRequestBody.stmt, stmtRequestBody.is_sync,
                 stmtRequestBody.limit);
@@ -185,6 +199,48 @@ public class StmtExecutionAction extends RestBaseController {
         } else {
             return ResponseEntityBuilder.okWithCommonError("Not support async query execution");
         }
+    }
+
+    /**
+     * The generic HTTP SQL route is mixed read/ingest. Parse it after authentication so INSERT
+     * VALUES remains available, then let the MySQL execution path repeat the same trusted checks.
+     */
+    private ResponseEntity<?> preflightMassDbLicenseSql(String sql) {
+        try {
+            List<StatementBase> statements = new NereidsParser().parseSQL(
+                    sql, ConnectContext.get().getSessionVariable());
+            for (StatementBase statement : statements) {
+                if (!(statement instanceof LogicalPlanAdapter)) {
+                    MassDbLicenseQueryGuard.enforceMetadataRead(QueryOrigin.EXTERNAL_MYSQL);
+                    continue;
+                }
+                MassDbLicenseQueryGuard.enforceParsedPlan(QueryOrigin.EXTERNAL_MYSQL,
+                        ((LogicalPlanAdapter) statement).getLogicalPlan());
+            }
+            return null;
+        } catch (MassDbLicenseQueryException error) {
+            return licenseDenied(error);
+        } catch (RuntimeException parseFailure) {
+            try {
+                // An unclassified dialect/statement is DENY_UNKNOWN while enforcement is active.
+                MassDbLicenseQueryGuard.enforceMetadataRead(QueryOrigin.EXTERNAL_MYSQL);
+                return null;
+            } catch (MassDbLicenseQueryException error) {
+                return licenseDenied(error);
+            }
+        }
+    }
+
+    private ResponseEntity<Map<String, String>> licenseDenied(
+            MassDbLicenseQueryException error) {
+        Map<String, String> body = new LinkedHashMap<>();
+        body.put("code", error.getLicenseErrorCode());
+        body.put("message", error.getMessage());
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .header(MassDbLicenseHttpQueryInterceptor.ERROR_HEADER,
+                        error.getLicenseErrorCode())
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .body(body);
     }
 
     @NotNull

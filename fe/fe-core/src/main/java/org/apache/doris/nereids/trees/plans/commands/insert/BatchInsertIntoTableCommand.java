@@ -136,6 +136,7 @@ public class BatchInsertIntoTableCommand extends Command implements NoForward, E
             FastInsertIntoValuesPlanner planner = new FastInsertIntoValuesPlanner(
                     statementContext, supportFastInsertIntoValues, true);
             planner.plan(logicalPlanAdapter, ctx.getSessionVariable().toThrift());
+            executor.preflightMassDbLicenseAnalyzedPlan(planner, true);
             executor.checkBlockRules();
             if (ctx.getConnectType() == ConnectType.MYSQL && ctx.getMysqlChannel() != null) {
                 ctx.getMysqlChannel().reset();

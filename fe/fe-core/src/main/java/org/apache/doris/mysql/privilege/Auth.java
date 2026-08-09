@@ -27,6 +27,7 @@ import org.apache.doris.analysis.WorkloadGroupPattern;
 import org.apache.doris.catalog.DatabaseIf;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.InfoSchemaDb;
+import org.apache.doris.catalog.MysqlDb;
 import org.apache.doris.catalog.TableIf;
 import org.apache.doris.cloud.datasource.CloudInternalCatalog;
 import org.apache.doris.cloud.proto.Cloud;
@@ -80,6 +81,8 @@ import org.apache.logging.log4j.Logger;
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -87,6 +90,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.stream.Collectors;
 
@@ -478,6 +482,193 @@ public class Auth implements Writable {
         createUserInternal(info.getUserIdent(), info.getRole(),
                 info.getPassword(), info.isIfNotExist(), info.getPasswordOptions(),
                 info.getComment(), info.getUserId(), false);
+    }
+
+    /**
+     * Idempotently creates the one bootstrap-only ingestion account. The account stores only
+     * a MySQL 4.1 password hash and receives exactly global LOAD, never SELECT or GRANT.
+     */
+    public void ensureMassDbBootstrapIngestAccount(
+            UserIdentity userIdent, byte[] passwordHash) throws DdlException {
+        Objects.requireNonNull(userIdent, "userIdent");
+        Objects.requireNonNull(passwordHash, "passwordHash");
+        BootstrapIngestAccountState state = inspectBootstrapIngestAccount(
+                userIdent, passwordHash);
+        if (state.isConflict()) {
+            throw new DdlException("MassDB bootstrap ingest account conflicts with existing auth state");
+        }
+        if (state == BootstrapIngestAccountState.ABSENT) {
+            createUserInternal(userIdent, null, passwordHash, true,
+                    PasswordOptions.UNSET_OPTION, "MassDB bootstrap ingest-only account",
+                    UUID.randomUUID().toString(), false);
+            state = inspectBootstrapIngestAccount(userIdent, passwordHash);
+        }
+        if (state == BootstrapIngestAccountState.NEEDS_DEFAULT_PRIVILEGE_REMOVAL) {
+            removeMassDbBootstrapDefaultPrivileges(userIdent, passwordHash);
+            state = inspectBootstrapIngestAccount(userIdent, passwordHash);
+        }
+        if (state == BootstrapIngestAccountState.NEEDS_LOAD) {
+            grantInternal(userIdent, null, TablePattern.ALL,
+                    PrivBitSet.of(Privilege.LOAD_PRIV), Collections.emptyMap(),
+                    true, false);
+            state = inspectBootstrapIngestAccount(userIdent, passwordHash);
+        }
+        if (state != BootstrapIngestAccountState.EXACT) {
+            throw new DdlException("MassDB bootstrap ingest account did not converge safely: "
+                    + state.name());
+        }
+    }
+
+    public boolean isMassDbBootstrapIngestAccountExact(
+            UserIdentity userIdent, byte[] passwordHash) {
+        return inspectBootstrapIngestAccount(userIdent, passwordHash)
+                == BootstrapIngestAccountState.EXACT;
+    }
+
+    public boolean canEnsureMassDbBootstrapIngestAccount(
+            UserIdentity userIdent, byte[] passwordHash) {
+        return inspectBootstrapIngestAccount(userIdent, passwordHash)
+                .isConvergent();
+    }
+
+    private BootstrapIngestAccountState inspectBootstrapIngestAccount(
+            UserIdentity userIdent, byte[] passwordHash) {
+        readLock();
+        try {
+            User user = userManager.getUserByUserIdentity(userIdent);
+            if (user == null) {
+                return BootstrapIngestAccountState.ABSENT;
+            }
+            if (user.getPassword() == null
+                    || !Arrays.equals(passwordHash, user.getPassword().getPassword())) {
+                return BootstrapIngestAccountState.CONFLICT_PASSWORD;
+            }
+            Set<String> roleNames = userRoleManager.getRolesByUser(userIdent);
+            String defaultRole = roleManager.getUserDefaultRoleName(userIdent);
+            if (roleNames.size() != 1 || !roleNames.contains(defaultRole)) {
+                return BootstrapIngestAccountState.CONFLICT_ROLE_BINDING;
+            }
+            Role role = roleManager.getRole(defaultRole);
+            if (role == null || !role.getResourcePatternToPrivs().isEmpty()
+                    || !role.getStorageVaultPatternToPrivs().isEmpty()
+                    || !role.getClusterPatternToPrivs().isEmpty()
+                    || !role.getStagePatternToPrivs().isEmpty()
+                    || !role.getColPrivMap().isEmpty()) {
+                return BootstrapIngestAccountState.CONFLICT_NON_TABLE_PRIVILEGES;
+            }
+            boolean hasLoad = false;
+            boolean hasDefaultPrivileges = false;
+            for (Map.Entry<TablePattern, PrivBitSet> entry
+                    : role.getTblPatternToPrivs().entrySet()) {
+                List<Privilege> privileges = entry.getValue().toPrivilegeList();
+                if (TablePattern.ALL.equals(entry.getKey())
+                        && hasOnly(privileges, Privilege.LOAD_PRIV)) {
+                    hasLoad = true;
+                } else if (isBootstrapDefaultTablePattern(entry.getKey())
+                        && hasOnly(privileges, Privilege.SELECT_PRIV)) {
+                    hasDefaultPrivileges = true;
+                } else {
+                    return BootstrapIngestAccountState.CONFLICT_TABLE_PRIVILEGES;
+                }
+            }
+            for (Map.Entry<WorkloadGroupPattern, PrivBitSet> entry
+                    : role.getWorkloadGroupPatternToPrivs().entrySet()) {
+                List<Privilege> privileges = entry.getValue().toPrivilegeList();
+                if (WorkloadGroupMgr.DEFAULT_GROUP_NAME.equals(
+                            entry.getKey().getworkloadGroupName())
+                        && hasOnly(privileges, Privilege.USAGE_PRIV)) {
+                    hasDefaultPrivileges = true;
+                } else {
+                    return BootstrapIngestAccountState.CONFLICT_WORKLOAD_PRIVILEGES;
+                }
+            }
+            if (hasDefaultPrivileges) {
+                return BootstrapIngestAccountState.NEEDS_DEFAULT_PRIVILEGE_REMOVAL;
+            }
+            return hasLoad ? BootstrapIngestAccountState.EXACT
+                    : BootstrapIngestAccountState.NEEDS_LOAD;
+        } finally {
+            readUnlock();
+        }
+    }
+
+    /**
+     * A newly created account receives upstream framework defaults. Remove only those exact
+     * defaults, journaling each removal independently so a crash can resume from any subset.
+     */
+    private void removeMassDbBootstrapDefaultPrivileges(
+            UserIdentity userIdent, byte[] passwordHash) throws DdlException {
+        List<TablePattern> tableDefaults = new ArrayList<>();
+        List<WorkloadGroupPattern> workloadDefaults = new ArrayList<>();
+        readLock();
+        try {
+            User user = userManager.getUserByUserIdentity(userIdent);
+            if (user == null || user.getPassword() == null
+                    || !Arrays.equals(passwordHash, user.getPassword().getPassword())) {
+                throw new DdlException("MassDB bootstrap ingest account changed during convergence");
+            }
+            Role role = roleManager.getRole(roleManager.getUserDefaultRoleName(userIdent));
+            if (role == null) {
+                throw new DdlException("MassDB bootstrap ingest account default role is missing");
+            }
+            for (Map.Entry<TablePattern, PrivBitSet> entry
+                    : role.getTblPatternToPrivs().entrySet()) {
+                if (isBootstrapDefaultTablePattern(entry.getKey())
+                        && hasOnly(entry.getValue().toPrivilegeList(), Privilege.SELECT_PRIV)) {
+                    tableDefaults.add(entry.getKey());
+                }
+            }
+            for (Map.Entry<WorkloadGroupPattern, PrivBitSet> entry
+                    : role.getWorkloadGroupPatternToPrivs().entrySet()) {
+                if (WorkloadGroupMgr.DEFAULT_GROUP_NAME.equals(
+                            entry.getKey().getworkloadGroupName())
+                        && hasOnly(entry.getValue().toPrivilegeList(), Privilege.USAGE_PRIV)) {
+                    workloadDefaults.add(entry.getKey());
+                }
+            }
+        } finally {
+            readUnlock();
+        }
+        for (TablePattern pattern : tableDefaults) {
+            revokeInternal(userIdent, null, pattern,
+                    PrivBitSet.of(Privilege.SELECT_PRIV), Collections.emptyMap(),
+                    false, false);
+        }
+        for (WorkloadGroupPattern pattern : workloadDefaults) {
+            revokeInternal(userIdent, null, pattern,
+                    PrivBitSet.of(Privilege.USAGE_PRIV), false, false);
+        }
+    }
+
+    private static boolean isBootstrapDefaultTablePattern(TablePattern pattern) {
+        return DEFAULT_CATALOG.equals(pattern.getQualifiedCtl())
+                && "*".equals(pattern.getTbl())
+                && (InfoSchemaDb.DATABASE_NAME.equals(pattern.getQualifiedDb())
+                        || MysqlDb.DATABASE_NAME.equals(pattern.getQualifiedDb()));
+    }
+
+    private static boolean hasOnly(List<Privilege> privileges, Privilege expected) {
+        return privileges.size() == 1 && privileges.contains(expected);
+    }
+
+    private enum BootstrapIngestAccountState {
+        ABSENT,
+        NEEDS_DEFAULT_PRIVILEGE_REMOVAL,
+        NEEDS_LOAD,
+        EXACT,
+        CONFLICT_PASSWORD,
+        CONFLICT_ROLE_BINDING,
+        CONFLICT_NON_TABLE_PRIVILEGES,
+        CONFLICT_TABLE_PRIVILEGES,
+        CONFLICT_WORKLOAD_PRIVILEGES;
+
+        private boolean isConflict() {
+            return name().startsWith("CONFLICT_");
+        }
+
+        private boolean isConvergent() {
+            return !isConflict();
+        }
     }
 
     public void replayCreateUser(PrivInfo privInfo) {

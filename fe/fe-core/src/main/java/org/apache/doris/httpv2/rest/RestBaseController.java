@@ -27,6 +27,7 @@ import org.apache.doris.common.util.NetUtils;
 import org.apache.doris.httpv2.controller.BaseController;
 import org.apache.doris.httpv2.entity.ResponseEntityBuilder;
 import org.apache.doris.httpv2.exception.UnauthorizedException;
+import org.apache.doris.httpv2.interceptor.MassDbLicenseHttpQueryInterceptor;
 import org.apache.doris.master.MetaHelper;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.thrift.TNetworkAddress;
@@ -144,6 +145,7 @@ public class RestBaseController extends BaseController {
 
     public void getFile(HttpServletRequest request, HttpServletResponse response, Object obj, String fileName)
             throws IOException {
+        MassDbLicenseHttpQueryInterceptor.enforceProtectedResponseStream(request);
         response.setHeader("Content-type", "application/octet-stream");
         response.addHeader("Content-Disposition", "attachment;fileName=" + fileName); // set file name
         if (obj instanceof File) {
@@ -157,6 +159,7 @@ public class RestBaseController extends BaseController {
                 OutputStream os = response.getOutputStream();
                 int i = bis.read(buffer);
                 while (i != -1) {
+                    MassDbLicenseHttpQueryInterceptor.enforceProtectedResponseStream(request);
                     os.write(buffer, 0, i);
                     i = bis.read(buffer);
                 }
@@ -178,6 +181,7 @@ public class RestBaseController extends BaseController {
                 }
             }
         } else if (obj instanceof byte[]) {
+            MassDbLicenseHttpQueryInterceptor.enforceProtectedResponseStream(request);
             OutputStream os = response.getOutputStream();
             os.write((byte[]) obj);
         }

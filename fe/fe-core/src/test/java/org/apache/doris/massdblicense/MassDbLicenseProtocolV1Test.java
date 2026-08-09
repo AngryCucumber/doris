@@ -25,7 +25,7 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.Map;
 
-class MassDbLicenseProtocolV1Test {
+public class MassDbLicenseProtocolV1Test {
     @Test
     void verifiesTheSameP1GoldenArtifactsAsGoAndCpp() {
         PublicKey root = MassDbLicenseProtocolV1.parsePublicKeyPem(decode(ROOT_PUBLIC));
@@ -66,8 +66,20 @@ class MassDbLicenseProtocolV1Test {
         Assertions.assertEquals(valid.getSha256(), bundled.getSha256());
     }
 
-    private static byte[] decode(String value) {
+    static byte[] decode(String value) {
         return Base64.getDecoder().decode(value);
+    }
+
+    public static byte[] rootPublicBytes() {
+        return decode(ROOT_PUBLIC);
+    }
+
+    public static byte[] keysetBytes() {
+        return decode(KEYSET);
+    }
+
+    public static byte[] validLicenseBytes() {
+        return decode(VALID_LICENSE);
     }
 
     private static byte[] repeatedByte(int value) {
@@ -76,9 +88,9 @@ class MassDbLicenseProtocolV1Test {
         return result;
     }
 
-    private static final String ROOT_PUBLIC = "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUZrd0V3WUhLb1pJemowQ0FRWUlLb1pJemowREFRY0RRZ0FFYTBMQmN5UVhwU2VRVGJCMk1oMUR3aDQ0SXNNRQo3MWxuSnBQMUxoVXd3TlpuMVk3ODE4ekU3d2pwYTZ6UEkvLzVvTENBRnIvT05lQmV5cWJmaHRMZHZnPT0KLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg==";
-    private static final String KEYSET = "0oRXogEmBFJtYXNzZGItdGVzdC1yb290LTGgWQEJpwEBAnVNQVNTREJfVFJVU1RFRF9LRVlTRVQDZk1BU1NEQgQBBRppVbaoBoKkAXNtYXNzZGItdGVzdC1jbG9jay0xAm5DTE9DS19SRUNPVkVSWQNYIP8fNoE5UX2LxsOKmaXfc78PUJ5SAO2axxURZLFDzk9FBFggYCL9Y2T5q51le17Lagjc5r1xopjmLJmJDYvQ1mOxIRakAXVtYXNzZGItdGVzdC1saWNlbnNlLTECb0xJQ0VOU0VfU0lHTklORwNYIO4voGpbS4XrUulf3+MCgXo7SGij+SYd8gqS++AKwuezBFggM9NCgdu8ZD7UNVDxCKS2R5JAqu+hXXq/9WSe1KCNWG4HgFhAabq+wn7bS/h+bIpRSAFa7OpxnheLnkF8cy9d07CUa0ixPfvd2e6ejSnfZpDwsUpBtuPTh22/2zVhH2Uvh+WJ1A==";
-    private static final String VALID_LICENSE = "0oRYGqIBJgRVbWFzc2RiLXRlc3QtbGljZW5zZS0xoFg+pQEBAngkMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxA2ZNQVNTREIEGmlVtqgFGml9RgBYQDXjfKtQyUqrAIbjJfqOxsASlFAYcwzqcCRdEjiyYXkHGNw8Pn3xsDiC8WKTw56yHYYDqtQNYYxMPjqhRlvdpSc=";
+    static final String ROOT_PUBLIC = "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUZrd0V3WUhLb1pJemowQ0FRWUlLb1pJemowREFRY0RRZ0FFYTBMQmN5UVhwU2VRVGJCMk1oMUR3aDQ0SXNNRQo3MWxuSnBQMUxoVXd3TlpuMVk3ODE4ekU3d2pwYTZ6UEkvLzVvTENBRnIvT05lQmV5cWJmaHRMZHZnPT0KLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg==";
+    static final String KEYSET = "0oRXogEmBFJtYXNzZGItdGVzdC1yb290LTGgWQEJpwEBAnVNQVNTREJfVFJVU1RFRF9LRVlTRVQDZk1BU1NEQgQBBRppVbaoBoKkAXNtYXNzZGItdGVzdC1jbG9jay0xAm5DTE9DS19SRUNPVkVSWQNYIP8fNoE5UX2LxsOKmaXfc78PUJ5SAO2axxURZLFDzk9FBFggYCL9Y2T5q51le17Lagjc5r1xopjmLJmJDYvQ1mOxIRakAXVtYXNzZGItdGVzdC1saWNlbnNlLTECb0xJQ0VOU0VfU0lHTklORwNYIO4voGpbS4XrUulf3+MCgXo7SGij+SYd8gqS++AKwuezBFggM9NCgdu8ZD7UNVDxCKS2R5JAqu+hXXq/9WSe1KCNWG4HgFhAabq+wn7bS/h+bIpRSAFa7OpxnheLnkF8cy9d07CUa0ixPfvd2e6ejSnfZpDwsUpBtuPTh22/2zVhH2Uvh+WJ1A==";
+    static final String VALID_LICENSE = "0oRYGqIBJgRVbWFzc2RiLXRlc3QtbGljZW5zZS0xoFg+pQEBAngkMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxA2ZNQVNTREIEGmlVtqgFGml9RgBYQDXjfKtQyUqrAIbjJfqOxsASlFAYcwzqcCRdEjiyYXkHGNw8Pn3xsDiC8WKTw56yHYYDqtQNYYxMPjqhRlvdpSc=";
     private static final String EXPIRED_LICENSE = "0oRYGqIBJgRVbWFzc2RiLXRlc3QtbGljZW5zZS0xoFg+pQEBAngkMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAyA2ZNQVNTREIEGmlVtkQFGmlVuQBYQHYHARbBkRzHaHyePsUknIP1+xOtG5RovVTXzIjkRynpsroiQn71bBIMbMebnco1P/n5yrS8G9Oi1UBTlkkZZ7I=";
     private static final String TAMPERED_LICENSE = "0oRYGqIBJgRVbWFzc2RiLXRlc3QtbGljZW5zZS0xoFg+pQEBAngkMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxA2ZNQVNTREIEGmlVtqgFGml9RgBYQDXjfKtQyUqrAIbjJfqOxsASlFAYcwzqcCRdEjiyYXkHGNw8Pn3xsDiC8WKTw56yHYYDqtQNYYxMPjqhRlvdpSY=";
     private static final String CLOCK_RECOVERY = "0oRYGKIBJgRTbWFzc2RiLXRlc3QtY2xvY2stMaBYqasBAQJ1TUFTU0RCX0NMT0NLX1JFQ09WRVJZA2ZNQVNTREIEBwVYIBERERERERERERERERERERERERERERERERERERERERERBngkMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDk5B1ggIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIIGmlhigAJGmlVuQAKGmlVtqgLGmlZqyhYQL37jOfWZpiRKieZoGItwAf8y4D2QlNibvTAOkyaT0POseVYTk9OOUCLzauJYjpEb1nTnUFzfeFt6P77G3jqIJ4=";

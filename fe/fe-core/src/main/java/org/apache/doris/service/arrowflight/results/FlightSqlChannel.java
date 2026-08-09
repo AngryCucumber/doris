@@ -63,6 +63,11 @@ public class FlightSqlChannel {
     }
 
     public void addResult(String queryId, String runningQuery, ResultSet resultSet) {
+        addResult(queryId, runningQuery, resultSet, false);
+    }
+
+    public void addResult(String queryId, String runningQuery, ResultSet resultSet,
+            boolean massDbLicenseProtectedRead) {
         List<Field> schemaFields = new ArrayList<>();
         List<FieldVector> dataFields = new ArrayList<>();
         List<List<String>> resultData = resultSet.getResultRows();
@@ -89,12 +94,17 @@ public class FlightSqlChannel {
             }
         }
         VectorSchemaRoot vectorSchemaRoot = new VectorSchemaRoot(schemaFields, dataFields);
-        final FlightSqlResultCacheEntry flightSqlResultCacheEntry = new FlightSqlResultCacheEntry(vectorSchemaRoot,
-                runningQuery);
+        final FlightSqlResultCacheEntry flightSqlResultCacheEntry = new FlightSqlResultCacheEntry(
+                vectorSchemaRoot, runningQuery, massDbLicenseProtectedRead);
         resultCache.put(queryId, flightSqlResultCacheEntry);
     }
 
     public void addResult(String queryId, String runningQuery, ResultSetMetaData metaData, String result) {
+        addResult(queryId, runningQuery, metaData, result, false);
+    }
+
+    public void addResult(String queryId, String runningQuery, ResultSetMetaData metaData, String result,
+            boolean massDbLicenseProtectedRead) {
         List<Field> schemaFields = new ArrayList<>();
         List<FieldVector> dataFields = new ArrayList<>();
 
@@ -117,8 +127,8 @@ public class FlightSqlChannel {
             rowNum += 1;
         }
         VectorSchemaRoot vectorSchemaRoot = new VectorSchemaRoot(schemaFields, dataFields);
-        final FlightSqlResultCacheEntry flightSqlResultCacheEntry = new FlightSqlResultCacheEntry(vectorSchemaRoot,
-                runningQuery);
+        final FlightSqlResultCacheEntry flightSqlResultCacheEntry = new FlightSqlResultCacheEntry(
+                vectorSchemaRoot, runningQuery, massDbLicenseProtectedRead);
         resultCache.put(queryId, flightSqlResultCacheEntry);
     }
 

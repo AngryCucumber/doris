@@ -512,7 +512,7 @@ public abstract class BaseAnalysisTask {
         String queryId = "";
         try (AutoCloseConnectContext a  = StatisticsUtil.buildConnectContext(false)) {
             a.connectContext.getState().setPlanWithUnKnownColumnStats(true);
-            stmtExecutor = new StmtExecutor(a.connectContext, sql);
+            stmtExecutor = StmtExecutor.createInternal(a.connectContext, sql);
             ColStatsData colStatsData = new ColStatsData(stmtExecutor.executeInternalQuery().get(0));
             if (!colStatsData.isValid()) {
                 if (MetricRepo.isInit) {
@@ -548,7 +548,7 @@ public abstract class BaseAnalysisTask {
 
     protected void runInsert(String sql) throws Exception {
         try (AutoCloseConnectContext r = StatisticsUtil.buildConnectContext(false)) {
-            stmtExecutor = new StmtExecutor(r.connectContext, sql);
+            stmtExecutor = StmtExecutor.createInternal(r.connectContext, sql);
             try {
                 stmtExecutor.execute();
                 QueryState queryState = stmtExecutor.getContext().getState();

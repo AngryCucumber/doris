@@ -40,4 +40,27 @@ public class ConfigTest {
         ConfigBase.setMutableConfig("s3_load_endpoint_white_list", "");
         Assert.assertEquals("array length should be 0", 0, Config.s3_load_endpoint_white_list.length);
     }
+
+    @Test
+    public void testSensitiveConfigIsRedacted() {
+        String oldPassword = Config.massdb_license_role_mtls_key_store_password;
+        try {
+            Config.massdb_license_role_mtls_key_store_password = "unit-test-secret";
+            Assert.assertEquals("unit-test-secret",
+                    Config.massdb_license_role_mtls_key_store_password);
+            Assert.assertEquals("******", Config.dump().get(
+                    "massdb_license_role_mtls_key_store_password"));
+            Assert.assertTrue(ConfigBase.getConfigInfo(null).stream().anyMatch(row ->
+                    "massdb_license_role_mtls_key_store_password".equals(row.get(0))
+                            && "******".equals(row.get(1))));
+        } finally {
+            Config.massdb_license_role_mtls_key_store_password = oldPassword;
+        }
+    }
+
+    @Test
+    public void testLicenseBootstrapMarkerDefaultsClosed() {
+        Assert.assertEquals("", Config.massdb_license_bootstrap_marker_file);
+        Assert.assertEquals("", Config.massdb_license_upgrade_marker_file);
+    }
 }

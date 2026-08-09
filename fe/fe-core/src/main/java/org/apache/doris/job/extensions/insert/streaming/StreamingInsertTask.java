@@ -93,14 +93,16 @@ public class StreamingInsertTask extends AbstractStreamingTask {
         InsertIntoTableCommand baseCommand = (InsertIntoTableCommand) new NereidsParser().parseSingle(sql);
         baseCommand.setJobId(getTaskId());
         StmtExecutor baseStmtExecutor =
-                new StmtExecutor(ctx, new LogicalPlanAdapter(baseCommand, ctx.getStatementContext()));
+                StmtExecutor.createInternal(
+                        ctx, new LogicalPlanAdapter(baseCommand, ctx.getStatementContext()));
         baseCommand.initPlan(ctx, baseStmtExecutor, false);
         if (!baseCommand.getParsedPlan().isPresent()) {
             throw new JobException("Can not get Parsed plan");
         }
         this.taskCommand = offsetProvider.rewriteTvfParams(baseCommand, runningOffset);
         this.taskCommand.setLabelName(Optional.of(labelName));
-        this.stmtExecutor = new StmtExecutor(ctx, new LogicalPlanAdapter(taskCommand, ctx.getStatementContext()));
+        this.stmtExecutor = StmtExecutor.createInternal(
+                ctx, new LogicalPlanAdapter(taskCommand, ctx.getStatementContext()));
     }
 
     @Override
