@@ -459,7 +459,11 @@ public class SystemInfoService {
 
     class BeIdComparator implements Comparator<Backend> {
         public int compare(Backend a, Backend b) {
-            return (int) (a.getId() - b.getId());
+            // Must use Long.compare. Casting (a.getId() - b.getId()) to int overflows when
+            // two backend ids differ by more than Integer.MAX_VALUE (common when old BEs
+            // keep small ids and later-added BEs get ids from the catalog generator).
+            // TimSort then throws "Comparison method violates its general contract!".
+            return Long.compare(a.getId(), b.getId());
         }
     }
 

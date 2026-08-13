@@ -45,6 +45,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -503,6 +504,49 @@ public class SystemInfoServiceTest {
 
         result = infoService.getMinPipelineExecutorSize("");
         Assert.assertEquals(6, result);
+    }
+
+    @Test
+    public void testBeIdComparatorDoesNotOverflow() {
+        // Reproduce the stream-load failure:
+        // "Comparison method violates its general contract!"
+        // Old BEs keep small ids (e.g. 10001) while later-added BEs get catalog ids
+        // that can exceed Integer.MAX_VALUE difference from the old ones.
+        Backend small = new Backend(10001L, "192.168.1.1", 9050);
+        Backend mid = new Backend(2_000_000_000L, "192.168.1.2", 9050);
+        Backend large = new Backend(4_000_000_000L, "192.168.1.3", 9050);
+        Comparator<Backend> comparator = infoService.new BeIdComparator();
+
+        Assert.assertTrue(comparator.compare(small, mid) < 0);
+        Assert.assertTrue(comparator.compare(mid, large) < 0);
+        Assert.assertTrue(comparator.compare(small, large) < 0);
+        Assert.assertTrue(comparator.compare(large, small) > 0);
+
+        List<Backend> backends = Lists.newArrayList(large, small, mid, large, mid, small);
+        Collections.sort(backends, comparator);
+        Assert.assertEquals(10001L, backends.get(0).getId());
+        Assert.assertEquals(10001L, backends.get(1).getId());
+        Assert.assertEquals(2_000_000_000L, backends.get(2).getId());
+        Assert.assertEquals(2_000_000_000L, backends.get(3).getId());
+        Assert.assertEquals(4_000_000_000L, backends.get(4).getId());
+        Assert.assertEquals(4_000_000_000L, backends.get(5).getId());
+    }
+
+    @Test
+    public void testRoundRobinSelectWithLargeBackendIds() {
+        Config.disable_backend_black_list = true;
+        long[] ids = {10001L, 10002L, 2_000_000_000L, 2_147_483_648L, 3_000_000_000L, 4_000_000_000L};
+        for (int i = 0; i < ids.length; i++) {
+            addBackend(ids[i], "192.168.20." + (i + 1), 9050);
+            infoService.getBackend(ids[i]).setAlive(true);
+        }
+
+        BeSelectionPolicy policy = new BeSelectionPolicy.Builder().needLoadAvailable().setEnableRoundRobin(true)
+                .setNextRoundRobinIndex(0).build();
+        List<Long> selected = infoService.selectBackendIdsByPolicy(policy, -1);
+        Assert.assertEquals(ids.length, selected.size());
+        Assert.assertEquals(Lists.newArrayList(10001L, 10002L, 2_000_000_000L, 2_147_483_648L, 3_000_000_000L,
+                4_000_000_000L), selected);
     }
 
 }
