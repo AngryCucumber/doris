@@ -1071,8 +1071,8 @@ public class CloudSystemInfoService extends SystemInfoService {
                         .filter(i -> i.getTagMap().containsKey(Tag.CLOUD_CLUSTER_ID))
                         .filter(i -> i.getTagMap().containsKey(Tag.CLOUD_CLUSTER_NAME))
                         .collect(Collectors.toList());
-                // The larger bakendId the later it was added, the order matters
-                toAdd.sort((x, y) -> (int) (x.getId() - y.getId()));
+                // The larger backendId the later it was added, the order matters
+                toAdd.sort((x, y) -> Long.compare(x.getId(), y.getId()));
                 updateCloudClusterMapNoLock(toAdd, new ArrayList<>());
             }
 

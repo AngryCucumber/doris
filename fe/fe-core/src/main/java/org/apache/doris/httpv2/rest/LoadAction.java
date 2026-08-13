@@ -320,7 +320,7 @@ public class LoadAction extends RestBaseController {
             return e.getRedirectView();
         } catch (Exception e) {
             LOG.warn("load failed, stream: {}, db: {}, tbl: {}, label: {}, err: {}",
-                    isStreamLoad, db, table, label, e.getMessage());
+                    isStreamLoad, db, table, label, e.getMessage(), e);
             return new RestBaseResult(e.getMessage());
         }
     }
