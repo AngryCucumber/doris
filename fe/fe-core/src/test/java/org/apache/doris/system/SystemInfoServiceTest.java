@@ -64,6 +64,24 @@ public class SystemInfoServiceTest {
     }
 
     @Test
+    public void testBeIdComparatorLargeIdSpread() {
+        // Regression test: when the BE id spread exceeds Integer.MAX_VALUE, the old comparator
+        // "(int) (a.getId() - b.getId())" overflowed / truncated (an exact multiple of 2^32
+        // compares as 0), broke transitivity, and made Collections.sort either missort or throw
+        // "Comparison method violates its general contract!".
+        List<Backend> backends = new ArrayList<>();
+        for (int i = 32; i >= 0; i--) {
+            // descending insert order, ids exactly 2^32 apart: the old comparator saw all of
+            // them as "equal" and kept the descending order
+            backends.add(new Backend(16095L + (long) i * (1L << 32), "192.168.100." + i, 9050));
+        }
+        Collections.sort(backends, infoService.new BeIdComparator());
+        for (int i = 1; i < backends.size(); i++) {
+            Assert.assertTrue(backends.get(i - 1).getId() < backends.get(i).getId());
+        }
+    }
+
+    @Test
     public void testGetHostAndPort() {
         String ipv4 = "192.168.1.2:9050";
         String ipv6 = "[fe80::5054:ff:fec9:dee0]:9050";
