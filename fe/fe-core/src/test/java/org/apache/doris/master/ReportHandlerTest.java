@@ -62,10 +62,17 @@ public class ReportHandlerTest {
     }
 
     private TReportRequest buildTaskReport(Backend backend) {
+        return buildTaskReport(backend, -1);
+    }
+
+    private TReportRequest buildTaskReport(Backend backend, long runningTasks) {
         TReportRequest request = new TReportRequest();
         request.setBackend(new TBackend(backend.getHost(), backend.getBePort(), backend.getHttpPort()));
         Map<TTaskType, Set<Long>> tasks = Maps.newHashMap();
         request.setTasks(tasks);
+        if (runningTasks >= 0) {
+            request.setRunningTasks(runningTasks);
+        }
         return request;
     }
 
@@ -74,9 +81,9 @@ public class ReportHandlerTest {
         ReportHandler handler = new ReportHandler();
         Backend backend = addBackend(10001L);
 
-        TMasterResult result1 = handler.handleReport(buildTaskReport(backend));
+        TMasterResult result1 = handler.handleReport(buildTaskReport(backend, 1));
         Assert.assertEquals(TStatusCode.OK, result1.getStatus().getStatusCode());
-        TMasterResult result2 = handler.handleReport(buildTaskReport(backend));
+        TMasterResult result2 = handler.handleReport(buildTaskReport(backend, 2));
         Assert.assertEquals(TStatusCode.OK, result2.getStatus().getStatusCode());
 
         // a report of the same (backend, type) replaces the pending payload instead of
@@ -85,6 +92,19 @@ public class ReportHandlerTest {
         Assert.assertEquals(1, totalQueueSize);
         Map<?, ?> reportTasks = Deencapsulation.getField(handler, "reportTasks");
         Assert.assertEquals(1, reportTasks.size());
+
+        // the consumer must take the latest payload of the backend, never the superseded one
+        List<BlockingQueue<?>> queues = Deencapsulation.getField(handler, "reportQueues");
+        int shard = (int) (10001L % queues.size());
+        Object takenTask = Deencapsulation.invoke(handler, "takeReportTask", shard);
+        Assert.assertNotNull(takenTask);
+        long runningTasks = Deencapsulation.getField(takenTask, "runningTasks");
+        Assert.assertEquals(2L, runningTasks);
+
+        // after consumption nothing is left pending
+        int remainingQueueSize = Deencapsulation.invoke(handler, "getTotalQueueSize");
+        Assert.assertEquals(0, remainingQueueSize);
+        Assert.assertEquals(0, ((Map<?, ?>) Deencapsulation.getField(handler, "reportTasks")).size());
     }
 
     @Test
