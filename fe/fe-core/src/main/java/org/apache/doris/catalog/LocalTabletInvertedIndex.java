@@ -88,7 +88,8 @@ public class LocalTabletInvertedIndex extends TabletInvertedIndex {
             120L,
             TimeUnit.SECONDS,
             new LinkedBlockingQueue<>(Config.tablet_report_queue_size),
-            new ThreadPoolExecutor.DiscardOldestPolicy());
+            // A discarded chunk would leave its future incomplete and hang the report worker.
+            new ThreadPoolExecutor.CallerRunsPolicy());
 
     public LocalTabletInvertedIndex() {
         super();
