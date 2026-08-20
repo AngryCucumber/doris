@@ -94,6 +94,9 @@ public class SystemInfoService {
 
     private volatile ImmutableMap<Long, DiskInfo> pathHashToDiskInfoRef = ImmutableMap.of();
 
+    // guards all copy-modify-publish updates of pathHashToDiskInfoRef (see updatePathInfo)
+    private final Object pathInfoLock = new Object();
+
     public static class HostInfo implements Comparable<HostInfo> {
         public String host;
         public int port;
@@ -929,18 +932,23 @@ public class SystemInfoService {
         return Status.OK;
     }
 
-    // update the path info when disk report
-    // there is only one thread can update path info, so no need to worry about concurrency control
+    // update the path info when disk report.
+    // disk reports of different backends may be handled by multiple report workers concurrently,
+    // and this is a copy-modify-publish update of a global map, so all writers must be serialized
+    // to avoid lost updates. Readers still read the volatile snapshot lock-free.
     public void updatePathInfo(List<DiskInfo> addedDisks, List<DiskInfo> removedDisks) {
-        Map<Long, DiskInfo> copiedPathInfos = Maps.newHashMap(pathHashToDiskInfoRef);
-        for (DiskInfo diskInfo : addedDisks) {
-            copiedPathInfos.put(diskInfo.getPathHash(), diskInfo);
+        ImmutableMap<Long, DiskInfo> newPathInfos;
+        synchronized (pathInfoLock) {
+            Map<Long, DiskInfo> copiedPathInfos = Maps.newHashMap(pathHashToDiskInfoRef);
+            for (DiskInfo diskInfo : addedDisks) {
+                copiedPathInfos.put(diskInfo.getPathHash(), diskInfo);
+            }
+            for (DiskInfo diskInfo : removedDisks) {
+                copiedPathInfos.remove(diskInfo.getPathHash());
+            }
+            newPathInfos = ImmutableMap.copyOf(copiedPathInfos);
+            pathHashToDiskInfoRef = newPathInfos;
         }
-        for (DiskInfo diskInfo : removedDisks) {
-            copiedPathInfos.remove(diskInfo.getPathHash());
-        }
-        ImmutableMap<Long, DiskInfo> newPathInfos = ImmutableMap.copyOf(copiedPathInfos);
-        pathHashToDiskInfoRef = newPathInfos;
         if (LOG.isDebugEnabled()) {
             LOG.debug("update path infos: {}", newPathInfos);
         }

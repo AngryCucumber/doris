@@ -1223,6 +1223,24 @@ public class Config extends ConfigBase {
     @ConfField(mutable = true, masterOnly = true)
     public static int report_queue_size = 100;
 
+    @ConfField(mutable = true, masterOnly = true, description = {
+            "tablet report 使用的 partition id -> storage medium 映射的缓存时间。构建该映射需要全量遍历所有库表分区，"
+                    + "在元数据规模大的集群上开销很高，且每次 tablet report 都会重建一次。设置为 0 表示关闭缓存。",
+            "Cache TTL of the partition id -> storage medium map used by tablet report. Building this map needs "
+                    + "to scan all dbs/tables/partitions, which is expensive on a large catalog, and it is rebuilt "
+                    + "for every tablet report without the cache. 0 means no cache."
+    })
+    public static int storage_medium_map_cache_second = 60;
+
+    @ConfField(masterOnly = true, description = {
+            "ReportHandler 消费 BE 上报的工作线程数。同一 BE 的上报固定路由到同一线程以保证单 BE 内有序，"
+                    + "不同 BE 之间并行处理。数百台 BE 的大集群单线程消费不过来时可调大。需重启 FE 生效。",
+            "Number of worker threads consuming BE reports in ReportHandler. Reports of one backend are routed "
+                    + "to a fixed worker to keep per-backend ordering, while different backends are handled in "
+                    + "parallel. Increase it for large clusters with hundreds of backends. Requires FE restart."
+    })
+    public static int report_handler_worker_num = 4;
+
     // if the number of report task in FE exceed max_report_task_num_per_rpc, then split it to multiple rpc
     @ConfField(mutable = true, masterOnly = true, description = {
             "重新发送 agent task 时，单次 RPC 分配给每个 be 的任务最大个数，默认值为 10000 个。",

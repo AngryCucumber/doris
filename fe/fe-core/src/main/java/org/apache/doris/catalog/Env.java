@@ -4925,7 +4925,49 @@ public class Env {
         return idGenerator.getIdGeneratorBuffer(bufferSize);
     }
 
+    // Cache of the partition id -> storage medium map for tablet report.
+    // Rebuilding this map needs to scan all dbs/tables/partitions, which is expensive on a large
+    // catalog, and all tablet reports within a short period share the same view of it.
+    // The cached map is shared by multiple report tasks, so callers MUST NOT modify it.
+    // The map and its build time are published together through one volatile reference, so a
+    // reader always sees a consistent (map, buildTime) pair.
+    private static class StorageMediumMapCache {
+        final HashMap<Long, TStorageMedium> map;
+        final long buildTimeMs;
+
+        StorageMediumMapCache(HashMap<Long, TStorageMedium> map, long buildTimeMs) {
+            this.map = map;
+            this.buildTimeMs = buildTimeMs;
+        }
+    }
+
+    private volatile StorageMediumMapCache storageMediumMapCache = null;
+    private final Object storageMediumMapBuildLock = new Object();
+
     public HashMap<Long, TStorageMedium> getPartitionIdToStorageMediumMap() {
+        long cacheValidMs = Config.storage_medium_map_cache_second * 1000L;
+        StorageMediumMapCache cache = storageMediumMapCache;
+        if (cacheValidMs > 0 && cache != null
+                && System.currentTimeMillis() - cache.buildTimeMs < cacheValidMs) {
+            return cache.map;
+        }
+
+        // Multiple report workers may reach here together when the cache expires. Let one of them
+        // rebuild and the others reuse the result instead of scanning the whole catalog concurrently.
+        synchronized (storageMediumMapBuildLock) {
+            cache = storageMediumMapCache;
+            if (cacheValidMs > 0 && cache != null
+                    && System.currentTimeMillis() - cache.buildTimeMs < cacheValidMs) {
+                return cache.map;
+            }
+
+            HashMap<Long, TStorageMedium> storageMediumMap = buildPartitionIdToStorageMediumMap();
+            storageMediumMapCache = new StorageMediumMapCache(storageMediumMap, System.currentTimeMillis());
+            return storageMediumMap;
+        }
+    }
+
+    private HashMap<Long, TStorageMedium> buildPartitionIdToStorageMediumMap() {
         HashMap<Long, TStorageMedium> storageMediumMap = new HashMap<Long, TStorageMedium>();
 
         // record partition which need to change storage medium

@@ -121,9 +121,16 @@ import java.util.stream.Collectors;
 public class ReportHandler extends Daemon {
     private static final Logger LOG = LogManager.getLogger(ReportHandler.class);
 
-    private BlockingQueue<BackendReportType> reportQueue = Queues.newLinkedBlockingQueue();
+    // Reports of one backend are always routed to the same queue (beId % reportWorkerNum) and
+    // consumed by a dedicated worker, so per-backend processing order is kept while reports of
+    // different backends are handled in parallel.
+    private final int reportWorkerNum = Math.max(1, Config.report_handler_worker_num);
+
+    private final List<BlockingQueue<BackendReportType>> reportQueues = Lists.newArrayList();
 
     private Map<BackendReportType, ReportTask> reportTasks = Maps.newHashMap();
+
+    private boolean workersStarted = false;
 
     private enum ReportType {
         TASK,
@@ -134,14 +141,30 @@ public class ReportHandler extends Daemon {
 
     public ReportHandler() {
         super("report-thread");
+        for (int i = 0; i < reportWorkerNum; i++) {
+            reportQueues.add(Queues.newLinkedBlockingQueue());
+        }
         GaugeMetric<Long> gauge = new GaugeMetric<Long>(
                 "report_queue_size", MetricUnit.NOUNIT, "report queue size") {
             @Override
             public Long getValue() {
-                return (long) reportQueue.size();
+                return (long) getTotalQueueSize();
             }
         };
         MetricRepo.DORIS_METRIC_REGISTER.addMetrics(gauge);
+    }
+
+    private BlockingQueue<BackendReportType> getShardQueue(long beId) {
+        // backend ids are always positive, so the modulo is non-negative
+        return reportQueues.get((int) (beId % reportWorkerNum));
+    }
+
+    private int getTotalQueueSize() {
+        int size = 0;
+        for (BlockingQueue<BackendReportType> queue : reportQueues) {
+            size += queue.size();
+        }
+        return size;
     }
 
     public TMasterResult handleReport(TReportRequest request) throws TException {
@@ -218,7 +241,7 @@ public class ReportHandler extends Daemon {
             tStatus.setStatusCode(TStatusCode.INTERNAL_ERROR);
             tStatus.setErrorMsgs(Lists.newArrayList("unknown report type"));
             LOG.error("receive unknown report type from be {}. current queue size: {}",
-                    backend.getId(), reportQueue.size());
+                    backend.getId(), getTotalQueueSize());
             return result;
         }
 
@@ -231,34 +254,43 @@ public class ReportHandler extends Daemon {
         } catch (Exception e) {
             tStatus.setStatusCode(TStatusCode.INTERNAL_ERROR);
             List<String> errorMsgs = Lists.newArrayList();
-            errorMsgs.add("failed to put report task to queue. queue size: " + reportQueue.size());
+            errorMsgs.add("failed to put report task to queue. queue size: " + getTotalQueueSize());
             errorMsgs.add("err: " + e.getMessage());
             tStatus.setErrorMsgs(errorMsgs);
             return result;
         }
         LOG.info("receive report from be {}. type: {}, report version {}, current queue size: {}",
-                backend.getId(), reportType, reportVersion, reportQueue.size());
+                backend.getId(), reportType, reportVersion, getTotalQueueSize());
         return result;
     }
 
     private void putToQueue(ReportTask reportTask) throws Exception {
-        int currentSize = reportQueue.size();
-        int maxReportQueueSize = Math.max(Config.report_queue_size,
-                10 * Env.getCurrentSystemInfo().getAllBackendIds().size());
-        if (currentSize > maxReportQueueSize) {
-            LOG.warn("the report queue size exceeds the limit: {}. current: {}", maxReportQueueSize, currentSize);
-            throw new Exception(
-                    "the report queue size exceeds the limit: "
-                            + maxReportQueueSize + ". current: " + currentSize);
-        }
-
         BackendReportType backendReportType = new BackendReportType(reportTask.beId, reportTask.reportType);
 
         synchronized (reportTasks) {
-            reportTasks.put(backendReportType, reportTask);
-        }
+            if (reportTasks.containsKey(backendReportType)) {
+                // A report of the same backend and type is still pending in the queue.
+                // Just replace its payload with the latest one instead of enqueueing a duplicated
+                // key, otherwise a slow consumer piles up duplicated keys until the queue limit
+                // is reached, and then reports get rejected while the stale payload is kept.
+                reportTasks.put(backendReportType, reportTask);
+                return;
+            }
 
-        reportQueue.put(backendReportType);
+            int currentSize = getTotalQueueSize();
+            int maxReportQueueSize = Math.max(Config.report_queue_size,
+                    10 * Env.getCurrentSystemInfo().getAllBackendIds().size());
+            if (currentSize > maxReportQueueSize) {
+                LOG.warn("the report queue size exceeds the limit: {}. current: {}", maxReportQueueSize, currentSize);
+                throw new Exception(
+                        "the report queue size exceeds the limit: "
+                                + maxReportQueueSize + ". current: " + currentSize);
+            }
+
+            reportTasks.put(backendReportType, reportTask);
+            // LinkedBlockingQueue is unbounded, so put() never blocks while holding the lock
+            getShardQueue(reportTask.beId).put(backendReportType);
+        }
     }
 
     private Map<Long, TTablet> buildTabletMap(List<TTablet> tabletList) {
@@ -1612,18 +1644,38 @@ public class ReportHandler extends Daemon {
 
     @Override
     protected void runOneCycle() {
+        if (!workersStarted) {
+            workersStarted = true;
+            for (int i = 1; i < reportWorkerNum; i++) {
+                final int shard = i;
+                Thread worker = new Thread(() -> consumeReportLoop(shard), "report-worker-" + shard);
+                worker.setDaemon(true);
+                worker.start();
+            }
+        }
+        // the report-thread daemon itself consumes shard 0
+        consumeReportLoop(0);
+    }
+
+    private void consumeReportLoop(int shard) {
         while (true) {
-            ReportTask task = takeReportTask();
-            if (task != null) {
+            ReportTask task = takeReportTask(shard);
+            if (task == null) {
+                continue;
+            }
+            try {
                 task.exec();
+            } catch (Throwable t) {
+                // catch everything so that a failure of one report never kills the worker
+                LOG.warn("failed to handle report from backend {}, type: {}", task.beId, task.reportType, t);
             }
         }
     }
 
-    private ReportTask takeReportTask() {
+    private ReportTask takeReportTask(int shard) {
         BackendReportType backendReportType;
         try {
-            backendReportType = reportQueue.take();
+            backendReportType = reportQueues.get(shard).take();
         } catch (InterruptedException e) {
             LOG.warn("got interupted exception when executing report", e);
             return null;

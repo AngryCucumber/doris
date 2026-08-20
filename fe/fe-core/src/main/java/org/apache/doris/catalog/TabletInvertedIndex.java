@@ -115,7 +115,9 @@ public class TabletInvertedIndex {
             120L,
             TimeUnit.SECONDS,
             new LinkedBlockingQueue<>(Config.tablet_report_queue_size),
-            new ThreadPoolExecutor.DiscardOldestPolicy());
+            // CallerRuns instead of DiscardOldest: a discarded chunk would leave its
+            // CompletableFuture never completed and hang the report worker on join()
+            new ThreadPoolExecutor.CallerRunsPolicy());
 
     public TabletInvertedIndex() {
     }

@@ -24,6 +24,7 @@ import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.Config;
 import org.apache.doris.common.FeMetaVersion;
 import org.apache.doris.common.Pair;
+import org.apache.doris.common.jmockit.Deencapsulation;
 import org.apache.doris.meta.MetaContext;
 import org.apache.doris.resource.Tag;
 import org.apache.doris.system.SystemInfoService.HostInfo;
@@ -79,6 +80,33 @@ public class SystemInfoServiceTest {
         for (int i = 1; i < backends.size(); i++) {
             Assert.assertTrue(backends.get(i - 1).getId() < backends.get(i).getId());
         }
+    }
+
+    @Test
+    public void testUpdatePathInfoConcurrently() throws Exception {
+        // disk reports of different backends are handled by multiple report workers concurrently;
+        // the copy-modify-publish update of the global path map must not lose entries
+        int threadNum = 4;
+        int disksPerThread = 50;
+        List<Thread> threads = new ArrayList<>();
+        for (int t = 0; t < threadNum; t++) {
+            final int threadIdx = t;
+            threads.add(new Thread(() -> {
+                for (int i = 0; i < disksPerThread; i++) {
+                    DiskInfo diskInfo = new DiskInfo("/path/" + threadIdx + "/" + i);
+                    diskInfo.setPathHash(threadIdx * 1000L + i + 1);
+                    infoService.updatePathInfo(Lists.newArrayList(diskInfo), Lists.newArrayList());
+                }
+            }));
+        }
+        for (Thread thread : threads) {
+            thread.start();
+        }
+        for (Thread thread : threads) {
+            thread.join();
+        }
+        ImmutableMap<Long, DiskInfo> pathInfos = Deencapsulation.getField(infoService, "pathHashToDiskInfoRef");
+        Assert.assertEquals(threadNum * disksPerThread, pathInfos.size());
     }
 
     @Test
