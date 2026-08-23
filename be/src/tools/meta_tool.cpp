@@ -22,6 +22,7 @@
 
 #include <cctype>
 #include <cstring>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -30,6 +31,7 @@
 #include <sstream>
 #include <string>
 
+#include "common/config.h"
 #include "common/cpp/private_member_accessor.hpp"
 #include "common/status.h"
 #include "core/assert_cast.h"
@@ -46,6 +48,7 @@
 #include "io/fs/local_file_system.h"
 #include "json2pb/pb_to_json.h"
 #include "runtime/exec_env.h"
+#include "runtime/memory/cache_manager.h"
 #include "runtime/memory/mem_tracker_limiter.h"
 #include "storage/data_dir.h"
 #include "storage/olap_common.h"
@@ -67,6 +70,21 @@ using doris::TabletMetaManager;
 using doris::Slice;
 using doris::segment_v2::SegmentFooterPB;
 using doris::io::FileReaderSPtr;
+
+// ExecEnv's public set_cache_manager() only exists under BE_TEST, but LRUCachePolicy
+// (created inside StorageEngine's ctor) unconditionally registers into the global
+// CacheManager held privately by ExecEnv. Use the standard explicit-instantiation
+// idiom to obtain a member pointer to the private field ([temp.explicit] exempts
+// explicit instantiation arguments from access checks) so this tool can install one.
+template <typename Tag, typename Tag::type M>
+struct PrivateMemberRob {
+    friend typename Tag::type stolen_member(Tag) { return M; }
+};
+struct ExecEnvCacheMgrTag {
+    using type = doris::CacheManager* doris::ExecEnv::*;
+    friend type stolen_member(ExecEnvCacheMgrTag);
+};
+template struct PrivateMemberRob<ExecEnvCacheMgrTag, &doris::ExecEnv::_cache_manager>;
 
 DEFINE_string(root_path, "", "storage root path");
 DEFINE_string(operation, "get_meta",
@@ -905,6 +923,25 @@ int main(int argc, char** argv) {
     std::string usage = get_usage(argv[0]);
     gflags::SetUsageMessage(usage);
     google::ParseCommandLineFlags(&argc, &argv, true);
+
+    // Load config defaults (e.g. tablet_map_shard_size). Without this, all config
+    // ints stay 0 and StorageEngine's TabletManager hits CHECK(_tablets_shards_size > 0).
+    // Some string defaults reference ${DORIS_HOME}; give it a harmless fallback so the
+    // tool also works outside the BE environment (real env value is kept if present).
+    setenv("DORIS_HOME", ".", 0);
+    if (!doris::config::init(nullptr, false, false, true)) {
+        std::cerr << "failed to init config with default values" << std::endl;
+        return -1;
+    }
+    // StorageEngine's caches register MemTrackerLimiters, which insert into
+    // ExecEnv::mem_tracker_limiter_pool; without this init the pool is empty and
+    // create_shared() indexes into it and crashes.
+    doris::ExecEnv::GetInstance()->init_mem_tracker();
+    // LRUCachePolicy registers itself into the global CacheManager, which BE main
+    // creates in ExecEnv::init; create it here as well (via the private-member
+    // accessor above, since the public setter is BE_TEST-only).
+    doris::ExecEnv::GetInstance()->*stolen_member(ExecEnvCacheMgrTag {}) =
+            doris::CacheManager::create_global_instance();
 
     if (FLAGS_operation == "show_meta") {
         show_meta();
