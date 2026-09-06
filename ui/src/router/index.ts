@@ -14,11 +14,13 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 import asyncComponent from '../utils/lazy';
 const Playground = asyncComponent(() => import('../pages/playground'));
 const QueryRouter = asyncComponent(() => import('../pages/playground/router'));
 const Login = asyncComponent(() => import('../pages/login'));
+const LegalNotices = asyncComponent(() => import('../pages/legal-notices'));
 const Layout = asyncComponent(() => import('../pages/layout'));
 const Home = asyncComponent(() => import('../pages/home'));
 const System = asyncComponent(() => import('../pages/system'));
@@ -37,6 +39,14 @@ export default {
             path: '/login',
             component: Login,
             title: 'Login',
+            exact: true,
+            public: true,
+        },
+        {
+            path: '/legal-notices',
+            component: LegalNotices,
+            exact: true,
+            public: true,
         },
         {
             path: '/',

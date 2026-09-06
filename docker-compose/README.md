@@ -54,3 +54,17 @@ Allow FE ports `8030`, `8070`, `9010`, `9020`, and `9030`, and BE ports `8040`,
 address is not IPv4 or the network is not `/24`, set `PRIORITY_NETWORKS`
 explicitly (for example, `10.0.0.0/16`). Set `DATA_ROOT` to choose persistent
 storage paths for cross-server deployment.
+
+## Copyright notices and release materials
+
+Open `/legal-notices` on the FE HTTP service, including before sign-in. Full
+license and attribution texts are bundled under the UI's `legal/` directory.
+The FE installation also contains `legal/FE-SOURCE-ACCESS.txt` and the matching
+MariaDB source archive under `legal/sources/`; these source archives are not
+served by the FE page.
+
+Image maintainers must check the actual image filesystem and retain these
+files when copying build output. The Compose image tag alone does not verify
+its contents or source version. BE source and relinking material delivery,
+base-image dependency review, and final image validation remain release tasks
+in the [copyright implementation plan](../docs/massdb-sql-copyright-productization-plan.md).

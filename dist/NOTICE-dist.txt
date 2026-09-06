@@ -11453,3 +11453,19 @@ This product may include a number of subcomponents with
 separate copyright notices and license terms. Your use of the source
 code for the these subcomponents is subject to the terms and
 conditions of the subcomponent's license, as noted in the LICENSE file.
+
+--------------------------------------------------------------------------------
+Additional MassDB distribution component attributions
+
+FoundationDB client versions 7.1.57 and 7.3.69:
+Original license and upstream acknowledgements are preserved separately in
+licenses/LICENSE-FoundationDB-7.1.57.txt, licenses/NOTICE-FoundationDB-7.1.57.txt,
+licenses/LICENSE-FoundationDB-7.3.69.txt and licenses/NOTICE-FoundationDB-7.3.69.txt.
+These files preserve the upstream text; component applicability is reviewed
+against each actual binary distribution.
+
+The BE CDC client contains Debezium 1.9.8.Final and Apache Flink CDC 3.5.0 code.
+The Debezium license and upstream contributor list are preserved in
+licenses/LICENSE-Debezium-1.9.8.Final.txt and
+licenses/COPYRIGHT-Debezium-1.9.8.Final.txt. Preserve notices for nested
+third-party dependencies separately; a top-level Apache license does not replace them.

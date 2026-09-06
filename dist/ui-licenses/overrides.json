@@ -1,0 +1,72 @@
+{
+    "@ant-design/icons-svg@4.6.0": {
+        "file": "ant-design-icons-svg-4.6.0.txt",
+        "sha256": "5d367fb0a07340571542eb4ee8eb1add62d37b71bad6786a57c2e9a86bf76c70",
+        "integrity": "sha512-PRomU725ABMf/lnQp5HiB7my1kjEbFY0D10N4lXYxK6TIB1gKjIVD5MRThpDaezLgw1D774J8eOeeDB0M6wHrQ==",
+        "sources": [
+            "https://raw.githubusercontent.com/ant-design/ant-design-icons/7f2516ac91226d2b41f93b35cb5197c8d94f7189/LICENSE"
+        ],
+        "basis": "Exact upstream license, or explicitly declared standard license plus all identified package attributions; no copyright holder/year invented."
+    },
+    "@umijs/hooks@1.9.3": {
+        "file": "umijs-hooks-1.9.3.txt",
+        "sha256": "8f1dd9fc97844dbb42b467af45591e8b45ec76666ad5d303ab309e75b5201249",
+        "integrity": "sha512-h83Zk0x2oO8HeTZlSLsT4KVh+Me1VoXu+DHmT+cpqR7caBhii0T5c8Weko/pFBkEiB4QKzvWi7Zj+78VSKkI5w==",
+        "sources": [
+            "https://raw.githubusercontent.com/umijs/hooks/4ea8f5c04c06eff2a33b2be473a8f7460909bebb/LICENSE"
+        ],
+        "basis": "Exact upstream license, or explicitly declared standard license plus all identified package attributions; no copyright holder/year invented."
+    },
+    "@umijs/use-request@1.4.3": {
+        "file": "umijs-use-request-1.4.3.txt",
+        "sha256": "8f1dd9fc97844dbb42b467af45591e8b45ec76666ad5d303ab309e75b5201249",
+        "integrity": "sha512-aH4GCdRnMCaaciygdN0KtCDQdBBh1KyiNUAgYDPX8Y4brmbymEpJViX1FU4isOTbV34WlbkWTiBpR9HIi2ciNQ==",
+        "sources": [
+            "https://raw.githubusercontent.com/umijs/hooks/4ea8f5c04c06eff2a33b2be473a8f7460909bebb/LICENSE"
+        ],
+        "basis": "Exact upstream license, or explicitly declared standard license plus all identified package attributions; no copyright holder/year invented."
+    },
+    "format@0.2.2": {
+        "file": "format-0.2.2.txt",
+        "sha256": "d960be650914bfe7e7d828f2cb44be03ba5e05627f7f5ce77aead53d5ba7e7fe",
+        "integrity": "sha512-wzsgA6WOq+09wrU1tsJ09udeR/YZRaeArL9e1wPbFg3GG2yDnC2ldKpxs4xunpFF9DgqCqOIra3bc1HWrJ37Ww==",
+        "sources": [
+            "npm:format@0.2.2/format.js",
+            "npm:format@0.2.2/Readme.md",
+            "https://spdx.org/licenses/MIT.html"
+        ],
+        "basis": "Exact upstream license, or explicitly declared standard license plus all identified package attributions; no copyright holder/year invented."
+    },
+    "intersection-observer@0.7.0": {
+        "file": "intersection-observer-0.7.0.txt",
+        "sha256": "df308baf999b1f5e9e6e4b00f231a86ca827e21a2ef43944855e94405e35497b",
+        "integrity": "sha512-Id0Fij0HsB/vKWGeBe9PxeY45ttRiBmhFyyt/geBdDHBYNctMRTE3dC1U3ujzz3lap+hVXlEcVaB56kZP/eEUg==",
+        "sources": [
+            "npm:intersection-observer@0.7.0/intersection-observer.js",
+            "https://www.w3.org/copyright/software-license-2015/"
+        ],
+        "basis": "Exact upstream license, or explicitly declared standard license plus all identified package attributions; no copyright holder/year invented."
+    },
+    "toggle-selection@1.0.6": {
+        "file": "toggle-selection-1.0.6.txt",
+        "sha256": "fda8817ea43f4381a0115cb0c3ef81c5dbb9cb6c6c8024832433fcab78ca0e50",
+        "integrity": "sha512-BiZS+C1OS8g/q2RRbJmy59xpyghNBqrr6k5L/uKBGRsTfxmu3ffiRnd8mlGPUVayg8pvfi5urfnu8TU7DVOkLQ==",
+        "sources": [
+            "npm:toggle-selection@1.0.6/package.json",
+            "npm:toggle-selection@1.0.6/README.md",
+            "https://spdx.org/licenses/MIT.html"
+        ],
+        "basis": "Exact upstream license, or explicitly declared standard license plus all identified package attributions; no copyright holder/year invented."
+    },
+    "umi-request@1.4.0": {
+        "file": "umi-request-1.4.0.txt",
+        "sha256": "e1cb9ff2a942348c3722c6fb65018b9e552f9ad1aba1b51b11ae0d6e0fa3a406",
+        "integrity": "sha512-OknwtQZddZHi0Ggi+Vr/olJ7HNMx4AzlywyK0W3NZBT7B0stjeZ9lcztA85dBgdAj3KVk8uPJPZSnGaDjELhrA==",
+        "sources": [
+            "npm:umi-request@1.4.0/package.json",
+            "npm:umi-request@1.4.0/README.md",
+            "https://spdx.org/licenses/MIT.html"
+        ],
+        "basis": "Exact upstream license, or explicitly declared standard license plus all identified package attributions; no copyright holder/year invented."
+    }
+}

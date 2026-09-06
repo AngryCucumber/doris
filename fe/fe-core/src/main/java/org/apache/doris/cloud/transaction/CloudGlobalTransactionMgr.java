@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Apache Doris backport #61881. See MODIFICATIONS.md.
 
 package org.apache.doris.cloud.transaction;
 

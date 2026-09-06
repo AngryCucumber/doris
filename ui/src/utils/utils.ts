@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 /**
  * @file test cron
@@ -75,6 +76,14 @@ function getTimeNow() {
 }
 
 function getBasePath() {
+    // Use the same-origin entry bundle directory for proxied deployments.
+    const scripts = Array.from(document.querySelectorAll('script[src]')) as HTMLScriptElement[];
+    for (const script of scripts) {
+        const url = new URL(script.src, document.baseURI);
+        if (url.origin === location.origin && /\/main\.[a-f0-9]+\.js$/.test(url.pathname)) {
+            return url.pathname.slice(0, url.pathname.lastIndexOf('/'));
+        }
+    }
     let arr = location.pathname.split('/');
     let res = '';
     if (arr.length > 5) {

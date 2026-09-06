@@ -17,3 +17,6 @@
 *.out text eol=lf diff
 *.groovy -linguist-detectable
 regression-test/ export-ignore
+
+# Record provenance when producing a source archive.
+dist/source-version.json export-subst

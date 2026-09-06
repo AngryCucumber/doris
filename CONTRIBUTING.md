@@ -16,60 +16,49 @@ KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License.
 -->
+<!-- Modified for MassDB SQL. See MODIFICATIONS.md for details. -->
 
-# Contribute to Doris
+# Contributing to MassDB SQL
 
-Thank you very much for your interest in the Doris project. We welcome your suggestions, comments (including criticisms), comments and contributions to the Doris project.
+Use this repository's review process for MassDB changes. The project derives
+from Apache Doris; contributions here do not constitute a contribution to ASF
+or grant Apache project roles. Upstream contributions follow the
+[Apache Doris contribution process](https://github.com/apache/doris/blob/master/CONTRIBUTING.md).
 
-Your suggestions, comments and comments on Doris can be made directly through GitHub's [Issues](https://github.com/apache/doris/issues/new/choose).
+## Prepare a change
 
-There are many ways to participate in and contribute to Doris projects: code implementation, test writing, process tool improvement, document improvement, and so on. Any contribution will be welcomed and you will be added to the list of contributors. Further, with sufficient contributions, you will have the opportunity to become a Committer of Apache with Apache mailbox and be included in the list of [Apache Committers](http://people.apache.org/committer-index.html).
+Read [AGENTS.md](AGENTS.md) for module layout, toolchains and test commands.
+Keep changes focused and preserve existing Java packages, C++ namespaces,
+protocols and configuration keys unless a migration is explicitly in scope.
+Add tests for changed behavior and relevant failure paths; explain when a
+change only needs documentation, formatting or browser verification.
 
-Any questions, you can contact us to get timely answers, including dev mail list or Slack.
+## Preserve attribution
 
-## Initial contact
+Retain upstream and third-party license and copyright notices. Add a short
+`Modified for MassDB SQL. See MODIFICATIONS.md for details.` comment to modified
+upstream text files and record source paths, copied files and asset provenance
+in [MODIFICATIONS.md](MODIFICATIONS.md). Formats that cannot contain comments
+need associated attribution that follows the distributed files.
 
-For the first time in Doris community, you can:
+Do not put ASF contributor-agreement statements on independently authored
+files. Confirm the applicable license and rights holder before adding new
+copyright or license claims. The current unresolved decisions and evidence
+requirements are in the [copyright plan](docs/massdb-sql-copyright-productization-plan.md).
+Keep contracts and identity records in the restricted evidence store; only
+non-sensitive evidence references belong in this repository.
 
-* Follow [Doris GitHub](https://github.com/apache/doris)
-* Subscribe to our [mailing list](./docs/en/community/subscribe-mail-list.md);
-* Join Doris [Slack](https://join.slack.com/t/apachedoriscommunity/shared_invite/zt-11jb8gesh-7IukzSrdea6mqoG0HB4gZg)
+## Verify and request review
 
-Learn the development trends of Doris project in time and give your opinions on the topics you are concerned about.
+Run focused tests for the affected module. Run Java Checkstyle from `fe/`
+with `mvn checkstyle:check`. For UI changes, follow [ui/README.md](ui/README.md)
+and include screenshots when page behavior or layout changes. Dependency
+updates also require regenerated notices and an inspection of their source
+licenses; a successful build alone does not complete license review.
 
-## Doris's code and documentation
-
-As you can see from [GitHub](https://github.com/apache/doris), Apache Doris code base mainly consists of three parts: Frontend (FE), Backend (BE) and Broker (to support file reading on external storage systems such as HDFS). Documents are mainly the wiki on Doris website and GitHub, as well as the online help manual when running Doris. Details of these components can be found in the following table:
-
-| Component Name                                                    | Component Description                                      | Related Language |
-|-------------------------------------------------------------------|------------------------------------------------------------|------------------|
-| [Frontend daemon (FE)](https://github.com/apache/doris) | consists of a query coordinator and a metadata manager     | Java             |
-| [Backend daemon (BE)](https://github.com/apache/doris)  | Responsible for storing data and executing query fragments | C++              |
-| [Broker](https://github.com/apache/doris)               | Read HDFS data to Doris                                    | Java             |
-| [Website](https://github.com/apache/doris-website)      | Doris Website                                              | Markdown         |
-| [Github Wiki](https://github.com/apache/doris/wiki)     | Doris Github Wiki                                          | Markdown         |
-| Doris Runtime Help Document                                       | Online Help Manual at Doris Runtime                        | Markdown         |
-
-## Improving documentation
-
-Documentation is the most important way for you to understand Apache Doris, and it's where we need help most!
-
-Browse the document, you can deepen your understanding of Doris, can also help you understand Doris's function and technical details, if you find that the document has problems, please contact us in time;
-
-If you are interested in improving the quality of documents, whether it is revising the address of a page, correcting a link, and writing a better introductory document, we are very welcome!
-
-Most of our documents are written in Markdown format, and you can modify and submit document changes directly through `docs/` in [GitHub](https://github.com/apache/doris). If you submit code changes, you can refer to [Pull Request](./docs/en/community/how-to-contribute/pull-request.md).
-
-## If a Bug or problem is found
-
-If a Bug or problem is found, you can directly raise a new Issue through GitHub's [Issues](https://github.com/apache/doris/issues/new/choose), and we will have someone deal with it regularly.
-
-You can also fix it yourself by reading the analysis code (of course, it's better to talk to us before that, maybe someone has fixed the same problem) and submit a [Pull Request](./docs/en/community/how-to-contribute/pull-request.md).
-
-## Modify the code and submit PR (Pull Request)
-
-You can download the code, compile and install it, deploy and run it for a try (refer to the [compilation document](./docs/en/installing/compilation.md)) to see if it works as you expected. If you have problems, you can contact us directly, ask questions or fix them by reading and analyzing the source code.
-
-Whether it's fixing Bugs or adding Features, we're all very welcome. If you want to submit code to Doris, you need to create a new branch for your submitted code from the fork code library on GitHub to your project space, add the source project upstream, and submit PR.
-
-About how to submit a PR refer to [Pull Request](./docs/en/community/how-to-contribute/pull-request.md).
+Use commit and PR titles such as `[fix](ui) preserve public notice access`.
+Complete [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md):
+explain the problem and resulting behavior, link applicable issues, provide
+release notes, and record tests and remaining limitations. Include the required
+new documentation and provenance inputs in the change; generated bundles,
+local caches and private evidence do not belong in the commit.

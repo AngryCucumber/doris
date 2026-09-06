@@ -23,6 +23,7 @@ dependency-reduced-pom.xml
 yarn.lock
 ut_dir
 package-lock.json
+!/ui/package-lock.json
 __pycache__
 
 # ignore all sub `/bin` and `/build` directory
@@ -159,3 +160,7 @@ compile_commands.json
 
 .worktrees/
 .worktree_initialized
+/.claude/
+
+# Corresponding LGPL source distributed with FE; pinned by SHA-256.
+!/dist/sources/mariadb-connector-j-3.0.9.tar.gz

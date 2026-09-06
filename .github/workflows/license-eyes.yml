@@ -23,8 +23,6 @@ on:
     branches:
       - master
   workflow_dispatch:
-  issue_comment:
-    types: [ created ]
 
 permissions:
   contents: read
@@ -34,18 +32,14 @@ jobs:
   license-check:
     name: "License Check"
     runs-on: ubuntu-latest
-    if: |
-      (github.event_name == 'pull_request') ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
-      (github.event_name == 'issue_comment' &&
-       github.event.comment.body == 'run buildall' &&
-       github.actor == 'doris-robot' &&
-       github.event.issue.user.login == 'github-actions[bot]')
     steps:
       - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+
+      - name: Check independent and upstream source headers
+        run: python3 build-support/check-source-headers.py
 
       - name: Get changed files
         if: github.event_name == 'pull_request'

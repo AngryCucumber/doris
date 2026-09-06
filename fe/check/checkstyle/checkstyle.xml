@@ -17,6 +17,7 @@ KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License.
 -->
+<!-- Modified for MassDB SQL. See MODIFICATIONS.md for details. -->
 
 <!DOCTYPE module PUBLIC
         "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
@@ -45,8 +46,28 @@ under the License.
         <property name="eachLine" value="true"/>
     </module>
     <module name="Header">
+        <property name="id" value="asfHeader"/>
         <property name="headerFile" value="check/checkstyle/checkstyle-apache-header.txt"/>
         <property name="fileExtensions" value="java"/>
+    </module>
+    <!-- Independent Java: existing legacy test or new code under a massdb/ path segment.
+         The header pattern is checked against dist/headers and the plan's SPDX template. -->
+    <module name="RegexpMultiline">
+        <property name="id" value="independentHeader"/>
+        <property name="format" value="\A(?:// Copyright \(c\) [0-9]{4}(?:-[0-9]{4})?\r?\n// 厦门市美亚柏科信息安全研究所有限公司\r?\n// Xiamen\ Meiya\ Pico\ Information\ Security\ Research\ Institute\ Co\.,\ Ltd\.\r?\n// SPDX-License-Identifier: Apache-2\.0\r?\n|(?:// Copyright \(c\) [0-9]{4}(?:-[0-9]{4})?\r?\n// 厦门市美亚柏科信息安全研究所有限公司\r?\n// Xiamen\ Meiya\ Pico\ Information\ Security\ Research\ Institute\ Co\.,\ Ltd\.\r?\n(?:// SPDX-License-Identifier: Apache-2\.0\r?\n)?)?//\ Licensed\ under\ the\ Apache\ License,\ Version\ 2\.0\ \(the\ &quot;License&quot;\);\r?\n//\ you\ may\ not\ use\ this\ file\ except\ in\ compliance\ with\ the\ License\.\r?\n//\ You\ may\ obtain\ a\ copy\ of\ the\ License\ at\r?\n//\r?\n//\ \ \ \ \ http://www\.apache\.org/licenses/LICENSE\-2\.0\r?\n//\r?\n//\ Unless\ required\ by\ applicable\ law\ or\ agreed\ to\ in\ writing,\ software\r?\n//\ distributed\ under\ the\ License\ is\ distributed\ on\ an\ &quot;AS\ IS&quot;\ BASIS,\r?\n//\ WITHOUT\ WARRANTIES\ OR\ CONDITIONS\ OF\ ANY\ KIND,\ either\ express\ or\ implied\.\r?\n//\ See\ the\ License\ for\ the\ specific\ language\ governing\ permissions\ and\r?\n//\ limitations\ under\ the\ License\.\r?\n)"/>
+        <property name="minimum" value="1"/>
+        <property name="maximum" value="1"/>
+        <property name="matchAcrossLines" value="true"/>
+        <property name="message" value="Missing independent Apache header or complete company/SPDX header"/>
+        <property name="fileExtensions" value="java"/>
+    </module>
+    <module name="SuppressionSingleFilter">
+        <property name="id" value="asfHeader"/>
+        <property name="files" value="(?:[/\\]master[/\\]ReportHandlerTest\.java$|[/\\]massdb[/\\])"/>
+    </module>
+    <module name="SuppressionSingleFilter">
+        <property name="id" value="independentHeader"/>
+        <property name="files" value="^(?!.*(?:[/\\]master[/\\]ReportHandlerTest\.java$|[/\\]massdb[/\\])).*"/>
     </module>
     <module name="LineLength">
         <property name="fileExtensions" value="java"/>

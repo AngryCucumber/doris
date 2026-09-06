@@ -16,6 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 /**
  * @file test cron
@@ -23,6 +24,8 @@
  * @since 2020/08/19
  */
 const path = require('path');
+const webpack = require('webpack');
+const { productInputs, ProductNoticesPlugin } = require('../scripts/collect-bundled-licenses.cjs');
 const paths = require('./paths');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const {CleanWebpackPlugin} = require('clean-webpack-plugin');
@@ -227,6 +230,18 @@ module.exports = {
     },
     // 配置相应的插件
     plugins: [
+        new webpack.DefinePlugin({
+            __MASSDB_BRANDING__: webpack.DefinePlugin.runtimeValue(
+                () => JSON.stringify(productInputs('--metadata')),
+                [path.resolve(__dirname, '../../dist/product-provenance.json'),
+                    path.resolve(__dirname, '../../fe/pom.xml'),
+                    path.resolve(__dirname, '../../gensrc/script/gen_build_version.sh')]
+            )
+        }),
+        new webpack.BannerPlugin({
+            banner: 'Bundled and minified for MassDB SQL. See legal/THIRD-PARTY-NOTICES.txt for original licenses and copyrights.',
+            test: /\.(js|css)$/
+        }),
         new HtmlWebpackPlugin({
             template: './src/index.html',
             inject: 'body',
@@ -236,7 +251,8 @@ module.exports = {
             filename: '[name].[hash].css',
             ignoreOrder: true
         }),
-        new CleanWebpackPlugin()
+        ...(!devMode ? [new CleanWebpackPlugin()] : []),
+        new ProductNoticesPlugin()
     ],
     performance: {
         maxAssetSize: 2097152,

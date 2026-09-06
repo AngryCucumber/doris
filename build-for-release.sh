@@ -15,6 +15,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 ##############################################################
 # This script is used to build for Apache Doris Release
@@ -102,6 +103,10 @@ if [[ -z ${VERSION} ]]; then
     usage
 fi
 
+# A pending header permits review builds, but must not silently enter a release.
+"${MASSDB_NOTICE_PYTHON:-python3}" "${ROOT}/build-support/check-source-headers.py" --release
+"${MASSDB_NOTICE_PYTHON:-python3}" "${ROOT}/build-support/prepare-product-notices.py" --check-release-provenance
+
 echo "Get params:
     VERSION         -- ${VERSION}
     USE_AVX2        -- ${_USE_AVX2}
@@ -168,6 +173,9 @@ cp -R "${ORI_OUTPUT}"/be/* "${OUTPUT_BE}"/
 # CLOUD
 cp -R "${ORI_OUTPUT}"/ms/* "${OUTPUT_CLOUD}"/
 
+# TOOL: include tools in the archive as well as the unpacked output.
+cp -R "${ORI_OUTPUT}"/tools/* "${OUTPUT_TOOLS}"/
+
 if [[ "${TAR}" -eq 1 ]]; then
     echo "Begin to compress"
     cd "${ORI_OUTPUT}"
@@ -179,9 +187,6 @@ if [[ "${TAR}" -eq 1 ]]; then
     fi
     cd -
 fi
-
-# TOOL
-cp -R "${ORI_OUTPUT}"/tools/* "${OUTPUT_TOOLS}"/
 
 echo "Output dir: ${OUTPUT}"
 exit 0

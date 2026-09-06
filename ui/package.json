@@ -1,11 +1,19 @@
 {
-  "name": "Doris",
+  "name": "massdb-sql-ui",
   "version": "1.0.0",
-  "description": "{{description}}",
+  "description": "MassDB SQL administration interface, derived from Apache Doris",
+  "private": true,
+  "packageManager": "npm@10.9.9",
+  "engines": {
+    "node": ">=22.23.2 <23",
+    "npm": ">=10.9.9 <11"
+  },
   "main": "index.js",
   "scripts": {
     "dev": "cross-env NODE_ENV=dev webpack-dev-server --progress --profile --process.env.PRODUCT_MODEL='DEVELOP' ",
-    "build": "cross-env NODE_ENV=prod webpack"
+    "build": "cross-env NODE_ENV=prod webpack",
+    "check:notices": "python3 ../build-support/prepare-product-notices.py --check-ui dist",
+    "test:legal": "node --test scripts/legal-notices.test.cjs"
   },
   "lint-staged": {
     "src/**/*.js": [
@@ -51,6 +59,7 @@
     "sql-formatter": "^2.3.3"
   },
   "devDependencies": {
+    "playwright": "1.63.0",
     "@typescript-eslint/eslint-plugin": "^2.24.0",
     "@typescript-eslint/parser": "^2.24.0",
     "autoprefixer": "^9.6.0",

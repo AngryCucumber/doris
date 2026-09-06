@@ -1,0 +1,49 @@
+/*
+ * MassDB SQL implementation.
+ * Licensing decision pending (A02); see dist/source-headers.json.
+ * This file does not assert an ASF contributor agreement.
+ */
+.footer {
+    flex-shrink: 0;
+    padding: 20px 24px;
+    color: #475569;
+    background: rgba(255, 255, 255, 0.94);
+    border-top: 1px solid #e2e8f0;
+    text-align: center;
+    font-size: 12px;
+    line-height: 1.65;
+    overflow-wrap: anywhere;
+
+    a {
+        color: #175ca6;
+        text-decoration: underline;
+    }
+
+    a:focus-visible {
+        outline: 2px solid #175ca6;
+        outline-offset: 3px;
+    }
+}
+
+.library {
+    margin-top: 6px;
+}
+
+.transparent {
+    padding: 12px 24px 20px;
+    background: transparent;
+    border-top: 0;
+
+    .library {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 2px 16px;
+        max-width: 1120px;
+        margin: 4px auto 0;
+    }
+
+    .library > div:first-child {
+        flex-basis: 100%;
+    }
+}

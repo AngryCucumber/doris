@@ -16,18 +16,23 @@ KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License.
 -->
+<!-- Modified for MassDB SQL. See MODIFICATIONS.md for details. -->
 
 <!DOCTYPE html>
 <html lang="en">
 <script>
-let arr = location.pathname.split('/');
-let res = '';
-if (arr.length > 4) {
-    arr = arr.slice(0, 5);
-    res = arr.join('/') + '/';
+var segments = location.pathname.split('/');
+var routes = ['login', 'legal-notices', 'home', 'Playground', 'System', 'QueryProfile', 'Session', 'Configuration'];
+var routeIndex = -1;
+for (var index = 1; index < segments.length; index++) {
+    if (routes.indexOf(segments[index]) !== -1) routeIndex = index;
+}
+var res = routeIndex !== -1 ? segments.slice(0, routeIndex).join('/') + '/' : '/';
+if (routeIndex === -1 && segments.length > 4) {
+    res = segments.slice(0, 5).join('/') + '/';
 }
 var baseItem = document.createElement('base');
-baseItem.setAttribute('href', res ? location.origin + res : location.origin);
+baseItem.setAttribute('href', location.origin + res);
 document.getElementsByTagName('head')[0].appendChild(baseItem);
 </script>
 <head>

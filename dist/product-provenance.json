@@ -1,0 +1,30 @@
+{
+    "productName": "MassDB SQL",
+    "companyZh": "厦门市美亚柏科信息安全研究所有限公司",
+    "companyEn": "Xiamen Meiya Pico Information Security Research Institute Co., Ltd.",
+    "copyrightYears": "2026",
+    "companyCopyrightConfirmed": false,
+    "newCodeLicense": null,
+    "upstream": {
+        "name": "Apache Doris",
+        "sourceVersion": "4.0.5-rc01",
+        "sourceCommit": "59de8c4c524008e8ab2e43b79312f716a3a423a8",
+        "url": "https://github.com/apache/doris/commit/59de8c4c524008e8ab2e43b79312f716a3a423a8",
+        "verifiedOn": "2026-09-06"
+    },
+    "mariadb": {
+        "name": "MariaDB Connector/J",
+        "version": "3.0.9",
+        "license": "LGPL-2.1-or-later",
+        "copyrights": [
+            "Copyright (c) 2012-2014 Monty Program Ab",
+            "Copyright (c) 2015-2021 MariaDB Corporation Ab"
+        ],
+        "copyrightSource": "https://raw.githubusercontent.com/mariadb-corporation/mariadb-connector-j/3.0.9/src/main/java/org/mariadb/jdbc/Driver.java",
+        "sourceUrl": "https://codeload.github.com/mariadb-corporation/mariadb-connector-j/tar.gz/refs/tags/3.0.9",
+        "sourceSha256": "9e47961e1879570f4fc134d0cea7957ac3e83cb2174c68349ee2032068ec1399",
+        "jarUrl": "https://repo.maven.apache.org/maven2/org/mariadb/jdbc/mariadb-java-client/3.0.9/mariadb-java-client-3.0.9.jar",
+        "jarSha256": "2a004c8ab43173a2a0d10d25aadfc57b8012fe1f68bbd816196df814b5000c1a"
+    },
+    "versionPolicy": "independent-product-version"
+}
