@@ -1,0 +1,34 @@
+{
+  "reviewedPackageSha256": "3914038c8a79f005dc76f0a2d31f17f2f54012c216fc95d3883b5c71c65724a5",
+  "platform": "Linux ARM64",
+  "reviewedOn": "2026-09-06",
+  "scope": "Evidence applies only to the listed binary hashes; rerun when the binary, platform, compiler or link inputs change. This does not audit Java or embedded native dependencies.",
+  "binaries": {
+    "be": {
+      "binary": "be/lib/doris_be",
+      "sha256": "e5dc4a0f9f4374714bf14c719e85d90106861ecf80bba78a1aaf31aae1c22669",
+      "relinkedBinaryMatchesPackage": true,
+      "archiveExtractionHits": {
+        "libgsasl.a(": [],
+        "libidn.a(": [],
+        "libhdfs3.a(": []
+      },
+      "linkInputsContainGsaslAndIdn": true,
+      "archiveExtractionReportSha256": "bd87f96955ef3404f27d9718cc997e71cbcfbc7ab64fdf3c6cfe48eb578a96a3",
+      "reproduce": "Replay the captured final link with --why-extract, preserve strip/debuglink steps, and require an identical output SHA-256"
+    },
+    "cloud": {
+      "binary": "ms/lib/doris_cloud",
+      "sha256": "7679b0e3aa38f9b42498250f82820844d5482b30bbf340d598763bf2ecfcbd80",
+      "relinkedBinaryMatchesPackage": true,
+      "archiveExtractionHits": {
+        "libgsasl.a(": [],
+        "libidn.a(": [],
+        "libhdfs3.a(": []
+      },
+      "linkInputsContainGsaslAndIdn": true,
+      "archiveExtractionReportSha256": "5bd79b5983a8613d36232800feac9aafe97ef171225a01ecaf41fabe9a263683",
+      "reproduce": "Replay the captured final link with --why-extract, preserve strip/debuglink steps, and require an identical output SHA-256"
+    }
+  }
+}

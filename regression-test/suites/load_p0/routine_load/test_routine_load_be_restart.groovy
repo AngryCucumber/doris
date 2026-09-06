@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for
 // the specific language governing permissions and limitations
 // under the License.
+// Apache Doris backport #61881. See MODIFICATIONS.md.
 
 import org.apache.doris.regression.util.RoutineLoadTestUtils
 import org.apache.kafka.clients.admin.AdminClient

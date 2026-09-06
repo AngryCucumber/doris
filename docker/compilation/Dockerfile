@@ -14,7 +14,10 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
+# Legacy native compiler image: Node 14/16 here does not satisfy the UI toolchain.
+# Build UI using Dockerfile.ui; use CUSTOM_UI_DIST and Python 3.9+ for FE notices.
 FROM centos:7 AS builder
 
 # Switch repos to point to to vault.centos.org because CentOS 7 is EOL

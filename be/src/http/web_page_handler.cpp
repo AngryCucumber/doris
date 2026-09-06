@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #include "http/web_page_handler.h"
 
@@ -144,7 +145,7 @@ static const std::string kMainTemplate = R"(
       <div class="container-fluid">
         <div class="navbar-header">
           <a class="navbar-brand" style="padding-top: 5px;" href="/">
-            <img src="/logo.png" width='40' height='40' alt="Doris" />
+            <img src="/logo.png" width='40' height='40' alt="MassDB SQL" />
           </a>
         </div>
         <div id="navbar" class="navbar-collapse collapse">

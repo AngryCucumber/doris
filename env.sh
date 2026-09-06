@@ -16,6 +16,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 # check DORIS_HOME
 export LC_ALL=C
@@ -94,6 +95,13 @@ fi
 if [[ -f "${DORIS_HOME}/custom_env.sh" ]]; then
     # shellcheck disable=1091
     . "${DORIS_HOME}/custom_env.sh"
+fi
+
+# FE notice tooling requires Python 3.9+. Local UI builds require the Node/npm
+# versions in ui/package.json; prebuilt/headless FE builds do not require Node.
+export MASSDB_NOTICE_PYTHON="${MASSDB_NOTICE_PYTHON:-python3}"
+if [[ -n "${MASSDB_UI_NODE_DIR}" ]]; then
+    export PATH="${MASSDB_UI_NODE_DIR}/bin:${PATH}"
 fi
 
 # set DORIS_THIRDPARTY

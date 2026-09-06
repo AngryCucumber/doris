@@ -16,6 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 /**
  * @file test cron
@@ -28,14 +29,14 @@ import { CaretDownOutlined, LogoutOutlined } from '@ant-design/icons';
 import { renderRoutes } from 'react-router-config';
 import { useHistory } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import routes from 'Src/router';
+import LegalFooter from 'Components/legal-footer';
 import { logOut } from 'Src/api/api';
 import './index.css';
 import styles from './index.less';
-const { Header, Content, Footer } = Layout;
+const { Header, Content } = Layout;
 function Layouts(props: any) {
     let { t } = useTranslation();
-    const [route, setRoute] = useState(props.route.routes);
+    const route = props.route.routes;
     const [current, setCurrent] = useState(props.location.pathname);
     const history = useHistory();
     //Jump page
@@ -91,7 +92,7 @@ function Layouts(props: any) {
         </Menu>
     );
     return (
-        <Layout>
+        <Layout style={{ minHeight: '100vh' }}>
             <Header style={{ position: 'fixed', zIndex: 99, width: '100%' }}>
                 <div
                     className={styles['logo']}
@@ -125,8 +126,8 @@ function Layouts(props: any) {
                     selectedKeys={[current]}
                     mode="horizontal"
                 >
-                    {routes?.routes[1]?.routes?.map((item) => {
-                        if (item.title !== 'Login' && item.title !== 'Home') {
+                    {route.map((item) => {
+                        if (item.title && item.title !== 'Login' && item.title !== 'Home') {
                             return (
                                 <Menu.Item key={item.path}>
                                     {item.title}
@@ -146,7 +147,7 @@ function Layouts(props: any) {
                 </div>
             </Content>
 
-            {/* <Footer style={{textAlign: 'center'}}>xxx</Footer> */}
+            <LegalFooter />
         </Layout>
     );
 }

@@ -14,7 +14,10 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
+# Legacy native compiler image; use Dockerfile.ui and CUSTOM_UI_DIST for UI.
+# FE notices additionally require Python 3.9+.
 FROM centos:centos7.5.1804 AS builder
 
 LABEL maintainer=tangxiaoqing214445

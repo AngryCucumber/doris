@@ -1,0 +1,24 @@
+MassDB SQL 2.0.5-rc01 — product version and source mapping
+
+MassDB SQL uses independent product version numbers. Its 2.0.5-rc01 number is
+not the Apache Doris 2.0.5-rc01 release number and must not be used as an Apache
+Doris version when assigning package identifiers or matching vulnerabilities.
+
+Upstream source baseline: Apache Doris 4.0.5-rc01 source version on branch-4.0.
+Upstream commit: 59de8c4c524008e8ab2e43b79312f716a3a423a8
+Source: https://github.com/apache/doris/commit/59de8c4c524008e8ab2e43b79312f716a3a423a8
+This records a source baseline, not a claim that MassDB is an ASF release.
+Evaluate vulnerability applicability against actual dependency versions,
+upstream code, local changes and backported fixes.
+
+The review build adds a continuous login background and transparent copyright
+footer, public local license reading, and distribution notice checks. Source
+identity, working-tree state and package hashes are recorded with each build.
+
+External release remains pending: new-code licensing, company ownership/year
+confirmation and complete third-party review (including Jindo binary licensing).
+The build-release source gate requires a known commit and a clean source state;
+an explicit commit string alone does not establish that a source tree is clean.
+
+版本说明：MassDB SQL 2.0.5-rc01 是产品独立编号，上游源码基线为 Apache Doris
+4.0.5-rc01。SBOM/CVE 评估须使用实际组件版本和代码差异，不把产品编号作为上游版本。

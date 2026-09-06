@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #include "http/default_path_handlers.h"
 
@@ -96,7 +97,7 @@ void config_handler(const WebPageHandler::ArgumentMap& args, std::stringstream* 
 void memory_info_handler(std::stringstream* output) {
     (*output) << "<h2>Memory Info</h2>\n";
     (*output) << "<pre>";
-    (*output) << "<h4 id=\"memoryDocumentsTitle\">Memory Documents</h4>\n"
+    (*output) << "<h4 id=\"memoryDocumentsTitle\">Apache Doris Upstream Memory Documents</h4>\n"
               << "<a "
                  "href=https://doris.apache.org/zh-CN/docs/dev/admin-manual/memory-management/"
                  "overview>Memory Management Overview</a>\n"

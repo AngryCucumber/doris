@@ -1,0 +1,44 @@
+/*
+ * MassDB SQL implementation.
+ * Licensing decision pending (A02); see dist/source-headers.json.
+ * This file does not assert an ASF contributor agreement.
+ */
+.page {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background: #f8fafc;
+    color: #263445;
+}
+
+.content {
+    width: 100%;
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 32px 24px 48px;
+    flex: 1;
+    overflow-wrap: anywhere;
+
+    h1 { margin: 24px 0; font-size: 28px; }
+    h2 { margin-top: 28px; font-size: 19px; }
+    p { line-height: 1.8; }
+    a { color: #175ca6; text-decoration: underline; }
+    button { color: #175ca6; background: transparent; border: 0; cursor: pointer; padding: 4px 0; }
+    a:focus-visible, button:focus-visible { outline: 2px solid #175ca6; outline-offset: 3px; }
+}
+
+.navigation, .readerActions { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
+.reader { margin: 12px 0; padding: 12px 16px; border: 1px solid #dbe3ec; background: white; border-radius: 6px; }
+.readerActions button { text-align: left; }
+.readerActions a { flex-shrink: 0; }
+.reader pre { max-height: 480px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 16px 0 0; font-size: 12px; }
+.versions { display: grid; grid-template-columns: max-content 1fr; gap: 8px 20px; padding: 16px; background: #edf2f7; }
+.versions dt { font-weight: 600; }
+.versions dd { margin: 0; min-width: 0; }
+
+@media (max-width: 480px) {
+    .content { padding: 20px 16px 32px; }
+    .content h1 { font-size: 22px; }
+    .versions { grid-template-columns: 1fr; gap: 4px; }
+    .versions dd { margin-bottom: 8px; }
+}

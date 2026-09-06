@@ -1449,13 +1449,20 @@ Sun Binary Code License Agreement -- licenses/LICENSE-jta.txt
     * Java Transaction API:
         - javax.transaction:jta:1.1 (http://java.sun.com/products/jta)
 
-LGPL -- licenes/LICENSE-LGPL.txt
+LGPL -- licenses/LICENSE-LGPL.txt
     * MariaDB Java Client
-        - org.mariadb.jdbc:mariadb-java-client:3.0.4 (https://mariadb.com/kb/en/mariadb/about-mariadb-connector-j/)
+        - org.mariadb.jdbc:mariadb-java-client:3.0.9 (https://mariadb.com/kb/en/mariadb/about-mariadb-connector-j/)
 
 ====================================================================================
-This projects includes binary packages with the following licenses (BE part):
+Native dependency catalog (BE part; inclusion depends on platform and link inputs):
 ====================================================================================
+
+This inherited catalog is not an exact inventory of every MassDB binary. For the
+2026-09-06 Linux ARM64 package, hash-identical BE/Cloud relinks with LLD archive
+extraction reports included no objects from libgsasl.a, libidn.a or libhdfs3.a.
+These libraries must be reconsidered for other builds; keeping a build-time
+archive on the link command does not itself establish object inclusion.
+See NATIVE-LINK-EVIDENCE.json for binary hashes and the scope of this evidence.
 
 The Apache Software License, Version 2.0
     * thrift: 0.13
@@ -1472,7 +1479,7 @@ The Apache Software License, Version 2.0
     * aws sdk: 1.9.211
     * benchmark: 1.8.0
     * simdjson: 3.0.1
-    * libhdfs3: 2.3.8
+    * libhdfs3: 2.3.9 (conditional platform dependency; not included in the reviewed ARM64 BE/Cloud binaries)
     * opentelemetry-proto: 0.18.0
     * opentelemetry-cpp: 1.4.0
     * clucene: 2.4.6
@@ -1485,8 +1492,8 @@ The MIT License -- licenses/LICENSE-MIT.txt
     * krb5: 1.19
     * nlohmann/json 3.10.1
 
-LGPL -- licenes/LICENSE-LGPL.txt
-    * gsasl: 1.10.0/1.8.0
+LGPL -- licenses/LICENSE-LGPL.txt
+    * gsasl: 1.10.0/1.8.0 (build-time catalog; not included in the reviewed ARM64 BE/Cloud binaries)
 
 Other dependencies:
     * libevent: 2.1.12 -- licenses/LICENSE-libevent.txt
@@ -1524,3 +1531,40 @@ Other dependencies:
     * FlameGraph -- licenses/LICENSE-CDDL-1.0.txt
     * icu 75.1 -- licenses/LICENSE-icu.txt
     * pugixml 1.15 -- licenses/LICENSE-pugixml.txt
+
+====================================================================================
+Additional MassDB distribution components (2026-09-06 package review)
+====================================================================================
+
+FoundationDB client (Cloud / ms)
+    * Default client: 7.1.57, ms/lib/libfdb_c.so
+    * External client: 7.3.69, ms/lib/fdb/7.3.69/libfdb_c.so
+    * Upstream: https://github.com/apple/foundationdb
+    * License: Apache-2.0, with upstream subcomponent terms and acknowledgements.
+    * licenses/LICENSE-FoundationDB-7.1.57.txt and NOTICE-FoundationDB-7.1.57.txt
+    * licenses/LICENSE-FoundationDB-7.3.69.txt and NOTICE-FoundationDB-7.3.69.txt
+
+CDC client (BE)
+    * be/lib/cdc_client/cdc-client.jar contains Apache Doris CDC integration,
+      Apache Flink CDC 3.5.0 and Debezium 1.9.8.Final modules.
+    * These projects use Apache-2.0; their bundled dependencies retain their own terms.
+    * https://github.com/apache/flink-cdc/tree/release-3.5.0
+    * https://github.com/debezium/debezium/tree/v1.9.8.Final
+    * licenses/LICENSE-Debezium-1.9.8.Final.txt and COPYRIGHT-Debezium-1.9.8.Final.txt
+    * The inspected executable JAR contains 185 nested JARs. Its top-level license
+      is not an approval or license assignment for every nested dependency.
+
+JindoSDK / JindoCore 6.8.2 (FE and BE Java extensions)
+    * jindo-sdk-6.8.2.jar; jindo-core-linux-el7-aarch64-6.8.2.jar
+    * Binary source: https://github.com/apache/doris-thirdparty/releases/download/alibabacloud-jindodata-releases/jindofs-6.8.2-libs-0.1.tar.gz
+    * Publisher project: https://github.com/aliyun/alibabacloud-jindodata
+    * Binary license scope remains UNVERIFIED (release decision A07).
+      The publisher repository has an Apache-2.0 LICENSE, but the inspected binary
+      JARs have no Jindo-specific grant. Third-party notices and Maven metadata
+      do not establish the license of Jindo code or embedded native libraries.
+      Confirm binary redistribution rights and retain applicable notices before
+      external release; this catalog does not grant those rights.
+
+The inherited Java catalog and these additions do not constitute a completed
+per-artifact legal review. Generate the Java inventory/SBOM from the assembled
+package, including nested JARs; resolve unreviewed and missing-evidence entries.

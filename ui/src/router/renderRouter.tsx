@@ -16,14 +16,13 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 import React from 'react';
 import { Route, Redirect, Switch } from 'react-router-dom';
-import { checkLogin, getBasePath } from 'Src/utils/utils';
+import { checkLogin } from 'Src/utils/utils';
 
-let isLogin = checkLogin();
 const renderRoutes = (routes, authPath = '/login') => {
-    let basepath = getBasePath();
     if (routes) {
         return (
             <Switch>
@@ -34,19 +33,17 @@ const renderRoutes = (routes, authPath = '/login') => {
                         exact={route.exact}
                         strict={route.strict}
                         render={(props) => {
-                            if (props.location.pathname === basepath + '/') {
-                                return <Redirect to={'/home'} />;
-                            }
-                            if (isLogin) {
-                                return route.render ? (
-                                    route.render({ ...props, route: route })
-                                ) : (
-                                    <route.component {...props} route={route} />
-                                );
-                            } else {
-                                isLogin = '1';
+                            if (!route.public && !checkLogin()) {
                                 return <Redirect to={authPath} />;
                             }
+                            if (props.location.pathname === '/') {
+                                return <Redirect to={'/home'} />;
+                            }
+                            return route.render ? (
+                                route.render({ ...props, route: route })
+                            ) : (
+                                <route.component {...props} route={route} />
+                            );
                         }}
                     />
                 ))}

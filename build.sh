@@ -15,6 +15,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 ##############################################################
 # This script is used to compile Apache Doris
@@ -68,6 +69,12 @@ Usage: $0 <options>
     DISABLE_BE_JAVA_EXTENSIONS  If set DISABLE_BE_JAVA_EXTENSIONS=ON, we will do not build binary with java-udf,hadoop-hudi-scanner,jdbc-scanner and so on Default is OFF.
     DISABLE_JAVA_CHECK_STYLE    If set DISABLE_JAVA_CHECK_STYLE=ON, it will skip style check of java code in FE.
     DISABLE_BUILD_AZURE         If set DISABLE_BUILD_AZURE=ON, it will not build azure into BE.
+    MASSDB_UI_NODE_DIR          Node installation prefix (bin/node and bin/npm). UI: Node >=22.23.2 <23, npm >=10.9.9 <11.
+    MASSDB_NOTICE_PYTHON        Python 3.9+ executable for FE notices. Default: python3.
+    CUSTOM_UI_DIST             Use a prebuilt UI with matching legal/manifest.json; Node/npm are not required.
+    DISABLE_BUILD_UI           ON skips UI compilation; existing UI resources are still validated.
+    MASSDB_MARIADB_SOURCE_ARCHIVE  Local MariaDB 3.0.9 source archive override; default: dist/sources/. No automatic download.
+    MASSDB_SOURCE_COMMIT        Full source commit for an archive without dist/source-version.json provenance.
 
   Eg.
     $0                                      build all
@@ -124,7 +131,10 @@ clean_fe() {
 # Copy the common files like licenses, notice.txt to output folder
 function copy_common_files() {
     cp -r -p "${DORIS_HOME}/NOTICE.txt" "$1/"
+    cp -r -p "${DORIS_HOME}/dist/NOTICE-dist.txt" "$1/"
     cp -r -p "${DORIS_HOME}/dist/LICENSE-dist.txt" "$1/"
+    cp -r -p "${DORIS_HOME}/dist/RELEASE-NOTES.txt" "$1/"
+    cp -r -p "${DORIS_HOME}/dist/native-link-evidence.json" "$1/NATIVE-LINK-EVIDENCE.json"
     cp -r -p "${DORIS_HOME}/dist/licenses" "$1/"
 }
 
@@ -322,6 +332,19 @@ fi
 
 if [[ "${HELP}" -eq 1 ]]; then
     usage
+fi
+
+# Fail before third-party compilation if FE notice inputs or the UI toolchain
+# are unavailable. An archive with unknown provenance can build for development.
+if [[ "${BUILD_FE}" -eq 1 ]]; then
+    if ! "${MASSDB_NOTICE_PYTHON}" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)'; then
+        echo "Error: FE notices require Python 3.9+. Set MASSDB_NOTICE_PYTHON to a supported executable."
+        exit 1
+    fi
+    "${MASSDB_NOTICE_PYTHON}" "${DORIS_HOME}/build-support/prepare-product-notices.py" --check-fe-inputs
+    if [[ "${DISABLE_BUILD_UI}" != "ON" && -z "${CUSTOM_UI_DIST}" ]]; then
+        "${MASSDB_NOTICE_PYTHON}" "${DORIS_HOME}/build-support/prepare-product-notices.py" --check-ui-toolchain
+    fi
 fi
 # build thirdparty libraries if necessary. check last thirdparty lib installation
 if [[ "${TARGET_SYSTEM}" == 'Darwin' ]]; then
@@ -713,15 +736,9 @@ if [[ "${BUILD_CLOUD}" -eq 1 ]]; then
 fi
 
 function build_ui() {
-    NPM='npm'
-    if ! ${NPM} --version; then
-        echo "Error: npm is not found"
-        exit 1
-    fi
+    local npm_install_args=(ci --legacy-peer-deps)
     if [[ -n "${CUSTOM_NPM_REGISTRY}" ]]; then
-        "${NPM}" config set registry "${CUSTOM_NPM_REGISTRY}"
-        npm_reg="$("${NPM}" get registry)"
-        echo "NPM registry: ${npm_reg}"
+        npm_install_args+=(--registry "${CUSTOM_NPM_REGISTRY}")
     fi
 
     echo "Build Frontend UI"
@@ -729,12 +746,14 @@ function build_ui() {
     if [[ -n "${CUSTOM_UI_DIST}" ]]; then
         ui_dist="${CUSTOM_UI_DIST}"
     else
+        local NPM='npm'
         cd "${DORIS_HOME}/ui"
-        "${NPM}" cache clean --force
-        "${NPM}" install --legacy-peer-deps
+        "${NPM}" "${npm_install_args[@]}"
         "${NPM}" run build
     fi
     echo "ui dist: ${ui_dist}"
+    "${MASSDB_NOTICE_PYTHON}" "${DORIS_HOME}/build-support/prepare-product-notices.py" --check-ui "${ui_dist}"
+    # This directory contains generated UI assets only; remove stale hashed bundles.
     rm -rf "${DORIS_HOME}/fe/fe-core/src/main/resources/static"
     mkdir -p "${DORIS_HOME}/fe/fe-core/src/main/resources/static"
     cp -r "${ui_dist}"/* "${DORIS_HOME}/fe/fe-core/src/main/resources/static"/
@@ -744,6 +763,9 @@ function build_ui() {
 if [[ "${BUILD_FE}" -eq 1 ]]; then
     if [[ "${BUILD_UI}" -eq 1 ]]; then
         build_ui
+    elif [[ -f "${DORIS_HOME}/fe/fe-core/src/main/resources/static/index.html" ]]; then
+        "${MASSDB_NOTICE_PYTHON}" "${DORIS_HOME}/build-support/prepare-product-notices.py" \
+            --check-ui "${DORIS_HOME}/fe/fe-core/src/main/resources/static"
     fi
 fi
 
@@ -797,6 +819,13 @@ if [[ "${BUILD_FE}" -eq 1 ]]; then
     install -d "${DORIS_OUTPUT}/fe/lib/jindofs"
     cp -r -p "${DORIS_HOME}/fe/fe-core/target/lib"/* "${DORIS_OUTPUT}/fe/lib"/
     cp -r -p "${DORIS_HOME}/fe/fe-core/target/doris-fe.jar" "${DORIS_OUTPUT}/fe/lib"/
+    fe_notice_args=(--install-fe "${DORIS_OUTPUT}/fe")
+    if [[ -f "${DORIS_HOME}/fe/fe-core/src/main/resources/static/index.html" ]]; then
+        "${MASSDB_NOTICE_PYTHON}" "${DORIS_HOME}/build-support/prepare-product-notices.py" \
+            --check-fe-jar "${DORIS_OUTPUT}/fe/lib/doris-fe.jar"
+        fe_notice_args+=(--ui-dist "${DORIS_HOME}/fe/fe-core/src/main/resources/static")
+    fi
+    "${MASSDB_NOTICE_PYTHON}" "${DORIS_HOME}/build-support/prepare-product-notices.py" "${fe_notice_args[@]}"
     if [[ "${WITH_TDE_DIR}" != "" ]]; then
         cp -r -p "${DORIS_HOME}/fe/fe-${WITH_TDE_DIR}/target/fe-${WITH_TDE_DIR}-1.2-SNAPSHOT.jar" "${DORIS_OUTPUT}/fe/lib"/
     fi
@@ -1022,7 +1051,7 @@ if [[ "${BUILD_BE_CDC_CLIENT}" -eq 1 ]]; then
 fi
 
 if [[ ${BUILD_CLOUD} -eq 1 ]]; then
-    rm -rf "${DORIS_HOME}/output/ms"
+    rm -rf "${DORIS_OUTPUT}/ms"
     rm -rf "${DORIS_HOME}/cloud/output/lib/hadoop_hdfs"
     # If hadoop dependencies are required, building cloud module must be done after building be-java-extensions first
     # so when running ./build.sh --cloud,we also build be-java-extensions automatically.
@@ -1032,11 +1061,12 @@ if [[ ${BUILD_CLOUD} -eq 1 ]]; then
         mkdir -p "${DORIS_HOME}/cloud/output/lib/hadoop_hdfs"
         cp -r "${HADOOP_DEPS_JAR_DIR}/lib/"* "${DORIS_HOME}/cloud/output/lib/hadoop_hdfs/"
     fi
-    cp -r -p "${DORIS_HOME}/cloud/output" "${DORIS_HOME}/output/ms"
+    cp -r -p "${DORIS_HOME}/cloud/output" "${DORIS_OUTPUT}/ms"
+    copy_common_files "${DORIS_OUTPUT}/ms/"
 fi
 
-mkdir -p "${DORIS_HOME}/output/tools"
-cp -r -p tools/fdb "${DORIS_HOME}/output/tools"
+mkdir -p "${DORIS_OUTPUT}/tools"
+cp -r -p tools/fdb "${DORIS_OUTPUT}/tools"
 
 echo "***************************************"
 echo "Successfully build Doris"

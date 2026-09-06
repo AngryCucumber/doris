@@ -1,0 +1,43 @@
+{
+  "foundationdb-7.3.69-LICENSE.txt": {
+    "source": "https://raw.githubusercontent.com/apple/foundationdb/7.3.69/LICENSE",
+    "sha256": "2f841c1cd8c117763475eb8317f4a4afa0172212f8684a84c38fb937a8c1b220",
+    "bytes": 11665,
+    "distributionPath": "dist/licenses/LICENSE-FoundationDB-7.3.69.txt"
+  },
+  "foundationdb-7.3.69-ACKNOWLEDGEMENTS.txt": {
+    "source": "https://raw.githubusercontent.com/apple/foundationdb/7.3.69/ACKNOWLEDGEMENTS",
+    "sha256": "34f050ab15cac76baa8cc599489a75a9fd5b4eac2cd533f5d4974b9b0a05cddd",
+    "bytes": 29894,
+    "distributionPath": "dist/licenses/NOTICE-FoundationDB-7.3.69.txt"
+  },
+  "debezium-1.9.8.Final-COPYRIGHT.txt": {
+    "source": "https://raw.githubusercontent.com/debezium/debezium/v1.9.8.Final/COPYRIGHT.txt",
+    "sha256": "c4a77da618c50223cb964ff4750b55fb5d66502e8375c9409815ccc67632724a",
+    "bytes": 8125,
+    "distributionPath": "dist/licenses/COPYRIGHT-Debezium-1.9.8.Final.txt"
+  },
+  "foundationdb-7.1.57-LICENSE.txt": {
+    "source": "https://raw.githubusercontent.com/apple/foundationdb/7.1.57/LICENSE",
+    "sha256": "2f841c1cd8c117763475eb8317f4a4afa0172212f8684a84c38fb937a8c1b220",
+    "bytes": 11665,
+    "distributionPath": "dist/licenses/LICENSE-FoundationDB-7.1.57.txt"
+  },
+  "foundationdb-7.1.57-ACKNOWLEDGEMENTS.txt": {
+    "source": "https://raw.githubusercontent.com/apple/foundationdb/7.1.57/ACKNOWLEDGEMENTS",
+    "sha256": "34f050ab15cac76baa8cc599489a75a9fd5b4eac2cd533f5d4974b9b0a05cddd",
+    "bytes": 29894,
+    "distributionPath": "dist/licenses/NOTICE-FoundationDB-7.1.57.txt"
+  },
+  "debezium-1.9.8.Final-LICENSE.txt": {
+    "source": "https://raw.githubusercontent.com/debezium/debezium/v1.9.8.Final/LICENSE.txt",
+    "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+    "bytes": 11357,
+    "distributionPath": "dist/licenses/LICENSE-Debezium-1.9.8.Final.txt"
+  },
+  "jindodata-repository-LICENSE.txt": {
+    "source": "https://raw.githubusercontent.com/aliyun/alibabacloud-jindodata/200d9bc4356404ce304818411e247edf0f49d64a/LICENSE",
+    "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "bytes": 11357
+  }
+}

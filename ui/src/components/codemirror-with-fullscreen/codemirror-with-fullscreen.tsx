@@ -16,6 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+/* Modified for MassDB SQL. See MODIFICATIONS.md for details. */
  
 import React, {useState} from 'react';
 import {IconFont} from 'Components/iconfont';

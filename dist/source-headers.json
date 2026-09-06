@@ -1,0 +1,244 @@
+{
+  "schemaVersion": 1,
+  "pending": [
+    "ui/src/constants/branding.ts",
+    "ui/src/components/legal-footer/index.tsx",
+    "ui/src/components/legal-footer/index.less",
+    "ui/src/pages/legal-notices/index.tsx",
+    "ui/src/pages/legal-notices/index.less",
+    "ui/scripts/collect-bundled-licenses.cjs",
+    "ui/scripts/legal-notices.test.cjs",
+    "build-support/prepare-product-notices.py",
+    "build-support/test_product_notices.py",
+    "build-support/check-source-headers.py",
+    "docker/compilation/Dockerfile.ui"
+  ],
+  "apache": [
+    "docker-compose/docker-compose.be-host.yml",
+    "docker-compose/docker-compose.fe-host.yml",
+    "docker-compose/docker-compose.same-host.yml",
+    "fe/fe-core/src/test/java/org/apache/doris/master/ReportHandlerTest.java"
+  ],
+  "modifiedUpstream": {
+    "CONTRIBUTING.md": {
+      "originalHeaderSha256": "39ca8960d75ef7b3cfe38dc961093aa093e736a4ab2667a7baf837b39d32cd24",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "README.md": {
+      "originalHeaderSha256": "39ca8960d75ef7b3cfe38dc961093aa093e736a4ab2667a7baf837b39d32cd24",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "be/src/http/default_path_handlers.cpp": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "be/src/http/web_page_handler.cpp": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "be/src/olap/compaction.cpp": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "be/src/olap/rowset/segment_v2/inverted_index/query_v2/collect/multi_segment_util.h": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "be/src/tools/meta_tool.cpp": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "be/src/vec/functions/function_multi_match.cpp": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "be/src/vec/functions/function_search.cpp": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "be/test/vec/function/function_search_test.cpp": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "build-for-release.sh": {
+      "originalHeaderSha256": "0128fa96946942192cb4f7888e056a74a13d2b39ca375aa985f2437dd6715cda",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "build.sh": {
+      "originalHeaderSha256": "0128fa96946942192cb4f7888e056a74a13d2b39ca375aa985f2437dd6715cda",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "docker-compose/conf/be/be.conf": {
+      "originalHeaderSha256": "0128fa96946942192cb4f7888e056a74a13d2b39ca375aa985f2437dd6715cda",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "docker-compose/conf/fe/fe.conf": {
+      "originalHeaderSha256": "0128fa96946942192cb4f7888e056a74a13d2b39ca375aa985f2437dd6715cda",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "docker/compilation/Dockerfile": {
+      "originalHeaderSha256": "0128fa96946942192cb4f7888e056a74a13d2b39ca375aa985f2437dd6715cda",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "docker/compilation/Dockerfile.gcc10": {
+      "originalHeaderSha256": "0128fa96946942192cb4f7888e056a74a13d2b39ca375aa985f2437dd6715cda",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "docker/compilation/Dockerfile.gcc7": {
+      "originalHeaderSha256": "0128fa96946942192cb4f7888e056a74a13d2b39ca375aa985f2437dd6715cda",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "docker/compilation/arm/Dockerfile": {
+      "originalHeaderSha256": "0128fa96946942192cb4f7888e056a74a13d2b39ca375aa985f2437dd6715cda",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "env.sh": {
+      "originalHeaderSha256": "0128fa96946942192cb4f7888e056a74a13d2b39ca375aa985f2437dd6715cda",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/check/checkstyle/checkstyle.xml": {
+      "originalHeaderSha256": "39ca8960d75ef7b3cfe38dc961093aa093e736a4ab2667a7baf837b39d32cd24",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-common/src/main/java/org/apache/doris/common/Config.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/catalog/Env.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/catalog/TabletInvertedIndex.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/cloud/transaction/CloudGlobalTransactionMgr.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Apache Doris backport #61881. See MODIFICATIONS.md."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/httpv2/controller/HardwareInfoController.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/load/GroupCommitManager.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Apache Doris backports #60652, #61555. See MODIFICATIONS.md."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/master/ReportHandler.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/planner/GroupCommitPlanner.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/qe/Coordinator.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Apache Doris backport #60652. See MODIFICATIONS.md."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/rpc/BackendServiceClient.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/rpc/BackendServiceProxy.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/system/SystemInfoService.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/task/AgentTaskCleanupDaemon.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/task/PublishVersionTask.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/transaction/DatabaseTransactionMgr.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/transaction/GlobalTransactionMgr.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/test/java/org/apache/doris/system/SystemInfoServiceTest.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "gensrc/script/gen_build_version.sh": {
+      "originalHeaderSha256": "0128fa96946942192cb4f7888e056a74a13d2b39ca375aa985f2437dd6715cda",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "regression-test/suites/load_p0/routine_load/test_routine_load_be_restart.groovy": {
+      "originalHeaderSha256": "88d7c6e7e4a77da4798f9a4225243585cc12826a9d584d5b319521243da027f6",
+      "notice": "Apache Doris backport #61881. See MODIFICATIONS.md."
+    },
+    "regression-test/suites/search/test_search_dsl_syntax.groovy": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "thirdparty/build-thirdparty.sh": {
+      "originalHeaderSha256": "0128fa96946942192cb4f7888e056a74a13d2b39ca375aa985f2437dd6715cda",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "ui/README.md": {
+      "originalHeaderSha256": "39ca8960d75ef7b3cfe38dc961093aa093e736a4ab2667a7baf837b39d32cd24",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "ui/config/webpack.common.js": {
+      "originalHeaderSha256": "08e6246a4cb9a7bb12da32d4aa07f4a4950063cd57cade2d1565d0adc60bef37",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "ui/src/components/codemirror-with-fullscreen/codemirror-with-fullscreen.tsx": {
+      "originalHeaderSha256": "843400badce5758f295e9b44584303b082be139809847df19984a8b0877d742d",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "ui/src/index.html": {
+      "originalHeaderSha256": "39ca8960d75ef7b3cfe38dc961093aa093e736a4ab2667a7baf837b39d32cd24",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "ui/src/index.tsx": {
+      "originalHeaderSha256": "843400badce5758f295e9b44584303b082be139809847df19984a8b0877d742d",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "ui/src/pages/layout/index.tsx": {
+      "originalHeaderSha256": "08e6246a4cb9a7bb12da32d4aa07f4a4950063cd57cade2d1565d0adc60bef37",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "ui/src/pages/login/index.less": {
+      "originalHeaderSha256": "39ca8960d75ef7b3cfe38dc961093aa093e736a4ab2667a7baf837b39d32cd24",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "ui/src/pages/login/index.tsx": {
+      "originalHeaderSha256": "843400badce5758f295e9b44584303b082be139809847df19984a8b0877d742d",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "ui/src/router/index.ts": {
+      "originalHeaderSha256": "9d21f67f51c2561092277798f09b6ce6458e97de35704a108e1b8ad1c5b99a4d",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "ui/src/router/renderRouter.tsx": {
+      "originalHeaderSha256": "08e6246a4cb9a7bb12da32d4aa07f4a4950063cd57cade2d1565d0adc60bef37",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "ui/src/utils/utils.ts": {
+      "originalHeaderSha256": "9d21f67f51c2561092277798f09b6ce6458e97de35704a108e1b8ad1c5b99a4d",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "webroot/be/index.html": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    ".github/workflows/license-eyes.yml": {
+      "originalHeaderSha256": "0128fa96946942192cb4f7888e056a74a13d2b39ca375aa985f2437dd6715cda",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "docker/README.md": {
+      "originalHeaderSha256": "39ca8960d75ef7b3cfe38dc961093aa093e736a4ab2667a7baf837b39d32cd24",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    }
+  }
+}

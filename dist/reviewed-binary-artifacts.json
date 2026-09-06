@@ -1,0 +1,35 @@
+{
+  "packageSha256": "3914038c8a79f005dc76f0a2d31f17f2f54012c216fc95d3883b5c71c65724a5",
+  "reviewedOn": "2026-09-06",
+  "scope": "Evidence of artifact identity, not complete licensing approval",
+  "artifacts": {
+    "ms/lib/libfdb_c.so": {
+      "sha256": "8f8eab451dae49a6baaba3eb0ec3d180850feacb4cc5a8e1c8d5a6f6d652f584",
+      "bytes": 455852056
+    },
+    "ms/lib/fdb/7.3.69/libfdb_c.so": {
+      "sha256": "db323c60a50a218b67826312c5825209651e8edcd512efd45b8340a65daca829",
+      "bytes": 23940688
+    },
+    "fe/lib/jindofs/jindo-sdk-6.8.2.jar": {
+      "sha256": "0033b18863b89481c3c10425cb8ed78f46a2387facbafbb8e878eafcccbc7eaf",
+      "bytes": 4482560
+    },
+    "fe/lib/jindofs/jindo-core-linux-el7-aarch64-6.8.2.jar": {
+      "sha256": "1184d2c3cb134a29f9561c2e0305bab4d5e30b94c00214e0f4dc2f72b66959aa",
+      "bytes": 14496271
+    },
+    "be/lib/java_extensions/jindofs/jindo-sdk-6.8.2.jar": {
+      "sha256": "0033b18863b89481c3c10425cb8ed78f46a2387facbafbb8e878eafcccbc7eaf",
+      "bytes": 4482560
+    },
+    "be/lib/java_extensions/jindofs/jindo-core-linux-el7-aarch64-6.8.2.jar": {
+      "sha256": "1184d2c3cb134a29f9561c2e0305bab4d5e30b94c00214e0f4dc2f72b66959aa",
+      "bytes": 14496271
+    },
+    "be/lib/cdc_client/cdc-client.jar": {
+      "sha256": "4ff33ebb4fccf113992834082c11ace3910804b1be63b3fbc170923b392b634a",
+      "bytes": 154341486
+    }
+  }
+}

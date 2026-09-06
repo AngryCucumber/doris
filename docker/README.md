@@ -16,6 +16,32 @@ KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License.
 -->
+<!-- Modified for MassDB SQL. See MODIFICATIONS.md for details. -->
+
+## MassDB SQL UI toolchain
+
+Use `docker/compilation/Dockerfile.ui` for Node 22.23.2, npm 10.9.9 and
+Python 3.11. The legacy CentOS 7 compilation images below retain their native
+compiler setup and old Node versions; they do not build the current UI.
+Official Node 22 Linux binaries require a newer glibc than CentOS 7 provides.
+See the [Node 22 build requirements](https://github.com/nodejs/node/blob/v22.x/BUILDING.md).
+
+From the repository root:
+
+```bash
+docker build -f docker/compilation/Dockerfile.ui -t massdb-sql-ui-builder docker/compilation
+docker run --rm --volume "$PWD:/workspace" massdb-sql-ui-builder
+CUSTOM_UI_DIST="$PWD/ui/dist" bash build.sh --fe
+```
+
+The consuming FE build still requires JDK 17 and Python 3.9+, selected through
+`custom_env.sh` / `MASSDB_NOTICE_PYTHON`; a compatible UI alone does not update
+an old FE toolchain. Image creation and an uncached npm install need network
+access. FE source material is supplied in `dist/sources/`, with no implicit
+build-time download. Details are in [ui/README.md](../ui/README.md).
+
+The following upstream native-toolchain instructions remain historical
+reference material; verify their paths and tool versions before use.
 
 ## Doris Develop Environment based on docker
 

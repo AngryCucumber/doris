@@ -4,6 +4,28 @@ header:
     copyright-owner: Apache Software Foundation
 
   paths-ignore:
+    # BEGIN MassDB separately checked headers
+    - "build-support/check-source-headers.py"
+    - "build-support/prepare-product-notices.py"
+    - "build-support/test_product_notices.py"
+    - "docker-compose/docker-compose.be-host.yml"
+    - "docker-compose/docker-compose.fe-host.yml"
+    - "docker-compose/docker-compose.same-host.yml"
+    - "docker/compilation/Dockerfile.ui"
+    - "fe/**/src/*/java/**/massdb/**/*.java"
+    - "fe/fe-core/src/test/java/org/apache/doris/master/ReportHandlerTest.java"
+    - "ui/scripts/collect-bundled-licenses.cjs"
+    - "ui/scripts/legal-notices.test.cjs"
+    - "ui/src/components/legal-footer/index.less"
+    - "ui/src/components/legal-footer/index.tsx"
+    - "ui/src/constants/branding.ts"
+    - "ui/src/pages/legal-notices/index.less"
+    - "ui/src/pages/legal-notices/index.tsx"
+    # END MassDB separately checked headers
+    # Version-only / npm configuration files; not source files.
+    - "ui/.nvmrc"
+    - "ui/.npmrc"
+    - ".claude/**"
     - "dist"
     - "licenses"
     - "**/*.md"
@@ -102,4 +124,4 @@ header:
     - "tools/jeprof"
     - "tools/FlameGraph/*"
     - "fs_brokers/cdc_client/src/main/java/io/debezium/**"
-  comment: on-failure
+  comment: never

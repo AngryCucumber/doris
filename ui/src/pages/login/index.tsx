@@ -16,6 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
  
 import React,{useState} from 'react';
 import {Form, Input, Button, Checkbox} from 'antd';
@@ -24,6 +25,7 @@ import {useHistory} from 'react-router-dom';
 import {useTranslation} from 'react-i18next';
 import {login} from 'Src/api/api';
 import styles from './index.less';
+import LegalFooter from 'Components/legal-footer';
 import './cover.less';
 function Login(){
     let { t } = useTranslation();
@@ -32,7 +34,7 @@ function Login(){
     const layout = {
         labelCol: {span: 8},
         wrapperCol: {span: 24},
-        layout='vertical',
+        layout: 'vertical',
     };
     const tailLayout = {
         wrapperCol: {span: 24},
@@ -48,8 +50,8 @@ function Login(){
     const onFinish = values => {
         login(values).then(res=>{
             if(res.code===200){
+                localStorage.setItem('username', values.username);
                 history.push('/home');
-                localStorage.setItem('username', username)
             } 
         });
     };
@@ -60,40 +62,43 @@ function Login(){
     // 878CB1
     // 31395B
     return (
-        <div className={[styles['background'],'login'].join(' ')}>
-            <div className={styles['logo']}></div>
-            <Form
-                {...layout}
-                name="basic"
-                initialValues={{remember: true}}
-                onFinish={onFinish}
-                layout='vertical'
-                requiredMark={false}
-                onFinishFailed={onFinishFailed}
-                className={styles['login-form']}
-            >
-                <Form.Item
-                    label={t('username')}
-                    name="username"
-                    rules={[{required: true, message: 'Please input your username!'}]}
+        <div className={styles.page}>
+            <main className={[styles['background'],'login'].join(' ')}>
+                <div className={styles['logo']}></div>
+                <Form
+                    {...layout}
+                    name="basic"
+                    initialValues={{remember: true}}
+                    onFinish={onFinish}
+                    layout='vertical'
+                    requiredMark={false}
+                    onFinishFailed={onFinishFailed}
+                    className={styles['login-form']}
                 >
-                    <Input value={username} onChange={(e)=>{setUsername(e.target.value)}} />
-                </Form.Item>
+                    <Form.Item
+                        label={t('username')}
+                        name="username"
+                        rules={[{required: true, message: 'Please input your username!'}]}
+                    >
+                        <Input value={username} onChange={(e)=>{setUsername(e.target.value)}} />
+                    </Form.Item>
 
-                <Form.Item
-                    label={t('password')}
-                    name="password"
-                    rules={[{required: false, message: 'Please input your password!'}]}
-                >
-                    <Input.Password/>
-                </Form.Item>
+                    <Form.Item
+                        label={t('password')}
+                        name="password"
+                        rules={[{required: false, message: 'Please input your password!'}]}
+                    >
+                        <Input.Password/>
+                    </Form.Item>
 
-                <Form.Item {...tailLayout}>
-                    <Button type="primary" shape="round" style={{'width':'100%'}} htmlType="submit">
-                        {t('login')}
-                    </Button>
-                </Form.Item>
-            </Form>
+                    <Form.Item {...tailLayout}>
+                        <Button type="primary" shape="round" style={{'width':'100%'}} htmlType="submit">
+                            {t('login')}
+                        </Button>
+                    </Form.Item>
+                </Form>
+            </main>
+            <LegalFooter appearance="transparent" />
         </div>
     );
 }

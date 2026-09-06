@@ -16,6 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
  
 /**
  * @file test cron
@@ -27,6 +28,10 @@ import ReactDOM from 'react-dom';
 import './i18n';
 import App from './App';
 import './index.less';
+import { getBasePath } from './utils/utils';
+
+declare let __webpack_public_path__: string;
+__webpack_public_path__ = `${getBasePath()}/`;
 
 ReactDOM.render(<App/>, document.getElementById('root'));
  
