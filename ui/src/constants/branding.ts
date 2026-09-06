@@ -4,6 +4,7 @@
 declare const __MASSDB_BRANDING__: {
     productName: string;
     productVersion: string;
+    productDisplayVersion: string;
     sourceCommit: string;
     sourceModified: boolean | null;
     companyZh: string;

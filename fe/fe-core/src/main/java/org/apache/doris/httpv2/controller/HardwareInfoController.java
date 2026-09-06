@@ -66,7 +66,7 @@ public class HardwareInfoController {
 
     private void appendVersionInfo(Map<String, Map<String, String>> content) {
         Map<String, String> map = new HashMap<>();
-        map.put("Version", Version.DORIS_BUILD_VERSION);
+        map.put("Version", Version.DORIS_PRODUCT_VERSION);
         map.put("Git", Version.DORIS_BUILD_HASH);
         map.put("BuildInfo", Version.DORIS_BUILD_INFO);
         map.put("BuildTime", Version.DORIS_BUILD_TIME);

@@ -14,10 +14,10 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.qe;
 
-import org.apache.doris.common.Config;
 import org.apache.doris.common.Version;
 import org.apache.doris.common.util.TimeUtils;
 import org.apache.doris.mysql.MysqlHandshakePacket;
@@ -93,9 +93,7 @@ public final class GlobalVariable {
     public static int variableVersion = CURRENT_VARIABLE_VERSION;
 
     @VariableMgr.VarAttr(name = VERSION_COMMENT, flag = VariableMgr.READ_ONLY)
-    public static String versionComment = Version.DORIS_BUILD_VERSION_PREFIX + " version "
-            + Version.DORIS_BUILD_VERSION + "-" + Version.DORIS_BUILD_SHORT_HASH
-            + (Config.isCloudMode() ? " (Cloud Mode)" : "");
+    public static String versionComment = Version.DORIS_PRODUCT_VERSION;
 
     @VariableMgr.VarAttr(name = VERSION)
     public static String version = MysqlHandshakePacket.DEFAULT_SERVER_VERSION;

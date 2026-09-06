@@ -60,7 +60,7 @@ export default function LegalNotices() {
                 </nav>
                 <h1>{branding.productName} — {t('legal.title')}</h1>
                 <dl className={styles.versions}>
-                    <dt>{t('legal.version')}</dt><dd>{branding.productVersion}</dd>
+                    <dt>{t('legal.version')}</dt><dd>{branding.productDisplayVersion}</dd>
                     <dt>{t('legal.sourceCommit')}</dt><dd>{branding.sourceCommit}{branding.sourceModified ? ' + local changes' : ''}</dd>
                     <dt>{t('legal.upstream')}</dt><dd>Apache Doris {branding.upstream.sourceVersion} · {t('legal.sourceBaseline')}</dd>
                 </dl>

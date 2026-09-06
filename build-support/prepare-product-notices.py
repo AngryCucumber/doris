@@ -271,12 +271,14 @@ def metadata():
         if not match:
             raise ValueError(f"Cannot resolve {key} from version script")
         values[field] = os.environ.get(key, match.group(1).strip('"'))
-    version = f"{values['PREFIX']}-{values['MAJOR']}.{values['MINOR']}.{values['PATCH']}"
+    version_number = f"{values['MAJOR']}.{values['MINOR']}.{values['PATCH']}"
     if int(values["HOTFIX"]) > 0:
-        version += "." + values["HOTFIX"]
+        version_number += "." + values["HOTFIX"]
+    version = f"{values['PREFIX']}-{version_number}"
     if values["RC_VERSION"]:
         version += "-" + values["RC_VERSION"]
     data["productVersion"] = version
+    data["productDisplayVersion"] = f"MassDB V{version_number}"
     data.update(source_identity())
     pom = ET.parse(ROOT / "fe/pom.xml")
     jdbc_version = pom.findtext("{*}properties/{*}mariadb-java-client.version")

@@ -35,12 +35,15 @@ build_version_patch="${DORIS_BUILD_VERSION_PATCH-5}"
 build_version_hotfix="${DORIS_BUILD_VERSION_HOTFIX-0}"
 build_version_rc_version="${DORIS_BUILD_VERSION_RC_VERSION-"rc02"}"
 
-build_version="${build_version_prefix}-${build_version_major}.${build_version_minor}.${build_version_patch}"
+build_version_number="${build_version_major}.${build_version_minor}.${build_version_patch}"
 if [[ ${build_version_hotfix} -gt 0 ]]; then
-    build_version+=".${build_version_hotfix}"
+    build_version_number+=".${build_version_hotfix}"
 fi
+build_version="${build_version_prefix}-${build_version_number}"
+product_version="massdb-${build_version_number}-sql"
 if [[ -n "${build_version_rc_version}" ]]; then
     build_version+="-${build_version_rc_version}"
+    product_version+="-${build_version_rc_version}"
 fi
 
 doris_feature_list="${DORIS_FEATURE_LIST-""}"
@@ -139,6 +142,7 @@ public class Version {
   public static final String DORIS_FEATURE_LIST = "${doris_feature_list}";
 
   public static final String DORIS_BUILD_VERSION = "${build_version}";
+  public static final String DORIS_PRODUCT_VERSION = "${product_version}";
   public static final String DORIS_BUILD_HASH = "${build_hash}";
   public static final String DORIS_BUILD_SHORT_HASH = "${build_short_hash}";
   public static final String DORIS_BUILD_TIME = "${build_time}";
@@ -202,6 +206,7 @@ namespace doris {
 #define DORIS_BUILD_VERSION_RC_VERSION  "${build_version_rc_version}";
 
 #define DORIS_BUILD_VERSION             "${build_version}"
+#define DORIS_PRODUCT_VERSION           "${product_version}"
 #define DORIS_BUILD_HASH                "${build_hash}"
 #define DORIS_BUILD_SHORT_HASH          "${build_short_hash}"
 #define DORIS_BUILD_TIME                "${build_time}"

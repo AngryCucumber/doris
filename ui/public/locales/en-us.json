@@ -54,7 +54,6 @@
     "Download": "Download",
     "legal": {
         "title": "Copyright and Open-source Notices",
-        "scope": "Modifications and original additions",
         "lgpl": "Read the full LGPL 2.1 license",
         "download": "Download",
         "readError": "Unable to read this notice. Check your connection and expand it again.",
