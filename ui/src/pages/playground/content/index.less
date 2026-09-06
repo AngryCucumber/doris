@@ -14,8 +14,25 @@ software distributed under the License is distributed on an
 KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License. */
+/* Modified for MassDB SQL. See MODIFICATIONS.md for details. */
 
 @import '~antd/lib/style/themes/default.less';
+
+.editor-toolbar {
+    min-height: 32px;
+    align-items: center;
+    margin-bottom: 8px;
+
+    > :global(.ant-col:first-child) {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+}
+
+.editor-title {
+    font-weight: 500;
+}
 
 .adhoc-code {
     height: 100%;
@@ -23,7 +40,8 @@ under the License. */
     &-operator {
         margin-top: 10px;
     }
-    width: calc(100vw - 350px);
+    width: 100%;
+    min-width: 0;
 }
 
 .adhoc-content-favorite {

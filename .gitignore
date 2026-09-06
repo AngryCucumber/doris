@@ -48,6 +48,8 @@ docs/.temp
 # output, thirdparty, extension
 output/
 output.bak/
+/.build-records/
+/.local-installations/
 rpc_data/
 metastore_db/
 thirdparty/src*

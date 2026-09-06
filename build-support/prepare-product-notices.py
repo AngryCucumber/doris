@@ -26,6 +26,7 @@ import zipfile
 from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[1]
+UI_AUDIT_FILES = {"legal/manifest.json", "legal/components.json", "legal/sbom.cdx.json"}
 
 
 def digest(data):
@@ -284,8 +285,36 @@ def metadata():
     return data
 
 
+def company_notice(data):
+    if not data["companyCopyrightConfirmed"]:
+        return ""
+    return (
+        "MassDB SQL modifications and original additions\n"
+        f"Copyright (c) {data['copyrightYears']} {data['companyZh']}\n"
+        f"English name: {data['companyEn']}\n\n"
+        "The company copyright notice above applies only to modifications and original\n"
+        "content in which the company owns the relevant rights.\n"
+        "MassDB SQL is derived from Apache Doris. Upstream and third-party copyright\n"
+        "and attribution notices remain applicable to their respective components.\n\n"
+        "This additional attribution does not change the licenses applicable to any\n"
+        "part of this distribution.\n"
+    )
+
+
+def check_company_notice(data=None):
+    if data is None:
+        data = json.loads(read_text(ROOT / "dist/product-provenance.json"))
+    notice = read_text(ROOT / "NOTICE.txt")
+    expected = company_notice(data)
+    count = notice.count("MassDB SQL modifications and original additions\n")
+    if (expected and (count != 1 or expected not in notice)) or (not expected and count):
+        raise ValueError("Company NOTICE differs from product metadata. Update only the company "
+                         "addendum in NOTICE.txt using --company-notice; preserve upstream notices.")
+
+
 def notice_files():
     data = metadata()
+    check_company_notice(data)
     notices = read_text(ROOT / "NOTICE.txt")
     distribution = read_text(ROOT / "dist/NOTICE-dist.txt")
     if distribution.strip() not in notices:
@@ -293,7 +322,6 @@ def notice_files():
     files = {
         "LICENSE.txt": read_text(ROOT / "dist/LICENSE-dist.txt"),
         "NOTICE.txt": notices,
-        "MODIFICATIONS.txt": read_text(ROOT / "MODIFICATIONS.md"),
         "MARIADB-NOTICE.txt": "\n".join([
             f"{data['mariadb']['name']} {data['mariadb']['version']}",
             *data["mariadb"]["copyrights"],
@@ -306,8 +334,8 @@ def notice_files():
             "FE: consult legal/FE-SOURCE-ACCESS.txt in the FE installation or its companion\n"
             "materials. MariaDB source archives belong to that distribution.\n\n"
             "BE/Cloud: source or relinking obligations depend on code actually included\n"
-            "in the platform binary. Consult the matching distribution's dependency\n"
-            "evidence and material instructions; this index does not assert that every\n"
+            "in the platform binary. Consult the applicable component licenses and\n"
+            "material instructions; this index does not assert that every\n"
             "BE build contains LGPL native code or needs relinking objects.\n\n"
             "These instructions are an index, not a written offer. Source archives and\n"
             "BE relinking objects are not served as FE static web resources.\n\n"
@@ -330,7 +358,7 @@ def check_ui(directory):
         raise ValueError("Unsupported legal manifest")
     required = {"legal/LICENSE.txt", "legal/NOTICE.txt", "legal/THIRD-PARTY-NOTICES.txt",
                 "legal/MARIADB-NOTICE.txt", "legal/SOURCE-ACCESS.txt",
-                "legal/components.json", "legal/sbom.cdx.json", "legal/MODIFICATIONS.txt",
+                "legal/components.json", "legal/sbom.cdx.json",
                 "legal/licenses/LICENSE-LGPL.txt"}
     paths = {entry["path"] for entry in manifest["files"]}
     if not required.issubset(paths):
@@ -403,10 +431,174 @@ def install_fe(destination, ui_dist=None):
         encoding="utf-8")
 
 
+def check_fe_jar(jar, ui_dist=None):
+    """Check build JARs directly, or customer JARs against an external UI inventory."""
+    with tempfile.TemporaryDirectory(prefix="massdb-ui-notices-") as directory:
+        target = Path(directory)
+        with zipfile.ZipFile(jar) as archive:
+            for entry in archive.infolist():
+                if not entry.filename.startswith("static/") or entry.is_dir():
+                    continue
+                path = (target / entry.filename[len("static/"):]).resolve()
+                if not path.is_relative_to(target):
+                    raise ValueError("Unsafe static resource path in FE JAR")
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(archive.read(entry))
+        if (target / "legal/manifest.json").is_file():
+            return check_ui(target)
+        if ui_dist is None:
+            raise ValueError("Customer FE JAR verification requires --ui-dist with the reviewed build inventory")
+        manifest = check_ui(ui_dist)
+        expected = {row["path"]: row["sha256"] for row in manifest["files"] + manifest["assets"]
+                    if row["path"] not in UI_AUDIT_FILES}
+        actual = {path.relative_to(target).as_posix(): digest(path.read_bytes())
+                  for path in target.rglob("*") if path.is_file()}
+        if actual != expected:
+            raise ValueError("Customer FE JAR differs from the reviewed runtime UI assets and notices")
+        return manifest
+
+
+def customer_fe_jar(jar):
+    """Omit build-only inventories without altering any retained entry's contents."""
+    temporary = jar.with_suffix(".customer-tmp")
+    try:
+        with zipfile.ZipFile(jar) as original, zipfile.ZipFile(temporary, "w") as customer:
+            if any(re.fullmatch(r"META-INF/[^/]+\.(SF|RSA|DSA|EC)", name, re.I) for name in original.namelist()):
+                raise ValueError("Cannot remove build inventories from a signed FE JAR")
+            customer.comment = original.comment
+            for entry in original.infolist():
+                if entry.filename in {"static/" + name for name in UI_AUDIT_FILES}:
+                    continue
+                customer.writestr(entry, original.read(entry))
+        temporary.replace(jar)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def file_digest(path):
+    checksum = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            checksum.update(block)
+    return checksum.hexdigest()
+
+
+def assemble_package(source, destination, audit, ui_dist, fe_directory=None, native_evidence=None):
+    """Create a new minimal full package; keep source inputs and installations untouched."""
+    source, destination, audit = source.resolve(), destination.resolve(), audit.resolve()
+    if not source.is_dir() or destination.exists() or audit.exists():
+        raise ValueError("Use an existing component directory and NEW package/audit destinations")
+    if (destination.is_relative_to(source) or source.is_relative_to(destination)
+            or audit.is_relative_to(source) or source.is_relative_to(audit)
+            or audit.is_relative_to(destination) or destination.is_relative_to(audit)):
+        raise ValueError("Component, package and audit directories must be separate")
+    components = {name: source / name for name in ("fe", "be", "ms", "tools")}
+    if fe_directory:
+        components["fe"] = fe_directory.resolve()
+    for name in ("apache_hdfs_broker", "hive-udf"):
+        candidates = [source / "extensions" / name, source / name]
+        components["extensions/" + name] = next((path for path in candidates if path.is_dir()), candidates[0])
+    required = {"fe": "lib/doris-fe.jar", "be": "lib/doris_be", "ms": "lib/doris_cloud",
+                "tools": "fdb/fdb_ctl.sh", "extensions/apache_hdfs_broker": "lib/apache_hdfs_broker.jar",
+                "extensions/hive-udf": "lib/hive-udf.jar"}
+    for component, path in components.items():
+        if destination.is_relative_to(path) or audit.is_relative_to(path):
+            raise ValueError("Output cannot be inside a component input")
+        if not (path / required[component]).is_file():
+            raise ValueError(f"Missing full-package component: {path / required[component]}")
+        for state in ("log", "storage", "doris-meta"):
+            if any(item.is_file() for item in (path / state).rglob("*")):
+                raise ValueError(f"Refusing to package runtime state: {path / state}")
+    check_fe_jar(components["fe"] / "lib/doris-fe.jar", ui_dist)
+    data = metadata()
+    inputs = notice_files()
+    audit.mkdir(parents=True)
+    destination.mkdir(parents=True)
+    for name in UI_AUDIT_FILES:
+        target = audit / "ui" / Path(name).name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ui_dist / name, target)
+    shutil.copy2(ROOT / "MODIFICATIONS.md", audit / "MODIFICATIONS.md")
+    (audit / "PRODUCT-PROVENANCE.json").write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    excluded = {"legal", "licenses", "LICENSE.txt", "LICENSE-dist.txt", "NOTICE.txt", "NOTICE-dist.txt",
+                "RELEASE-NOTES.txt", "MODIFICATIONS.md", "NATIVE-LINK-EVIDENCE.json", "BUILD-INFO.json",
+                "BUILD-STATUS.md", "BUILD-SOURCE.patch", "BUILD-SOURCE-HASHES.json", "PRODUCT-PROVENANCE.json",
+                "SHA256SUMS"}
+    symbol_bytes = 0
+    for component, path in components.items():
+        def ignore(directory, names):
+            directory = Path(directory)
+            if directory == path:
+                return excluded.intersection(names)
+            if directory == path / "lib":
+                return {"debug_info"}.intersection(names)
+            return set()
+        shutil.copytree(path, destination / component, symlinks=True, ignore=ignore)
+        symbols = path / "lib/debug_info"
+        if symbols.is_dir():
+            symbol_bytes += sum(item.stat().st_size for item in symbols.rglob("*") if item.is_file())
+            shutil.copytree(symbols, audit / "symbols" / component, symlinks=True)
+    fe = destination / "fe"
+    install_fe(fe, ui_dist)
+    for name in UI_AUDIT_FILES:
+        (fe / name).unlink(missing_ok=True)
+    customer_fe_jar(fe / "lib/doris-fe.jar")
+    check_fe_jar(fe / "lib/doris-fe.jar", ui_dist)
+    (destination / "LICENSE.txt").write_text(read_text(ROOT / "LICENSE.txt") +
+        "\nAdditional component licenses: fe/legal/LICENSE.txt and fe/legal/licenses/.\n", encoding="utf-8")
+    (destination / "NOTICE.txt").write_text(inputs["files"]["NOTICE.txt"], encoding="utf-8")
+    (destination / "README.txt").write_text(
+        f"{data['productVersion']}\n\n"
+        "用途：内部安装验收版本，尚非正式对外发行。\n"
+        f"源码：{data['sourceCommit']}" + (" + local changes" if data['sourceModified'] else "") + "\n"
+        f"上游：Apache Doris {data['upstream']['sourceVersion']} ({data['upstream']['sourceCommit']})\n\n"
+        "安装与升级\n"
+        "1. FE 使用 JDK 17，配置 JAVA_HOME；按部署环境调整各组件 conf/ 配置。\n"
+        "2. FE：bash fe/bin/start_fe.sh --daemon\n"
+        "3. BE：bash be/bin/start_be.sh --daemon；在 FE 中注册 BE 后使用。\n"
+        "4. 升级前备份并保留原有配置和持久化数据，不用安装包覆盖运行中的数据目录。\n"
+        "5. Cloud Meta Service 位于 ms/；Broker、Hive UDF 位于 extensions/，FDB 工具位于 tools/。\n\n"
+        "版权与材料\n"
+        "公司及上游归属见 NOTICE.txt；组件许可正文集中在 fe/legal/。\n"
+        "MariaDB 对应源码及替换说明见 fe/legal/FE-SOURCE-ACCESS.txt。\n"
+        "FE 登录前后均可打开版权与开源声明页。仅分发某一组件时须携带其适用声明及源码材料。\n"
+        "调试符号和构建审阅记录单独保存，不是运行依赖。\n\n" +
+        read_text(ROOT / "dist/RELEASE-NOTES.txt"), encoding="utf-8")
+    if native_evidence:
+        evidence = json.loads(read_text(native_evidence))
+        for item in evidence["binaries"].values():
+            binary = (destination / item["binary"]).resolve()
+            if not binary.is_relative_to(destination) or file_digest(binary) != item["sha256"]:
+                raise ValueError("Native evidence does not match the packaged binary")
+            if item.get("archiveExtractionReport"):
+                report = (source / item["archiveExtractionReport"]).resolve()
+                if not report.is_relative_to(source) or file_digest(report) != item["archiveExtractionReportSha256"]:
+                    raise ValueError("Native extraction report does not match its evidence")
+                saved = audit / item["archiveExtractionReport"]
+                saved.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(report, saved)
+        shutil.copy2(native_evidence, audit / "NATIVE-LINK-EVIDENCE.json")
+    inventory_java_package(destination, audit / "java")
+    hashes = []
+    for path in sorted(destination.rglob("*")):
+        if path.is_symlink():
+            if not path.exists() or not path.resolve().is_relative_to(destination):
+                raise ValueError(f"Unsafe or broken package symlink: {path}")
+        elif path.is_file():
+            hashes.append(f"{file_digest(path)}  {path.relative_to(destination).as_posix()}\n")
+    (audit / "SHA256SUMS").write_text("".join(hashes), encoding="utf-8")
+    result = {"package": str(destination), "regularFiles": len(hashes), "symbolsArchivedBytes": symbol_bytes,
+              "source": data, "approvedForExternalRelease": False, "nativeEvidenceChecked": bool(native_evidence)}
+    (audit / "package-verification.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+    print(json.dumps({key: value for key, value in result.items() if key != "source"}))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_mutually_exclusive_group(required=True)
     commands.add_argument("--metadata", action="store_true")
+    commands.add_argument("--company-notice", action="store_true", help="Print the company addendum from product metadata")
+    commands.add_argument("--check-company-notice", action="store_true", help="Check the source NOTICE against company metadata")
     commands.add_argument("--inputs", action="store_true")
     commands.add_argument("--check-ui", type=Path)
     commands.add_argument("--check-fe-jar", type=Path)
@@ -416,13 +608,28 @@ def main():
     commands.add_argument("--check-ui-toolchain", action="store_true", help="Check Node/npm before installing dependencies")
     commands.add_argument("--inventory-java-package", type=Path, metavar="PACKAGE", help="Inventory JARs and nested notices offline; requires --destination")
     commands.add_argument("--check-release-provenance", action="store_true", help="Require a known commit and clean source state for release")
+    commands.add_argument("--assemble-package", type=Path, metavar="COMPONENTS", help="Assemble a clean full package and separate audit records")
     parser.add_argument("--destination", type=Path)
     parser.add_argument("--ui-dist", type=Path)
+    parser.add_argument("--audit-directory", type=Path)
+    parser.add_argument("--fe-directory", type=Path, help="Use a freshly rebuilt FE with otherwise unchanged components")
+    parser.add_argument("--native-evidence", type=Path, help="Verify binary hashes and retain link evidence outside the package")
     args = parser.parse_args()
-    if args.inventory_java_package:
+    if args.assemble_package:
+        if not args.destination or not args.audit_directory or not args.ui_dist:
+            parser.error("--assemble-package requires --destination, --audit-directory and --ui-dist")
+        assemble_package(args.assemble_package, args.destination, args.audit_directory,
+                         args.ui_dist, args.fe_directory, args.native_evidence)
+    elif args.inventory_java_package:
         if not args.destination:
             parser.error("--inventory-java-package requires --destination")
         inventory_java_package(args.inventory_java_package, args.destination)
+    elif args.company_notice:
+        data = json.loads(read_text(ROOT / "dist/product-provenance.json"))
+        print(company_notice(data), end="")
+    elif args.check_company_notice:
+        check_company_notice()
+        print("Company NOTICE matches product metadata")
     elif args.check_release_provenance:
         check_release_provenance()
         print("Release source reference verified")
@@ -440,18 +647,7 @@ def main():
         install_fe(args.install_fe, args.ui_dist)
         print("FE notices and corresponding MariaDB source installed")
     elif args.check_fe_jar:
-        with tempfile.TemporaryDirectory(prefix="massdb-ui-notices-") as directory:
-            target = Path(directory)
-            with zipfile.ZipFile(args.check_fe_jar) as archive:
-                for entry in archive.infolist():
-                    if not entry.filename.startswith("static/") or entry.is_dir():
-                        continue
-                    path = (target / entry.filename[len("static/"):]).resolve()
-                    if not path.is_relative_to(target):
-                        raise ValueError("Unsafe static resource path in FE JAR")
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_bytes(archive.read(entry))
-            check_ui(target)
+        check_fe_jar(args.check_fe_jar, args.ui_dist)
         print("FE JAR product notices verified")
     else:
         check_ui(args.check_ui or args.copy_ui_notices)

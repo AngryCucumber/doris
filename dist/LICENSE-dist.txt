@@ -1457,12 +1457,11 @@ LGPL -- licenses/LICENSE-LGPL.txt
 Native dependency catalog (BE part; inclusion depends on platform and link inputs):
 ====================================================================================
 
-This inherited catalog is not an exact inventory of every MassDB binary. For the
-2026-09-06 Linux ARM64 package, hash-identical BE/Cloud relinks with LLD archive
-extraction reports included no objects from libgsasl.a, libidn.a or libhdfs3.a.
-These libraries must be reconsidered for other builds; keeping a build-time
-archive on the link command does not itself establish object inclusion.
-See NATIVE-LINK-EVIDENCE.json for binary hashes and the scope of this evidence.
+This inherited catalog lists potential native dependencies, not an exact
+inventory of every MassDB binary. Actual inclusion depends on the platform and
+link inputs. Listing a build-time archive on a link command does not itself
+establish object inclusion. Binary-specific link verification is retained in
+the corresponding internal release records, separately from this catalog.
 
 The Apache Software License, Version 2.0
     * thrift: 0.13
@@ -1479,7 +1478,7 @@ The Apache Software License, Version 2.0
     * aws sdk: 1.9.211
     * benchmark: 1.8.0
     * simdjson: 3.0.1
-    * libhdfs3: 2.3.9 (conditional platform dependency; not included in the reviewed ARM64 BE/Cloud binaries)
+    * libhdfs3: 2.3.9 (conditional platform dependency)
     * opentelemetry-proto: 0.18.0
     * opentelemetry-cpp: 1.4.0
     * clucene: 2.4.6
@@ -1493,7 +1492,7 @@ The MIT License -- licenses/LICENSE-MIT.txt
     * nlohmann/json 3.10.1
 
 LGPL -- licenses/LICENSE-LGPL.txt
-    * gsasl: 1.10.0/1.8.0 (build-time catalog; not included in the reviewed ARM64 BE/Cloud binaries)
+    * gsasl: 1.10.0/1.8.0 (conditional platform dependency)
 
 Other dependencies:
     * libevent: 2.1.12 -- licenses/LICENSE-libevent.txt

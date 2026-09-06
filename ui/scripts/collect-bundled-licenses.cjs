@@ -29,7 +29,7 @@ function packageRoot(resource) {
     return null;
 }
 
-function collectComponents(modules, evidence = path.join(root, 'output/legal')) {
+function collectComponents(modules, evidence = path.join(root, '.build-records/ui')) {
     const directories = new Set();
     const visited = new Set();
     function visit(module) {
@@ -90,7 +90,7 @@ function collectComponents(modules, evidence = path.join(root, 'output/legal')) 
 
 class ProductNoticesPlugin {
     apply(compiler) {
-        const evidence = path.join(root, 'output/legal',
+        const evidence = path.join(root, '.build-records/ui',
             compiler.options.mode === 'development' ? 'ui-development' : '');
         compiler.hooks.done.tap('ProductNoticesEvidence', stats => {
             fs.mkdirSync(evidence, { recursive: true });

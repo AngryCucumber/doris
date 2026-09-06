@@ -51,14 +51,41 @@ class ProductNoticesTest(unittest.TestCase):
             notices.check_ui(self.ui)
 
     def test_altered_repository_notice_is_rejected(self):
-        file = self.ui / "legal/MODIFICATIONS.txt"
+        file = self.ui / "legal/MARIADB-NOTICE.txt"
         file.write_text(file.read_text() + "\nUnreviewed attribution change\n")
         path = self.ui / "legal/manifest.json"
         manifest = json.loads(path.read_text())
-        next(row for row in manifest["files"] if row["path"] == "legal/MODIFICATIONS.txt")["sha256"] = notices.digest(file.read_bytes())
+        next(row for row in manifest["files"] if row["path"] == "legal/MARIADB-NOTICE.txt")["sha256"] = notices.digest(file.read_bytes())
         path.write_text(json.dumps(manifest))
         with self.assertRaisesRegex(ValueError, "Stale or omitted repository notice"):
             notices.check_ui(self.ui)
+
+    def test_removed_company_attribution_is_rejected_even_with_matching_hash(self):
+        file = self.ui / "legal/NOTICE.txt"
+        company = notices.company_notice(notices.metadata())
+        self.assertTrue(company)
+        file.write_text(file.read_text().replace(company, ""), encoding="utf-8")
+        path = self.ui / "legal/manifest.json"
+        manifest = json.loads(path.read_text())
+        next(row for row in manifest["files"] if row["path"] == "legal/NOTICE.txt")["sha256"] = notices.digest(file.read_bytes())
+        path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "Stale or omitted repository notice: NOTICE.txt"):
+            notices.check_ui(self.ui)
+
+    def test_company_metadata_and_source_notice_must_agree(self):
+        data = notices.metadata()
+        text = (notices.ROOT / "NOTICE.txt").read_text(encoding="utf-8")
+        source = self.root / "NOTICE.txt"
+        source.write_text(text, encoding="utf-8")
+        with patch.object(notices, "ROOT", self.root):
+            notices.check_company_notice(data)
+            for key, value in (("companyZh", "Different owner"), ("companyEn", "Different owner"),
+                               ("copyrightYears", "1900"), ("companyCopyrightConfirmed", False)):
+                with self.subTest(key=key), self.assertRaisesRegex(ValueError, "Company NOTICE differs"):
+                    notices.check_company_notice(dict(data, **{key: value}))
+            source.write_text(text + "\n" + notices.company_notice(data), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Company NOTICE differs"):
+                notices.check_company_notice(data)
 
     def test_custom_ui_with_unlisted_asset_is_rejected(self):
         (self.ui / "unlisted.js").write_text("window.unlisted = true;")
@@ -103,6 +130,85 @@ class ProductNoticesTest(unittest.TestCase):
                     archive.write(file, "static/" + file.relative_to(self.ui).as_posix())
         result = subprocess.run(["python3", str(SCRIPT), "--check-fe-jar", str(jar)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_customer_jar_omits_audit_but_checks_all_runtime_notices(self):
+        jar = self.root / "customer-fe.jar"
+        with zipfile.ZipFile(jar, "w") as archive:
+            archive.writestr("org/example/Runtime.class", b"unchanged class bytes")
+            for file in self.ui.rglob("*"):
+                if file.is_file():
+                    archive.write(file, "static/" + file.relative_to(self.ui).as_posix())
+        notices.customer_fe_jar(jar)
+        notices.check_fe_jar(jar, self.ui)
+        with zipfile.ZipFile(jar) as archive:
+            self.assertEqual(archive.read("org/example/Runtime.class"), b"unchanged class bytes")
+            self.assertTrue(all("static/" + name not in archive.namelist() for name in notices.UI_AUDIT_FILES))
+            self.assertIn("static/legal/NOTICE.txt", archive.namelist())
+            entries = {entry.filename: archive.read(entry) for entry in archive.infolist()}
+        with self.assertRaisesRegex(ValueError, "requires --ui-dist"):
+            notices.check_fe_jar(jar)
+        del entries["static/legal/licenses/LICENSE-LGPL.txt"]
+        with zipfile.ZipFile(jar, "w") as archive:
+            for name, contents in entries.items():
+                archive.writestr(name, contents)
+        with self.assertRaisesRegex(ValueError, "differs from the reviewed runtime"):
+            notices.check_fe_jar(jar, self.ui)
+
+    def test_package_separates_audit_and_symbols_without_changing_input(self):
+        source = self.root / "components"
+        required = ["fe/lib/doris-fe.jar", "be/lib/doris_be", "ms/lib/doris_cloud",
+                    "tools/fdb/fdb_ctl.sh", "extensions/apache_hdfs_broker/lib/apache_hdfs_broker.jar",
+                    "extensions/hive-udf/lib/hive-udf.jar"]
+        for name in required:
+            path = source / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.suffix == ".jar":
+                with zipfile.ZipFile(path, "w") as archive:
+                    archive.writestr("META-INF/LICENSE", "Fixture license")
+                    if name.startswith("fe/"):
+                        for file in self.ui.rglob("*"):
+                            if file.is_file():
+                                archive.write(file, "static/" + file.relative_to(self.ui).as_posix())
+            else:
+                path.write_bytes(b"unchanged runtime")
+        jdbc = source / "fe/lib/mariadb-java-client-3.0.9.jar"
+        with zipfile.ZipFile(jdbc, "w") as archive:
+            archive.writestr("META-INF/LICENSE", "Fixture JDBC license")
+        data = notices.metadata()
+        data["mariadb"]["jarSha256"] = notices.file_digest(jdbc)
+        (source / "BUILD-STATUS.md").write_text("Internal discussion")
+        (source / "be/NOTICE.txt").write_text("Old notice")
+        symbols = source / "be/lib/debug_info/doris_be.dbg"
+        symbols.parent.mkdir()
+        symbols.write_bytes(b"private symbols")
+        before = {path.relative_to(source).as_posix(): notices.file_digest(path)
+                  for path in source.rglob("*") if path.is_file()}
+        package, audit = self.root / "package", self.root / "audit"
+        # Package metadata must match the existing UI fixture; override only the binary input check.
+        actual_install = notices.install_fe
+        def install(destination, ui_dist):
+            with patch.object(notices, "metadata", return_value=data), patch.object(notices, "check_ui"):
+                actual_install(destination, ui_dist)
+        with patch.object(notices, "install_fe", side_effect=install):
+            notices.assemble_package(source, package, audit, self.ui)
+        self.assertEqual({path.name for path in package.iterdir()},
+                         {"README.txt", "LICENSE.txt", "NOTICE.txt", "fe", "be", "ms", "tools", "extensions"})
+        self.assertEqual((package / "be/lib/doris_be").read_bytes(), b"unchanged runtime")
+        self.assertEqual((audit / "symbols/be/doris_be.dbg").read_bytes(), b"private symbols")
+        self.assertFalse((package / "be/lib/debug_info").exists())
+        self.assertFalse((package / "be/NOTICE.txt").exists())
+        self.assertFalse((package / "fe/legal/manifest.json").exists())
+        self.assertTrue((package / "fe/legal/licenses/LICENSE-LGPL.txt").is_file())
+        self.assertTrue((package / "fe/legal/sources/mariadb-connector-j-3.0.9.tar.gz").is_file())
+        self.assertTrue((audit / "SHA256SUMS").is_file())
+        after = {path.relative_to(source).as_posix(): notices.file_digest(path)
+                 for path in source.rglob("*") if path.is_file()}
+        self.assertEqual(before, after)
+        (source / "fe/doris-meta").mkdir()
+        (source / "fe/doris-meta/meta").write_text("Live data")
+        with self.assertRaisesRegex(ValueError, "runtime state"):
+            notices.assemble_package(source, self.root / "rejected", self.root / "rejected-audit", self.ui)
+        self.assertFalse((self.root / "rejected").exists())
 
     def test_fe_materials_are_separate_and_bound_to_the_binary(self):
         data = notices.metadata()
@@ -165,6 +271,111 @@ class ProductNoticesTest(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(ValueError, "Release requires"):
                         notices.check_release_provenance()
+
+    def test_release_propagates_version_before_its_existing_gate(self):
+        checker = self.root / "blocked-checker"
+        recorded = self.root / "version.json"
+        checker.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
+                           "from pathlib import Path\n"
+                           f"Path({str(recorded)!r}).write_text(json.dumps(dict(os.environ)))\n"
+                           "sys.exit(23)\n")
+        checker.chmod(0o755)
+        command = ["bash", str(notices.ROOT / "build-for-release.sh"), "--version"]
+        env = dict(os.environ, MASSDB_NOTICE_PYTHON=str(checker))
+        result = subprocess.run(command + ["2.0.5-rc01"], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 23, result.stdout + result.stderr)
+        values = json.loads(recorded.read_text())
+        expected = {"PREFIX": "massdb-sql", "MAJOR": "2", "MINOR": "0", "PATCH": "5",
+                    "HOTFIX": "0", "RC_VERSION": "rc01"}
+        for name, value in expected.items():
+            self.assertEqual(values["DORIS_BUILD_VERSION_" + name], value)
+        recorded.unlink()
+        result = subprocess.run(command + ["../../output"], env=env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Invalid product version", result.stdout)
+        self.assertFalse(recorded.exists())
+
+    def release_layout_fixture(self, name):
+        checkout = self.root / name
+        checkout.mkdir()
+        shutil.copy2(notices.ROOT / "build-for-release.sh", checkout)
+        udf = checkout / "fe/hive-udf/target/hive-udf.jar"
+        udf.parent.mkdir(parents=True)
+        udf.write_bytes(b"fixture udf")
+        (checkout / "build.sh").write_text('''#!/usr/bin/env bash
+set -e
+printf '%s\\n' "$*" >> "$(dirname "$0")/build-calls.txt"
+while [[ "$#" -gt 0 ]]; do
+    if [[ "$1" == "--output" ]]; then
+        mkdir -p "$2"
+        printf 'partial build input' > "$2/partial.txt"
+        if [[ "${MASSDB_TEST_FAIL_BUILD:-0}" == "1" ]]; then exit 37; fi
+        break
+    fi
+    shift
+done
+''')
+        checker = checkout / "fixture-checker"
+        checker.write_text(f"#!{sys.executable}\n" + '''import sys
+from pathlib import Path
+if '--assemble-package' in sys.argv:
+    destination = Path(sys.argv[sys.argv.index('--destination') + 1])
+    audit = Path(sys.argv[sys.argv.index('--audit-directory') + 1])
+    destination.mkdir(parents=True)
+    (destination / 'README.txt').write_text('runtime fixture')
+    (audit / 'symbols').mkdir(parents=True)
+    (audit / 'symbols/runtime.dbg').write_bytes(b'recoverable symbols')
+''')
+        checker.chmod(0o755)
+        return checkout, dict(os.environ, MASSDB_NOTICE_PYTHON=str(checker), MASSDB_TEST_FAIL_BUILD="0")
+
+    def test_release_publishes_only_program_and_optional_archive(self):
+        for with_tar in (False, True):
+            with self.subTest(with_tar=with_tar):
+                checkout, env = self.release_layout_fixture("release-" + str(with_tar))
+                command = ["bash", str(checkout / "build-for-release.sh"), "--version", "2.0.5-rc01"]
+                if with_tar:
+                    command.append("--tar")
+                result = subprocess.run(command, env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                output = checkout / "output"
+                package = next(path for path in output.iterdir() if path.is_dir())
+                expected = {package.name}
+                if with_tar:
+                    expected.update({package.name + ".tar.gz", package.name + ".tar.gz.sha256"})
+                    with tarfile.open(output / (package.name + ".tar.gz")) as archive:
+                        self.assertEqual(archive.extractfile(package.name + "/README.txt").read(), b"runtime fixture")
+                        self.assertFalse(any("symbols" in path for path in archive.getnames()))
+                self.assertEqual({path.name for path in output.iterdir()}, expected)
+                work, = (checkout / ".build-records").iterdir()
+                self.assertEqual({path.name for path in work.iterdir()}, {"audit.tar.gz", "audit.tar.gz.sha256"})
+                with tarfile.open(work / "audit.tar.gz") as archive:
+                    self.assertEqual(archive.extractfile("audit/symbols/runtime.dbg").read(), b"recoverable symbols")
+                checksum = (work / "audit.tar.gz.sha256").read_text().split()[0]
+                self.assertEqual(checksum, notices.file_digest(work / "audit.tar.gz"))
+
+                state = package / "fe/doris-meta/database"
+                state.parent.mkdir(parents=True)
+                state.write_bytes(b"preserve database")
+                calls = (checkout / "build-calls.txt").read_bytes()
+                blocked = subprocess.run(command, env=env, capture_output=True, text=True)
+                self.assertNotEqual(blocked.returncode, 0)
+                self.assertIn("Output already exists", blocked.stderr)
+                self.assertEqual(state.read_bytes(), b"preserve database")
+                self.assertEqual((checkout / "build-calls.txt").read_bytes(), calls)
+
+    def test_release_build_failure_preserves_inputs_without_publishing(self):
+        checkout, env = self.release_layout_fixture("failed-release")
+        env["MASSDB_TEST_FAIL_BUILD"] = "1"
+        result = subprocess.run(["bash", str(checkout / "build-for-release.sh"),
+                                 "--version", "2.0.5-rc01", "--tar"],
+                                env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 37, result.stdout + result.stderr)
+        self.assertEqual(list((checkout / "output").iterdir()), [])
+        work, = (checkout / ".build-records").iterdir()
+        self.assertEqual((work / "components/partial.txt").read_text(), "partial build input")
+        self.assertFalse((work / "audit.tar.gz").exists())
+        self.assertEqual(len((checkout / "build-calls.txt").read_text().splitlines()), 2)
 
     def test_source_identity_detects_changes_outside_fe_be(self):
         checkout = self.root / "source-checkout"

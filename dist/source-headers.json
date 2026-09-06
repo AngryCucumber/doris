@@ -204,6 +204,10 @@
       "originalHeaderSha256": "843400badce5758f295e9b44584303b082be139809847df19984a8b0877d742d",
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
     },
+    "ui/src/pages/layout/index.less": {
+      "originalHeaderSha256": "39ca8960d75ef7b3cfe38dc961093aa093e736a4ab2667a7baf837b39d32cd24",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
     "ui/src/pages/layout/index.tsx": {
       "originalHeaderSha256": "08e6246a4cb9a7bb12da32d4aa07f4a4950063cd57cade2d1565d0adc60bef37",
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
@@ -214,6 +218,38 @@
     },
     "ui/src/pages/login/index.tsx": {
       "originalHeaderSha256": "843400badce5758f295e9b44584303b082be139809847df19984a8b0877d742d",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "ui/src/pages/playground/content/index.less": {
+      "originalHeaderSha256": "39ca8960d75ef7b3cfe38dc961093aa093e736a4ab2667a7baf837b39d32cd24",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "ui/src/pages/playground/content/index.tsx": {
+      "originalHeaderSha256": "843400badce5758f295e9b44584303b082be139809847df19984a8b0877d742d",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "ui/src/pages/playground/index.less": {
+      "originalHeaderSha256": "39ca8960d75ef7b3cfe38dc961093aa093e736a4ab2667a7baf837b39d32cd24",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "ui/src/pages/playground/index.tsx": {
+      "originalHeaderSha256": "843400badce5758f295e9b44584303b082be139809847df19984a8b0877d742d",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "ui/src/pages/playground/page-side/index.less": {
+      "originalHeaderSha256": "39ca8960d75ef7b3cfe38dc961093aa093e736a4ab2667a7baf837b39d32cd24",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "ui/src/pages/playground/page-side/index.tsx": {
+      "originalHeaderSha256": "08e6246a4cb9a7bb12da32d4aa07f4a4950063cd57cade2d1565d0adc60bef37",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "ui/src/pages/playground/tree/index.css": {
+      "originalHeaderSha256": "08e6246a4cb9a7bb12da32d4aa07f4a4950063cd57cade2d1565d0adc60bef37",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "ui/src/pages/playground/tree/index.tsx": {
+      "originalHeaderSha256": "08e6246a4cb9a7bb12da32d4aa07f4a4950063cd57cade2d1565d0adc60bef37",
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
     },
     "ui/src/router/index.ts": {

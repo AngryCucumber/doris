@@ -14,10 +14,45 @@ software distributed under the License is distributed on an
 KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License. */
+/* Modified for MassDB SQL. See MODIFICATIONS.md for details. */
 
-.side{
-    flex: 0 0 300px;
-    height: 100%;
+.side {
+    position: relative;
+    display: flex;
+    flex: 0 0 auto;
+    min-width: 220px;
+    max-width: 40%;
+    min-height: 0;
     background: #fff;
-    min-height: calc(100vh - 64px);
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+
+    > :global(.react-resizable-handle-e) {
+        position: absolute;
+        right: -9px !important;
+        width: 16px !important;
+        background: transparent;
+        cursor: col-resize !important;
+
+        &:after {
+            margin-left: 6px;
+            width: 4px;
+            background: #cbd5e1;
+            border: 0;
+            border-radius: 2px;
+        }
+    }
+}
+
+@media (max-width: 767px) {
+    .side {
+        flex: 0 0 160px;
+        width: 100% !important;
+        min-width: 0;
+        max-width: none;
+
+        > :global(.react-resizable-handle-e) {
+            display: none;
+        }
+    }
 }

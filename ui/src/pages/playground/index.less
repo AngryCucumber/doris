@@ -14,22 +14,36 @@ software distributed under the License is distributed on an
 KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License. */
+/* Modified for MassDB SQL. See MODIFICATIONS.md for details. */
 
 @import '../../less/variable';
 @import '~antd/lib/style/themes/default.less';
 .content {
-    padding: 3*@spacer;
+    min-width: 0;
+    min-height: 0;
+    padding: 2*@spacer;
     background-color: #fff;
-    // max-width: 1200px;
-    overflow: scroll;
-    height: 100vh;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    overflow: auto;
 }
 .adhoc {
     display: flex;
-    height: 100%;
-    -webkit-box-orient: horizontal;
-    -webkit-box-direction: normal;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
     flex-direction: row;
+    gap: 2*@spacer;
+    padding: 2*@spacer;
+    background: transparent;
+}
+
+@media (max-width: 767px) {
+    .adhoc {
+        flex-direction: column;
+        gap: 12px;
+        padding: 12px;
+    }
 }
 
 .breadcrumb {

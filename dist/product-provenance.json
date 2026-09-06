@@ -3,7 +3,7 @@
     "companyZh": "厦门市美亚柏科信息安全研究所有限公司",
     "companyEn": "Xiamen Meiya Pico Information Security Research Institute Co., Ltd.",
     "copyrightYears": "2026",
-    "companyCopyrightConfirmed": false,
+    "companyCopyrightConfirmed": true,
     "newCodeLicense": null,
     "upstream": {
         "name": "Apache Doris",

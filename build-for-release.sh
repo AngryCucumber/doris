@@ -36,6 +36,10 @@ Usage: $0 --version version <options>
      --noavx2           build without avx2
      --tar              pack the output
 
+  Programs and optional archives: output/
+  Compressed internal records: .build-records/
+  Existing output paths are never overwritten; move installed copies out first.
+
   Eg.
     $0 --version 1.2.0                      build with avx2
     $0 --noavx2 --version 1.2.0             build without avx2
@@ -103,8 +107,20 @@ if [[ -z ${VERSION} ]]; then
     usage
 fi
 
+if [[ ! "${VERSION}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(\.([0-9]+))?(-([A-Za-z0-9][A-Za-z0-9.-]*))?$ ]]; then
+    echo "Invalid product version: expected MAJOR.MINOR.PATCH[.HOTFIX][-SUFFIX]"
+    exit 1
+fi
+export DORIS_BUILD_VERSION_PREFIX=massdb-sql
+export DORIS_BUILD_VERSION_MAJOR="${BASH_REMATCH[1]}"
+export DORIS_BUILD_VERSION_MINOR="${BASH_REMATCH[2]}"
+export DORIS_BUILD_VERSION_PATCH="${BASH_REMATCH[3]}"
+export DORIS_BUILD_VERSION_HOTFIX="${BASH_REMATCH[5]:-0}"
+export DORIS_BUILD_VERSION_RC_VERSION="${BASH_REMATCH[7]}"
+
 # A pending header permits review builds, but must not silently enter a release.
 "${MASSDB_NOTICE_PYTHON:-python3}" "${ROOT}/build-support/check-source-headers.py" --release
+"${MASSDB_NOTICE_PYTHON:-python3}" "${ROOT}/build-support/prepare-product-notices.py" --check-company-notice
 "${MASSDB_NOTICE_PYTHON:-python3}" "${ROOT}/build-support/prepare-product-notices.py" --check-release-provenance
 
 echo "Get params:
@@ -127,7 +143,6 @@ fi
 echo "ARCH: ${ARCH}"
 
 ORI_OUTPUT="${ROOT}/output"
-rm -rf "${ORI_OUTPUT}"
 
 FE="fe"
 BE="be"
@@ -141,6 +156,21 @@ if [[ "${_USE_AVX2}" == "0" ]]; then
 fi
 
 OUTPUT="${ORI_OUTPUT}/${PACKAGE}"
+check_output_paths() {
+    local path
+    for path in "${OUTPUT}" "${OUTPUT}.tar.gz" "${OUTPUT}.tar.gz.sha256"; do
+        if [[ -e "${path}" || -L "${path}" ]]; then
+            echo "Output already exists: ${path}" >&2
+            echo "Preserve installed data and move this output aside before rebuilding this version." >&2
+            return 1
+        fi
+    done
+}
+check_output_paths
+mkdir -p "${ORI_OUTPUT}" "${ROOT}/.build-records"
+WORK="$(mktemp -d "${ROOT}/.build-records/build-release-XXXXXXXX")"
+COMPONENTS="${WORK}/components"
+
 OUTPUT_FE="${OUTPUT}/${FE}"
 OUTPUT_EXT="${OUTPUT}/${EXT}"
 OUTPUT_BE="${OUTPUT}/${BE}"
@@ -153,40 +183,51 @@ echo "BE:    ${OUTPUT_BE}"
 echo "CLOUD: ${OUTPUT_CLOUD}"
 echo "JAR:   ${OUTPUT_EXT}"
 
-sh build.sh --clean &&
-    USE_AVX2="${_USE_AVX2}" sh build.sh &&
-    USE_AVX2="${_USE_AVX2}" sh build.sh --be --meta-tool --be-extension-ignore avro-scanner
+bash "${ROOT}/build.sh" --clean
+USE_AVX2="${_USE_AVX2}" bash "${ROOT}/build.sh" --output "${COMPONENTS}"
+USE_AVX2="${_USE_AVX2}" bash "${ROOT}/build.sh" --be --meta-tool --be-extension-ignore avro-scanner --output "${COMPONENTS}"
 
 echo "Begin to pack"
-rm -rf "${OUTPUT}"
-mkdir -p "${OUTPUT_FE}" "${OUTPUT_BE}" "${OUTPUT_EXT}" "${OUTPUT_CLOUD}" "${OUTPUT_TOOLS}"
+mkdir -p "${COMPONENTS}/hive-udf/lib"
+cp -p "${ROOT}/fe/hive-udf/target/hive-udf.jar" "${COMPONENTS}/hive-udf/lib/"
+"${MASSDB_NOTICE_PYTHON:-python3}" "${ROOT}/build-support/prepare-product-notices.py" \
+    --assemble-package "${COMPONENTS}" --destination "${WORK}/${PACKAGE}" \
+    --audit-directory "${WORK}/audit" --ui-dist "${ROOT}/fe/fe-core/src/main/resources/static"
 
-# FE
-cp -R "${ORI_OUTPUT}"/fe/* "${OUTPUT_FE}"/
-
-# EXT
-cp -R "${ORI_OUTPUT}"/apache_hdfs_broker "${OUTPUT_EXT}"/apache_hdfs_broker
-
-# BE
-cp -R "${ORI_OUTPUT}"/be/* "${OUTPUT_BE}"/
-
-# CLOUD
-cp -R "${ORI_OUTPUT}"/ms/* "${OUTPUT_CLOUD}"/
-
-# TOOL: include tools in the archive as well as the unpacked output.
-cp -R "${ORI_OUTPUT}"/tools/* "${OUTPUT_TOOLS}"/
-
-if [[ "${TAR}" -eq 1 ]]; then
-    echo "Begin to compress"
-    cd "${ORI_OUTPUT}"
+compress_directory() (
+    local name="$1"
+    cd "${WORK}"
     # Use pigz (parallel gzip) to compress with all CPU cores; fall back to gzip if unavailable.
     if command -v pigz >/dev/null 2>&1; then
-        tar -cf - "${PACKAGE}" | pigz -p "$(nproc)" >"${PACKAGE}".tar.gz
+        tar -cf - "${name}" | pigz -p "$(nproc)" >"${name}".tar.gz.part
     else
-        tar -czf "${PACKAGE}".tar.gz "${PACKAGE}"
+        tar -czf "${name}".tar.gz.part "${name}"
     fi
-    cd -
+    gzip -t "${name}".tar.gz.part
+    mv "${name}".tar.gz.part "${name}".tar.gz
+    sha256sum "${name}".tar.gz > "${name}".tar.gz.sha256
+)
+
+compress_directory audit
+if [[ "${TAR}" -eq 1 ]]; then
+    echo "Begin to compress"
+    compress_directory "${PACKAGE}"
 fi
 
+# Publish only completed artifacts. Do not replace an installation created
+# while compilation was in progress, or leave intermediate directories in output.
+check_output_paths
+for name in "${PACKAGE}" "${PACKAGE}.tar.gz" "${PACKAGE}.tar.gz.sha256"; do
+    if [[ -e "${WORK}/${name}" ]]; then
+        mv -T -n -- "${WORK}/${name}" "${ORI_OUTPUT}/${name}"
+        if [[ -e "${WORK}/${name}" ]]; then
+            echo "Output appeared during packaging; inputs retained at ${WORK}" >&2
+            exit 1
+        fi
+    fi
+done
+rm -rf -- "${COMPONENTS}" "${WORK}/audit"
+
 echo "Output dir: ${OUTPUT}"
+echo "Internal records and debug symbols: ${WORK}/audit.tar.gz"
 exit 0

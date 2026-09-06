@@ -22,6 +22,8 @@ Run from the repository root. Configure JDK 17, Maven, CMake, and the C++ toolch
 
 Configure `output/{fe,be}/conf/`; start services with `bash output/fe/bin/start_fe.sh --daemon` and `bash output/be/bin/start_be.sh --daemon`. Register BE before running SQL suites.
 
+Keep only the latest package/archive/checksum in `output/`; compress matching audit records and symbols under ignored `.build-records/`. The maintainer has authorized discarding this checkout's test installations, metadata, storage and logs on every rebuild: stop their services, remove obsolete packages after verifying the replacement, and start with fresh data. Do not back up these test installations or recreate `.local-installations/`. This does not authorize removing installations outside this checkout.
+
 ## Coding Style & Naming Conventions
 
 Use UTF-8, LF endings, and four-space indentation for Java, C++, Python, and shell. Format C++ with clang-format 16 using `.clang-format` (100 columns). Java uses Checkstyle (120 columns): run `(cd fe && mvn checkstyle:check)`. Follow existing `PascalCase` classes, Java `camelCase` members, and C++ `snake_case` functions. Preserve upstream headers; add modification notices and update `MODIFICATIONS.md`. Follow `dist/source-headers.json` for independent headers; run `python3 build-support/check-source-headers.py`.

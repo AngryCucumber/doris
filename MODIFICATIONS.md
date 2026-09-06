@@ -4,6 +4,15 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## Product release candidate rc02 (2026-09-06)
+
+- `gensrc/script/gen_build_version.sh`: advance the independent product version
+  to `massdb-sql-2.0.5-rc02`; the Apache Doris source baseline remains `4.0.5-rc01`.
+- `dist/RELEASE-NOTES.txt`: record rc02 and the Playground layout improvements.
+- `AGENTS.md` and the distribution guide: record the maintainer's standing
+  authorization to discard this checkout's test metadata and obsolete
+  installations on rebuild; retain only the latest verified output package.
+
 ## Historical changes through bdd44bf2835b
 
 | Path | Change and attribution handling |
@@ -174,3 +183,75 @@ The source-header registry records pending new-file licensing separately.
 - The implementation plan, review appendix and dated package review record retain
   unresolved rights decisions and distinguish historical artifacts from current
   source validation.
+
+## Authenticated footer presentation (2026-09-06)
+
+- `ui/src/pages/layout/index.tsx`: use the transparent, compact footer throughout
+  the authenticated layout, including Playground and QueryProfile. Let the page
+  background continue behind the footer, remove its divider, and wrap runtime
+  attributions without hiding copyright text or license links.
+
+## Company attribution (2026-09-06)
+
+- `NOTICE.txt`, `dist/product-provenance.json`: enable the maintainer-requested
+  2026 attribution for company-owned modifications and original additions, using
+  the Chinese and English company names. Retain all existing upstream notices;
+  this attribution does not select a license for the pending independent files.
+- `build-support/prepare-product-notices.py`, `build-for-release.sh`:
+  derive the company addendum from product metadata and verify the source NOTICE
+  during UI generation and release preflight. Include NOTICE at the release root;
+  existing component and FE legal packaging also carry the company addendum.
+- `build-support/test_product_notices.py`, `ui/scripts/legal-notices.test.cjs`:
+  check metadata drift, missing company attribution despite updated hashes,
+  public NOTICE access, and company display in both authenticated UI languages.
+- `ui/README.md` and the implementation/review documents record attribution
+  maintenance and distinguish customer materials from internal build evidence.
+
+## Minimal installation package (2026-09-06)
+
+- `build-support/prepare-product-notices.py`: assemble a new full installation
+  from unchanged component inputs, retain runtime files and applicable legal
+  materials, and store SBOMs, link evidence, source history, checksums and separate
+  debug symbols in an external audit directory. Remove UI audit inventories from
+  the delivered FE JAR and verify its remaining assets against the build inventory.
+- `build.sh`, `dist/LICENSE-dist.txt`: stop copying historical native-link reports
+  into components and remove the catalog's dependency on an on-disk evidence file.
+- `build-for-release.sh`: use an isolated output directory, propagate the product
+  version into the build, include Hive UDF, and use the common package assembler.
+- `dist/RELEASE-NOTES.txt`, `ui/public/locales/en-us.json` and `zh-cn.json`:
+  retain concise product modification and source-access explanations; keep
+  internal implementation history out of the installed UI and package root.
+- `build-support/test_product_notices.py`: exercise package input preservation,
+  exclusion of audit files and separate symbols, required notices and sources,
+  rejection of live data, and validation of FE assets after inventory removal.
+
+The full package retains one shared set of plain-text license materials under
+`fe/legal/`; normal component builds keep their own declarations for independent
+distribution. No runtime library is stripped or removed by this packaging step.
+
+## Build output retention (2026-09-06)
+
+- `build-for-release.sh`: remove the current build's temporary component copies
+  only after successful assembly and archive checks. Stage builds outside output,
+  compress audit records and symbols under `.build-records/`, and publish only the
+  final package/archive/checksum to `output/`. Refuse existing destination paths
+  and stop immediately on build failure, preserving inputs for diagnosis.
+- `ui/scripts/collect-bundled-licenses.cjs`, `ui/scripts/legal-notices.test.cjs`
+  and `ui/README.md` use `.build-records/ui/` for build evidence and screenshots.
+- `.gitignore`, `.licenserc.yaml`, `AGENTS.md` and the distribution guide separate
+  internal records from deliverables and protect local installations and database
+  state during cleanup. Path migrations and subsequent maintainer-requested
+  deletion of the old installations and their data are recorded separately;
+  historical installation copies are not retained by default.
+
+## Playground layout (2026-09-06)
+
+- `ui/src/pages/layout/` and `ui/src/pages/playground/`: size the SQL workspace
+  between the navigation and runtime footer, align its panels and toolbars, and
+  remove independent viewport heights and fixed search positioning. Keep the
+  database tree and query results scrollable inside their panels.
+- The database search and refresh controls occupy separate accessible controls;
+  sidebar dragging updates the layout column and editor width, and narrow windows
+  stack the tree above the editor. Existing upstream headers remain unchanged.
+- `ui/scripts/legal-notices.test.cjs` checks panel/footer geometry, search/refresh,
+  tree scrolling and sidebar resizing alongside the existing notice checks.

@@ -75,7 +75,7 @@
         "runtimeLibrary": "FE 使用的 LGPL 组件",
         "libraryBody": "FE 使用 MariaDB Connector/J；该库及其使用受 GNU LGPL 2.1 或后续版本约束。",
         "materials": "许可与材料获取说明",
-        "materialsBody": "许可正文与归属声明可在此阅读。源码及适用重链接材料按 FE、BE 分别随发行交付，请参阅对应安装包或配套材料中的获取说明。",
+        "materialsBody": "许可正文与归属声明可在此阅读。MariaDB Connector/J 对应源码和替换说明随 FE 安装包交付，位于 legal/ 目录。具体材料位置请参阅下方源码获取说明。",
         "licenses": "阅读发行许可证",
         "attributions": "阅读 NOTICE 归属声明",
         "components": "阅读 UI 第三方组件与原始许可",

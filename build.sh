@@ -134,7 +134,6 @@ function copy_common_files() {
     cp -r -p "${DORIS_HOME}/dist/NOTICE-dist.txt" "$1/"
     cp -r -p "${DORIS_HOME}/dist/LICENSE-dist.txt" "$1/"
     cp -r -p "${DORIS_HOME}/dist/RELEASE-NOTES.txt" "$1/"
-    cp -r -p "${DORIS_HOME}/dist/native-link-evidence.json" "$1/NATIVE-LINK-EVIDENCE.json"
     cp -r -p "${DORIS_HOME}/dist/licenses" "$1/"
 }
 
