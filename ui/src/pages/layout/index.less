@@ -14,6 +14,7 @@ software distributed under the License is distributed on an
 KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License. */
+/* Modified for MassDB SQL. See MODIFICATIONS.md for details. */
 
 .logo{
     width: 143px; 
@@ -24,4 +25,21 @@ under the License. */
     cursor: pointer;
     background-size: 143px 50px;
     background-image: url(../../../public/img/logo.png);
+}
+
+.workspace-layout {
+    height: 100vh;
+    min-height: 600px;
+}
+
+.workspace-content {
+    display: flex;
+    min-height: 0;
+
+    .workspace-background {
+        display: flex;
+        flex: 1;
+        min-width: 0;
+        background: transparent;
+    }
 }

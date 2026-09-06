@@ -16,6 +16,44 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+/* Modified for MassDB SQL. See MODIFICATIONS.md for details. */
+
+.playground-tree {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+}
+
+.playground-tree-toolbar {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 8px;
+    padding: 16px;
+}
+
+.playground-tree-toolbar .ant-input-affix-wrapper {
+    flex: 1;
+    min-width: 0;
+}
+
+.playground-tree-toolbar .ant-input-prefix {
+    color: #94a3b8;
+    margin-right: 8px;
+}
+
+.playground-tree-toolbar .ant-btn {
+    flex-shrink: 0;
+}
+
+.playground-tree-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 0 12px 16px;
+}
 
 .site-tree-search-value {
     color: #f50;

@@ -75,7 +75,7 @@
         "runtimeLibrary": "LGPL component used by FE",
         "libraryBody": "The FE uses MariaDB Connector/J. The library and its use are covered by GNU LGPL version 2.1 or later.",
         "materials": "Licenses and material access instructions",
-        "materialsBody": "Read licenses and attributions here. Corresponding source and applicable relinking materials are supplied separately for FE and BE. Consult the instructions in the matching installation or companion materials.",
+        "materialsBody": "Read licenses and attributions here. MariaDB Connector/J source and replacement instructions are included in the FE installation under legal/. See the source access instructions below for the supplied materials.",
         "licenses": "Read distribution licenses",
         "attributions": "Read NOTICE attributions",
         "components": "Read UI component notices and original licenses",

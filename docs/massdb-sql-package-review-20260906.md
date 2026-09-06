@@ -4,6 +4,11 @@
 `3914038c8a79f005dc76f0a2d31f17f2f54012c216fc95d3883b5c71c65724a5`。
 这是工程与许可证据复核，未代替权利人确认或逐项许可兼容性审阅。
 
+输出整理后，下文 `output/legal/` 等历史证据按原目录名保存在
+`.build-records/20260906-audit.tar.gz`；旧发行归档已清理，先前迁至
+`.local-installations/` 的两套旧安装及 FE 数据也已按维护者要求删除。
+当前程序和归档位置见[安装包材料规则](massdb-sql-distribution-materials.md)。
+
 ## 评审结论
 
 | 项目 | 判断与处理 |

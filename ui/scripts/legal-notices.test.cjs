@@ -8,9 +8,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { chromium } = require('playwright');
 
-const dist = path.resolve(__dirname, '../dist');
-const metadata = JSON.parse(fs.readFileSync(path.join(dist, 'legal/manifest.json'))).metadata;
-const screenshots = path.resolve(__dirname, '../../output/legal/screenshots');
+const dist = process.env.MASSDB_LEGAL_TEST_DIST
+    ? path.resolve(process.env.MASSDB_LEGAL_TEST_DIST) : path.resolve(__dirname, '../dist');
+const metadata = JSON.parse(fs.readFileSync(process.env.MASSDB_LEGAL_TEST_MANIFEST
+    || path.join(dist, 'legal/manifest.json'))).metadata;
+const screenshots = process.env.MASSDB_LEGAL_TEST_SCREENSHOTS
+    ? path.resolve(process.env.MASSDB_LEGAL_TEST_SCREENSHOTS) : path.resolve(__dirname, '../../.build-records/ui/screenshots');
 const prefixes = ['', '/proxy/fe', '/gateway/cluster/fe/default',
     '/system/team', '/home/team', '/System/home/team'];
 
@@ -22,8 +25,11 @@ test('legal notices remain public, local and usable under deployment prefixes', 
         if (prefix) pathname = pathname.slice(prefix.length);
         if (pathname.startsWith('/rest/') || pathname.startsWith('/api/')) {
             response.setHeader('Content-Type', 'application/json');
+            const data = pathname.endsWith('/databases')
+                ? ['information_schema', 'mysql', ...Array.from({ length: 60 }, (_, i) => `database_${i}`)]
+                : { VersionInfo: {}, HardwareInfo: {} };
             return response.end(JSON.stringify({ code: pathname.endsWith('/login') ? 200 : 0,
-                msg: 'success', data: { VersionInfo: {}, HardwareInfo: {} } }));
+                msg: 'success', data }));
         }
         let file = path.resolve(dist, '.' + pathname);
         if (!file.startsWith(dist + path.sep) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
@@ -75,6 +81,12 @@ test('legal notices remain public, local and usable under deployment prefixes', 
             }
             await noticeButton.click();
             await noticeButton.locator('xpath=../..').locator('pre').filter({ hasText: 'Apache Doris' }).waitFor();
+            if (metadata.companyCopyrightConfirmed) {
+                const attributions = await noticeButton.locator('xpath=../..').locator('pre').innerText();
+                assert.ok(attributions.includes(`Copyright (c) ${metadata.copyrightYears} ${metadata.companyZh}`));
+                assert.ok(attributions.includes(metadata.companyEn));
+                assert.match(attributions, /The Apache Software Foundation/);
+            }
             assert.equal(await page.getByRole('alert').count(), 0, 'a restored plain-text notice must load');
             await page.goto(origin + prefix + '/home');
             await page.waitForURL(origin + prefix + '/login');
@@ -129,7 +141,67 @@ test('legal notices remain public, local and usable under deployment prefixes', 
                 await page.goto(origin + '/home');
                 await page.locator('header').waitFor();
                 assert.equal(await page.locator('footer').count(), 1);
+                if (metadata.companyCopyrightConfirmed) {
+                    const company = language === 'en' ? metadata.companyEn : metadata.companyZh;
+                    assert.ok((await page.locator('footer').innerText()).includes(`© ${metadata.copyrightYears} ${company}`));
+                }
                 await page.screenshot({ path: path.join(screenshots, `business-${language}-${width}.png`), fullPage: true });
+                await page.setViewportSize({ width, height: width === 1440 ? 720 : 1000 });
+                await page.goto(origin + '/Playground');
+                await page.locator('.CodeMirror').waitFor();
+                await page.getByText('information_schema', { exact: true }).waitFor();
+                const side = page.locator('aside');
+                const editor = page.locator('.site-layout-background main');
+                const toolbar = page.locator('.playground-tree-toolbar');
+                const search = toolbar.getByRole('textbox');
+                const refresh = toolbar.getByRole('button', { name: language === 'en' ? 'Refresh' : '刷新' });
+                const sideBounds = await side.boundingBox();
+                const editorBounds = await editor.boundingBox();
+                const noticeBounds = await page.locator('footer').boundingBox();
+                assert.ok(editorBounds.y + editorBounds.height <= noticeBounds.y,
+                    'the editor and footer must not overlap');
+                assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
+                    'Playground must fit the window horizontally');
+                assert.ok(await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1),
+                    'Playground must reserve footer height instead of adding another viewport');
+                if (width >= 768) {
+                    assert.ok(Math.abs(sideBounds.y - editorBounds.y) < 1, 'panel tops must align');
+                    assert.ok(Math.abs(sideBounds.height - editorBounds.height) < 1, 'panel bottoms must align');
+                    const searchBounds = await search.boundingBox();
+                    const titleBounds = await page.getByText(language === 'en' ? 'Editor' : '编辑器', { exact: true }).boundingBox();
+                    assert.ok(Math.abs(searchBounds.y + searchBounds.height / 2 - titleBounds.y - titleBounds.height / 2) < 2,
+                        'search and editor toolbar controls must align');
+                } else {
+                    assert.ok(sideBounds.y + sideBounds.height < editorBounds.y,
+                        'narrow windows must stack the database tree above the editor');
+                }
+                const toolbarBeforeScroll = await toolbar.boundingBox();
+                await page.locator('.playground-tree-body').evaluate(el => { el.scrollTop = el.scrollHeight; });
+                assert.deepEqual(await toolbar.boundingBox(), toolbarBeforeScroll, 'tree scrolling must leave search in place');
+                await search.fill('mysql');
+                await page.locator('.site-tree-search-value').filter({ hasText: /^mysql$/ }).waitFor({ state: 'attached' });
+                await search.fill('');
+                await Promise.all([
+                    page.waitForResponse(response => response.url().endsWith('/databases')),
+                    refresh.click(),
+                ]);
+                await page.locator('.playground-tree-body').evaluate(el => { el.scrollTop = 0; });
+                if (width === 1440) {
+                    const handle = await side.locator('.react-resizable-handle-e').boundingBox();
+                    await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+                    await page.mouse.down();
+                    await page.mouse.move(handle.x + handle.width / 2 + 120, handle.y + handle.height / 2, { steps: 10 });
+                    await page.mouse.up();
+                    const resizedSide = await side.boundingBox();
+                    const resizedEditor = await editor.boundingBox();
+                    const codeBounds = await page.locator('.CodeMirror').boundingBox();
+                    assert.ok(resizedSide.width > sideBounds.width + 100, 'sidebar dragging must resize its layout column');
+                    assert.ok(codeBounds.x + codeBounds.width <= resizedEditor.x + resizedEditor.width,
+                        'the SQL editor must shrink with the remaining column');
+                    assert.ok((await toolbar.boundingBox()).width <= resizedSide.width,
+                        'search must follow the resized sidebar');
+                }
+                await page.screenshot({ path: path.join(screenshots, `playground-${language}-${width}.png`), fullPage: true });
                 await context.close();
             }
         }

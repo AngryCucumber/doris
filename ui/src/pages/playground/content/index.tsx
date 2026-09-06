@@ -16,6 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
  
 import React, {useState, useEffect, useContext, SyntheticEvent} from 'react';
 // import {Controlled as CodeMirror} from 'react-codemirror2';
@@ -138,8 +139,8 @@ export function AdHocContent(props: any) {
     }
     return (
         <div>
-            <Row justify="space-between" style={{marginBottom: 10}}>
-                <Col>{t('editor')} &nbsp;&nbsp;
+            <Row justify="space-between" className={styles['editor-toolbar']}>
+                <Col><span className={styles['editor-title']}>{t('editor')}</span>
                     <Button size='small' onClick={() => {
                         const sqlStr = sqlFormatter.format(code);
                         setCode(sqlStr);

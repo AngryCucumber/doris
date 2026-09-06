@@ -37,7 +37,7 @@ npm run dev                 # http://localhost:8030
 npm run build               # production assets and legal/ in dist/
 npm run check:notices       # versions, content and bundle hashes
 npx playwright install chromium
-npm run test:legal          # browser checks; screenshots in ../output/legal/
+npm run test:legal          # browser checks; screenshots in ../.build-records/ui/screenshots/
 ```
 
 The browser tests use a local static server and mock the login API. They cover
@@ -45,6 +45,8 @@ public access, authenticated navigation, deployment prefixes, local reading
 and downloads, HTTP 200 HTML/JSON fallbacks, recovery after missing notices, and
 Chinese/English layouts at three widths. Notice endpoints must serve `text/plain`
 (an optional charset is supported); JSON error responses are never license text.
+Playground checks also cover aligned panels/toolbars, a visible footer, search and
+refresh, independent tree scrolling, sidebar resizing and narrow-window stacking.
 They do not replace tests against a running FE. No `npm run lint` script is
 currently defined.
 
@@ -61,11 +63,33 @@ normal assets are generated. It inventories actual bundled modules, including
 CodeMirror and dynamic chunks. Outputs include `legal/THIRD-PARTY-NOTICES.txt`,
 `components.json`, `sbom.cdx.json` and `manifest.json`. Original license inputs
 come from `dist/`, installed packages and reviewed `dist/ui-licenses/` supplements.
-Generated assets belong in `dist/` and `output/`, outside version control.
+Generated UI assets belong in `dist/`; build inventories, webpack statistics and
+screenshots belong in `../.build-records/ui/`, outside version control. Reserve
+`../output/` for the latest program/package and archive/checksum.
+
+The complete installation is assembled with `--assemble-package` in
+`build-support/prepare-product-notices.py`. Its UI inventories, SBOMs and debug
+symbols stay in a separate audit directory. Public notices and MariaDB source
+remain under `fe/legal/`; build-only JSON inventories are also removed from the
+delivered FE JAR. Verify that JAR with `--check-fe-jar PATH --ui-dist ui/dist` from
+the root so the external build inventory checks every retained static resource.
+The detailed repository `MODIFICATIONS.md` is not included in the installed UI;
+the package README retains the product modification summary.
+
+Browser tests can serve static files extracted from the delivered JAR with
+`MASSDB_LEGAL_TEST_DIST=/path/to/extracted/static` and read its matching external
+inventory through `MASSDB_LEGAL_TEST_MANIFEST=/path/to/audit/ui/manifest.json`.
+Set `MASSDB_LEGAL_TEST_SCREENSHOTS` to keep those screenshots in the release record.
 
 Product and source metadata come from `../dist/product-provenance.json` and the
-existing version script. Company copyright display remains disabled until
-rights and years are confirmed; company-specific scope text is hidden with it. New implementation file licensing and the
+existing version script. The maintainer has enabled the 2026 company attribution
+for company-owned modifications and original additions. The source `NOTICE.txt`
+addendum and the footer must agree with that metadata; UI validation and the
+release preflight reject a mismatch. Component packaging copies the source NOTICE.
+After changing the company names or years, use
+`python3 build-support/prepare-product-notices.py --company-notice` from the root
+to obtain the replacement company addendum, preserving all upstream notices, then
+run the same script with `--check-company-notice`. New implementation file licensing and the
 historical package `ISC` metadata remain separate decisions in the
 [implementation plan](../docs/massdb-sql-copyright-productization-plan.md).
 
@@ -120,7 +144,7 @@ To inventory a complete assembled package (outside `ui/`), run:
 ```bash
 python3 build-support/prepare-product-notices.py \
     --inventory-java-package /path/to/massdb-package \
-    --destination output/legal/java-inventory
+    --destination .build-records/java-inventory
 ```
 
 The destination must be new and outside the package. The command uses local JARs

@@ -37,6 +37,8 @@ const { Header, Content } = Layout;
 function Layouts(props: any) {
     let { t } = useTranslation();
     const route = props.route.routes;
+    const isPlayground = /^\/Playground(?:\/|$)/.test(props.location.pathname)
+        && !/^\/Playground\/import(?:\/|$)/.test(props.location.pathname);
     const [current, setCurrent] = useState(props.location.pathname);
     const history = useHistory();
     //Jump page
@@ -92,7 +94,10 @@ function Layouts(props: any) {
         </Menu>
     );
     return (
-        <Layout style={{ minHeight: '100vh' }}>
+        <Layout
+            className={isPlayground ? styles['workspace-layout'] : undefined}
+            style={{ minHeight: isPlayground ? undefined : '100vh' }}
+        >
             <Header style={{ position: 'fixed', zIndex: 99, width: '100%' }}>
                 <div
                     className={styles['logo']}
@@ -138,16 +143,19 @@ function Layouts(props: any) {
                 </Menu>
             </Header>
 
-            <Content className="site-layout" style={{ marginTop: 64 }}>
+            <Content
+                className={`site-layout ${isPlayground ? styles['workspace-content'] : ''}`}
+                style={{ marginTop: 64 }}
+            >
                 <div
-                    className="site-layout-background"
-                    style={{ minHeight: 380 }}
+                    className={`site-layout-background ${isPlayground ? styles['workspace-background'] : ''}`}
+                    style={{ minHeight: isPlayground ? 0 : 380 }}
                 >
                     {renderRoutes(route)}
                 </div>
             </Content>
 
-            <LegalFooter />
+            <LegalFooter appearance="transparent" />
         </Layout>
     );
 }

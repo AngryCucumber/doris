@@ -26,6 +26,8 @@ header:
     - "ui/.nvmrc"
     - "ui/.npmrc"
     - ".claude/**"
+    - ".build-records/**"
+    - ".local-installations/**"
     - "dist"
     - "licenses"
     - "**/*.md"

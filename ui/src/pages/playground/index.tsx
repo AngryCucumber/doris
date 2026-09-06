@@ -16,6 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
  
 import React from 'react';
 import {PageSide} from './page-side/index';
@@ -27,9 +28,7 @@ const Content = Layout.Content;
 function QueryContent(props) {
     return (
         <Layout className={styles['adhoc']}>
-            <PageSide
-                width={250}
-            >
+            <PageSide>
                 <AdHocTree {...props}/>
             </PageSide>
             <Content className={styles.content}>

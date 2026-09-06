@@ -16,15 +16,14 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 import React, { useEffect, useState } from 'react';
-import { Input, Spin, Tree } from 'antd';
-import { HddOutlined, ReloadOutlined, TableOutlined } from '@ant-design/icons';
+import { Button, Input, Spin, Tree } from 'antd';
+import { HddOutlined, ReloadOutlined, SearchOutlined, TableOutlined } from '@ant-design/icons';
 import { AdHocAPI } from 'Src/api/api';
 import { useTranslation } from 'react-i18next';
 import { AdhocContentRouteKeyEnum } from '../adhoc.data';
 import './index.css';
-
-const { Search } = Input;
 
 interface DataNode {
     title: string;
@@ -62,6 +61,7 @@ export function AdHocTree(props: any) {
     }, []);
 
     function initTreeData(ac?: AbortController) {
+        setLoading(true);
         AdHocAPI.getDatabaseList({ signal: ac?.signal })
             .then((res) => {
                 if (res.msg === 'success' && Array.isArray(res.data)) {
@@ -79,7 +79,7 @@ export function AdHocTree(props: any) {
                 }
                 setLoading(false);
             })
-            .catch((err) => {});
+            .catch(() => setLoading(false));
     }
 
     function onLoadData({ key, children }) {
@@ -206,45 +206,41 @@ export function AdHocTree(props: any) {
     }
 
     return (
-        <>
-            <Spin spinning={loading} size="small" />
-            <div>
-                <Search
-                    size="small"
-                    style={{
-                        padding: 5,
-                        position: 'fixed',
-                        zIndex: '99',
-                        width: '300px',
-                    }}
+        <div className="playground-tree">
+            <div className="playground-tree-toolbar">
+                <Input
+                    allowClear
+                    prefix={<SearchOutlined />}
+                    aria-label={t('search')}
                     placeholder={t('search')}
-                    enterButton={<ReloadOutlined />}
-                    onSearch={initTreeData}
                     onChange={onSearch}
                 />
+                <Button
+                    icon={<ReloadOutlined />}
+                    aria-label={t('refresh')}
+                    title={t('refresh')}
+                    loading={loading}
+                    onClick={() => initTreeData()}
+                />
             </div>
-
-            <Tree
-                showIcon={true}
-                loadData={onLoadData}
-                treeData={realTree}
-                onExpand={onExpand}
-                expandedKeys={expandedKeys}
-                autoExpandParent={autoExpandParent}
-                style={{
-                    width: '100%',
-                    height: '86vh',
-                    paddingTop: '35px',
-                    overflowY: 'scroll',
-                }}
-                onSelect={(selectedKeys, info) =>
-                    handleTreeSelect(
-                        selectedKeys,
-                        info,
-                        AdhocContentRouteKeyEnum.Structure
-                    )
-                }
-            />
-        </>
+            <Spin spinning={loading} size="small" wrapperClassName="playground-tree-body">
+                <Tree
+                    className="playground-database-tree"
+                    showIcon={true}
+                    loadData={onLoadData}
+                    treeData={realTree}
+                    onExpand={onExpand}
+                    expandedKeys={expandedKeys}
+                    autoExpandParent={autoExpandParent}
+                    onSelect={(selectedKeys, info) =>
+                        handleTreeSelect(
+                            selectedKeys,
+                            info,
+                            AdhocContentRouteKeyEnum.Structure
+                        )
+                    }
+                />
+            </Spin>
+        </div>
     );
 }

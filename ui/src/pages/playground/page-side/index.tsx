@@ -16,9 +16,10 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 import React, {SyntheticEvent, useState} from 'react';
-import {ResizableBox} from 'react-resizable';
+import {Resizable} from 'react-resizable';
 import styles from './index.less';
 
 require('react-resizable/css/styles.css');
@@ -32,20 +33,19 @@ export function PageSide(props: any) {
         setSideBoxWidth(width);
     };
     return (
-        <div className={styles['side']}>
-            <ResizableBox
-                width={sideBoxWidth}
-                height={Infinity}
-                style={{'minHeight': 'calc(100vh - 64px)', 'overflow': 'hidden'}}
-                resizeHandles={['e']}
-                onResizeStart={onResize}
-                minConstraints={[300, 300]}
-                maxConstraints={[Infinity, Infinity]}
-                axis="x"
-            >
+        <Resizable
+            width={sideBoxWidth}
+            height={0}
+            resizeHandles={['e']}
+            onResize={onResize}
+            minConstraints={[220, 0]}
+            maxConstraints={[480, Infinity]}
+            axis="x"
+        >
+            <aside className={styles.side} style={{width: sideBoxWidth}}>
                 {children}
-            </ResizableBox>
-        </div>
+            </aside>
+        </Resizable>
     );
 }
  
