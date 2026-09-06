@@ -54,7 +54,6 @@
     "Download": "下载",
     "legal": {
         "title": "版权与开源声明",
-        "scope": "自有修改与新增部分",
         "lgpl": "阅读 LGPL 2.1 许可全文",
         "download": "下载",
         "readError": "无法读取声明文件，请检查连接后重新展开。",

@@ -15,7 +15,6 @@ export default function LegalFooter({ appearance = 'default' }: { appearance?: '
         <footer className={[styles.footer, appearance === 'transparent' ? styles.transparent : ''].join(' ')}>
             {branding.companyCopyrightConfirmed && <div>© {branding.copyrightYears} {company}</div>}
             <div>{branding.productName}
-                {branding.companyCopyrightConfirmed && <> · {t('legal.scope')}</>}
                 {' · '}<Link to="/legal-notices">{t('legal.title')}</Link>
             </div>
             <div className={styles.library}>

@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.httpv2.rest;
 
@@ -93,7 +94,7 @@ public class BootstrapFinishAction extends RestBaseController {
                 result.setQueryPort(Config.query_port);
                 result.setRpcPort(Config.rpc_port);
                 result.setArrowFlightSqlPort(Config.arrow_flight_sql_port);
-                result.setVersion(Version.DORIS_BUILD_VERSION + "-" + Version.DORIS_BUILD_SHORT_HASH);
+                result.setVersion(Version.DORIS_PRODUCT_VERSION);
             }
 
             return ResponseEntityBuilder.ok(result);

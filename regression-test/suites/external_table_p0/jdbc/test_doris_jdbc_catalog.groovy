@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
+
 suite("test_doris_jdbc_catalog", "p0,external,doris,external_docker,external_docker_doris") {
     qt_sql """select current_catalog()"""
 
@@ -218,12 +220,86 @@ suite("test_doris_jdbc_catalog", "p0,external,doris,external_docker,external_doc
 
     sql """insert into `order` values (1);"""
 
+    sql "DROP TABLE IF EXISTS array_precision"
+    sql """CREATE TABLE array_precision (
+        id INT, exact_values ARRAY<LARGEINT>, nested_values ARRAY<ARRAY<LARGEINT>>
+    ) DUPLICATE KEY(id) DISTRIBUTED BY HASH(id) BUCKETS 1 PROPERTIES("replication_num" = "1")"""
+    sql """INSERT INTO array_precision VALUES
+        (1, [9007199254740993, 9223372036854775808,
+             170141183460469231731687303715884105727, -170141183460469231731687303715884105728],
+            [[9007199254740993, 170141183460469231731687303715884105727], [],
+             [-170141183460469231731687303715884105728]]),
+        (2, [], []), (3, NULL, NULL)"""
+
+    // Keep NULL elements, floating-point signed zero and timestamp fractions across JDBC reads and copies.
+    def edgeTypes = [large_values: "ARRAY<LARGEINT>", nested_large: "ARRAY<ARRAY<LARGEINT>>",
+                     flags: "ARRAY<BOOLEAN>", dates: "ARRAY<DATEV2>",
+                     floats: "ARRAY<ARRAY<FLOAT>>", doubles: "ARRAY<ARRAY<DOUBLE>>",
+                     decimals: "ARRAY<ARRAY<DECIMAL(30,10)>>",
+                     chars: "ARRAY<CHAR(10)>", varchars: "ARRAY<ARRAY<VARCHAR(20)>>"]
+    (0..6).each { precision -> edgeTypes["times_${precision}"] = "ARRAY<DATETIMEV2(${precision})>" }
+    sql "DROP TABLE IF EXISTS array_edge_cases"
+    sql """CREATE TABLE array_edge_cases (
+        id INT, ${edgeTypes.collect { name, type -> "${name} ${type}" }.join(", ")}
+    ) DUPLICATE KEY(id) DISTRIBUTED BY HASH(id) BUCKETS 1 PROPERTIES("replication_num" = "1")"""
+    def edgeValues = [
+        "[NULL, 9007199254740993, -170141183460469231731687303715884105728, 170141183460469231731687303715884105727]",
+        "[NULL, [], [9007199254740993, NULL], [-170141183460469231731687303715884105728]]",
+        "ARRAY(true, NULL, false)",
+        "ARRAY(CAST('2026-09-07' AS DATEV2), NULL)",
+        "ARRAY(ARRAY(CAST('-0.0' AS FLOAT), CAST('0.0' AS FLOAT), CAST('1.4e-45' AS FLOAT)), NULL, ARRAY())",
+        "ARRAY(ARRAY(CAST('-0.0' AS DOUBLE), CAST('0.0' AS DOUBLE), CAST('4.9e-324' AS DOUBLE)), NULL, ARRAY())",
+        "ARRAY(ARRAY(CAST('12345678901234567890.1234567890' AS DECIMAL(30,10)), NULL), NULL, ARRAY())",
+        "ARRAY('abc', NULL, '')", "ARRAY(ARRAY('中文', NULL, ''), NULL, ARRAY())"
+    ]
+    (0..6).each { precision ->
+        edgeValues.add("ARRAY(CAST('2026-09-07 01:02:03.123456' AS DATETIMEV2(${precision})), "
+                + "NULL, CAST('2026-09-07 00:00:00' AS DATETIMEV2(${precision})))")
+    }
+    sql """INSERT INTO array_edge_cases VALUES
+        (1, ${edgeValues.join(", ")}),
+        (2, ${edgeTypes.collect { "[]" }.join(", ")}),
+        (3, ${edgeTypes.collect { "NULL" }.join(", ")})"""
+
     // query with jdbc external table
     sql """ refresh catalog  doris_jdbc_catalog """
     qt_sql """select current_catalog()"""
     sql """ switch doris_jdbc_catalog """
     qt_sql """select current_catalog()"""
     sql """ use regression_test_jdbc_catalog_p0 """
+    // A rebranded version_comment must not switch Doris-compatible servers to MySQL type mapping.
+    [base: ["largeint_col", "decimal_col", "decimal_col2", "date_col", "datetime_col"],
+     arr: ["arr_int_col", "arr_largeint_col", "arr_date_col", "arr_datetime_col"]].each { table, columns ->
+        def sourceTypes = sql("DESC internal.regression_test_jdbc_catalog_p0.${table}")
+                .collectEntries { row -> [(row[0]): row[1]] }
+        def jdbcTypes = sql("DESC doris_jdbc_catalog.regression_test_jdbc_catalog_p0.${table}")
+                .collectEntries { row -> [(row[0]): row[1]] }
+        columns.each { column ->
+            assertEquals(sourceTypes[column], jdbcTypes[column])
+        }
+    }
+    def precisionProjection = "id, CAST(exact_values AS STRING), CAST(nested_values AS STRING)"
+    assertEquals(
+            sql("SELECT ${precisionProjection} FROM internal.regression_test_jdbc_catalog_p0.array_precision ORDER BY id"),
+            sql("SELECT ${precisionProjection} FROM doris_jdbc_catalog.regression_test_jdbc_catalog_p0.array_precision ORDER BY id"))
+    def edgeProjection = "id, " + edgeTypes.keySet().collect { "CAST(${it} AS STRING)" }.join(", ")
+    def nativeEdgeTypes = sql("DESC internal.regression_test_jdbc_catalog_p0.array_edge_cases")
+            .collectEntries { row -> [(row[0]): row[1]] }
+    def jdbcEdgeTypes = sql("DESC doris_jdbc_catalog.regression_test_jdbc_catalog_p0.array_edge_cases")
+            .collectEntries { row -> [(row[0]): row[1]] }
+    assertEquals(nativeEdgeTypes, jdbcEdgeTypes)
+    def nativeEdges = sql("SELECT ${edgeProjection} FROM internal.regression_test_jdbc_catalog_p0.array_edge_cases ORDER BY id")
+    assertEquals(nativeEdges,
+            sql("SELECT ${edgeProjection} FROM doris_jdbc_catalog.regression_test_jdbc_catalog_p0.array_edge_cases ORDER BY id"))
+    sql "switch internal"
+    sql "DROP TABLE IF EXISTS internal.regression_test_jdbc_catalog_p0.array_edge_copy"
+    sql """CREATE TABLE internal.regression_test_jdbc_catalog_p0.array_edge_copy
+        LIKE internal.regression_test_jdbc_catalog_p0.array_edge_cases"""
+    sql """INSERT INTO internal.regression_test_jdbc_catalog_p0.array_edge_copy
+        SELECT * FROM doris_jdbc_catalog.regression_test_jdbc_catalog_p0.array_edge_cases"""
+    assertEquals(nativeEdges,
+            sql("SELECT ${edgeProjection} FROM internal.regression_test_jdbc_catalog_p0.array_edge_copy ORDER BY id"))
+    sql "switch doris_jdbc_catalog"
     order_qt_tb2 """ select pin_id, hll_union_agg(user_log_acct) from doris_jdbc_catalog.regression_test_jdbc_catalog_p0.bowen_hll_test group by pin_id; """
     order_qt_base2 """ select * from doris_jdbc_catalog.regression_test_jdbc_catalog_p0.base order by int_col; """
     order_qt_all_null2 """ select * from doris_jdbc_catalog.regression_test_jdbc_catalog_p0.all_null_tbl order by int_col; """

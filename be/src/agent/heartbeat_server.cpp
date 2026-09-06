@@ -14,12 +14,14 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #include "agent/heartbeat_server.h"
 
 #include <gen_cpp/HeartbeatService.h>
 #include <gen_cpp/HeartbeatService_types.h>
 #include <gen_cpp/Types_types.h>
+#include <gen_cpp/version.h>
 #include <glog/logging.h>
 
 #include <memory>
@@ -85,7 +87,7 @@ void HeartbeatServer::heartbeat(THeartbeatResult& heartbeat_result,
         heartbeat_result.backend_info.__set_be_rpc_port(-1);
         heartbeat_result.backend_info.__set_brpc_port(config::brpc_port);
         heartbeat_result.backend_info.__set_arrow_flight_sql_port(config::arrow_flight_sql_port);
-        heartbeat_result.backend_info.__set_version(get_short_version());
+        heartbeat_result.backend_info.__set_version(DORIS_PRODUCT_VERSION);
         heartbeat_result.backend_info.__set_be_start_time(_be_epoch);
         heartbeat_result.backend_info.__set_be_node_role(config::be_node_role);
         // If be is gracefully stop, then k_doris_exist is set to true

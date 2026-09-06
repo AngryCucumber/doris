@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.httpv2.rest;
 
@@ -52,7 +53,7 @@ public class FeVersionInfoAction extends RestBaseController {
         feVersionInfo.put("dorisBuildVersionMinor", Version.DORIS_BUILD_VERSION_MINOR);
         feVersionInfo.put("dorisBuildVersionPatch", Version.DORIS_BUILD_VERSION_PATCH);
         feVersionInfo.put("dorisBuildVersionRcVersion", Version.DORIS_BUILD_VERSION_RC_VERSION);
-        feVersionInfo.put("dorisBuildVersion", Version.DORIS_BUILD_VERSION);
+        feVersionInfo.put("dorisBuildVersion", Version.DORIS_PRODUCT_VERSION);
         feVersionInfo.put("dorisBuildHash", Version.DORIS_BUILD_HASH);
         feVersionInfo.put("dorisBuildShortHash", Version.DORIS_BUILD_SHORT_HASH);
         feVersionInfo.put("dorisBuildTime", Version.DORIS_BUILD_TIME);

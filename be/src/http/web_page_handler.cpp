@@ -18,6 +18,8 @@
 
 #include "http/web_page_handler.h"
 
+#include <gen_cpp/version.h>
+
 #include <stdlib.h>
 
 #include <functional>
@@ -35,7 +37,6 @@
 #include "http/utils.h"
 #include "io/fs/local_file_system.h"
 #include "util/cpu_info.h"
-#include "util/debug_util.h"
 #include "util/disk_info.h"
 #include "util/easy_json.h"
 #include "util/mem_info.h"
@@ -194,8 +195,7 @@ bool WebPageHandler::mustache_template_available(const std::string& path) const 
 }
 
 void WebPageHandler::render_main_template(const std::string& content, std::stringstream* output) {
-    static const std::string& footer =
-            std::string("<pre>") + get_version_string(true) + std::string("</pre>");
+    static const std::string footer = std::string("<pre>") + DORIS_PRODUCT_VERSION + "</pre>";
 
     EasyJson ej;
     ej["static_pages_available"] = static_pages_available();
@@ -224,7 +224,7 @@ void WebPageHandler::render(const std::string& path, const EasyJson& ej, bool us
 }
 
 void WebPageHandler::root_handler(const ArgumentMap& args, EasyJson* output) {
-    (*output)["version"] = get_version_string(false);
+    (*output)["version"] = DORIS_PRODUCT_VERSION;
     (*output)["cpuinfo"] = CpuInfo::debug_string();
     (*output)["meminfo"] = MemInfo::debug_string();
     (*output)["diskinfo"] = DiskInfo::debug_string();

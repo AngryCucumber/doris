@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.metric;
 
@@ -287,7 +288,7 @@ public final class MetricRepo {
                 }
             }
         };
-        feVersion.addLabel(new MetricLabel("version", Version.DORIS_BUILD_VERSION));
+        feVersion.addLabel(new MetricLabel("version", Version.DORIS_PRODUCT_VERSION));
         feVersion.addLabel(new MetricLabel("major", String.valueOf(Version.DORIS_BUILD_VERSION_MAJOR)));
         feVersion.addLabel(new MetricLabel("minor", String.valueOf(Version.DORIS_BUILD_VERSION_MINOR)));
         feVersion.addLabel(new MetricLabel("patch", String.valueOf(Version.DORIS_BUILD_VERSION_PATCH)));

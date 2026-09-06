@@ -4,8 +4,56 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## Product version presentation (2026-09-07)
+
+- `fe/be-java-extensions/jdbc-scanner/src/main/java/org/apache/doris/jdbc/MySQLJdbcExecutor.java`:
+  retain JSON number text until conversion to the target array element type,
+  preserving large-integer/decimal precision and floating-point signed zero without
+  intermediate `Double` rounding or repeated `BigDecimal` parsing. Preserve NULL
+  elements, including nested NULL arrays, and parse timestamp fractions with
+  nanosecond fields to retain microseconds at precisions 0–6. The JDBC regression
+  suite compares native reads, external reads and inserted copies at these boundaries.
+- `fe/fe-core/src/main/java/org/apache/doris/datasource/jdbc/client/JdbcMySQLClient.java`:
+  recognize both Doris and MassDB in the remote `version_comment`, independently
+  of letter case and the default locale. Keep original column metadata and Doris
+  type mapping for MassDB JDBC catalogs; ordinary MySQL retains its existing mapping.
+  `regression-test/suites/external_table_p0/jdbc/test_doris_jdbc_catalog.groovy`
+  compares native and JDBC column types for large integers, decimals, dates,
+  timestamps and arrays.
+  Read parameterized Doris decimal precision/scale and string/binary lengths from
+  the full type declaration; array-column JDBC metadata does not describe element
+  parameters. Regression coverage includes nested decimals, CHAR and VARCHAR arrays.
+- `fe/fe-core/src/main/java/org/apache/doris/httpv2/controller/HardwareInfoController.java`,
+  `fe/fe-core/src/main/java/org/apache/doris/httpv2/rest/{FeVersionInfoAction,BootstrapFinishAction}.java`
+  and `fe/fe-core/src/main/java/org/apache/doris/metric/MetricRepo.java`: use the
+  product version for the FE home page, version/bootstrap HTTP responses and
+  the version metric label. Separate build metadata remains available for diagnostics.
+- `be/src/http/{web_page_handler.cpp,action/version_action.cpp}`: use the same
+  product version on the BE home page, page footer and version HTTP response;
+  the page version no longer includes the build hash, platform or compiler details.
+- `gensrc/script/gen_build_version.sh` generates a shared product version for
+  Java and C++; BE uses the generated constant directly in its heartbeat response.
+- `fe/fe-core/src/main/java/org/apache/doris/system/HeartbeatMgr.java`,
+  `fe/fe-core/src/main/java/org/apache/doris/service/FrontendServiceImpl.java`
+  and `be/src/agent/heartbeat_server.cpp`: report that product version in local
+  and remote FE heartbeats and BE heartbeats. `SHOW FRONTENDS`, `SHOW BACKENDS`
+  and the corresponding `SHOW PROC` tables display `massdb-2.0.5-sql-rc02`
+  without a Git hash. Build diagnostics and export provenance retain build IDs.
+- `fe/fe-core/src/main/java/org/apache/doris/qe/GlobalVariable.java`: display
+  `massdb-2.0.5-sql-rc02` through `@@version_comment`, derived from the build's
+  version components without a Git hash or mode suffix. Keep `@@version` and
+  the MySQL handshake at the existing `5.7.99` compatibility value.
+- `build-support/prepare-product-notices.py`, `ui/src/constants/branding.ts` and
+  `ui/src/pages/legal-notices/index.tsx`: derive `MassDB V2.0.5` for the public
+  version display while retaining the complete build version and source identity
+  in distribution metadata. Hotfix and release-candidate fields remain separate.
+
 ## Product release candidate rc02 (2026-09-06)
 
+- `ui/src/components/legal-footer/index.tsx` and `ui/public/locales/{en-us,zh-cn}.json`:
+  simplify the footer to company attribution, product name and the notices link;
+  retain the copyright scope in the notices page and NOTICE, and retain the
+  MariaDB attribution and license link.
 - `gensrc/script/gen_build_version.sh`: advance the independent product version
   to `massdb-sql-2.0.5-rc02`; the Apache Doris source baseline remains `4.0.5-rc01`.
 - `dist/RELEASE-NOTES.txt`: record rc02 and the Playground layout improvements.

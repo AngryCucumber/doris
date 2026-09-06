@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
+
 package org.apache.doris.datasource.jdbc.client;
 
 import org.apache.doris.catalog.ArrayType;
@@ -36,6 +38,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -57,8 +60,9 @@ public class JdbcMySQLClient extends JdbcClient {
             stmt = conn.createStatement();
             rs = stmt.executeQuery("SHOW VARIABLES LIKE 'version_comment'");
             if (rs.next()) {
-                String versionComment = rs.getString("Value");
-                isDoris = versionComment.toLowerCase().contains("doris");
+                String versionComment = Strings.nullToEmpty(rs.getString("Value")).toLowerCase(Locale.ROOT);
+                // MassDB uses the same column types with its own product version comment.
+                isDoris = versionComment.contains("doris") || versionComment.contains("massdb");
             }
         } catch (SQLException | JdbcClientException e) {
             closeClient();
@@ -385,12 +389,12 @@ public class JdbcMySQLClient extends JdbcClient {
     }
 
     private Type dorisTypeToDoris(JdbcFieldSchema fieldSchema) {
-        String type = fieldSchema.getDataTypeName().orElse("unknown").toUpperCase();
+        String type = fieldSchema.getDataTypeName().orElse("unknown");
         if (type == null || type.isEmpty()) {
             return Type.UNSUPPORTED;
         }
 
-        String upperType = type.toUpperCase();
+        String upperType = type.toUpperCase(Locale.ROOT);
 
         // For ARRAY type
         if (upperType.startsWith("ARRAY")) {
@@ -424,6 +428,13 @@ public class JdbcMySQLClient extends JdbcClient {
                 return Type.DOUBLE;
             case "DECIMAL":
             case "DECIMALV3": {
+                // Array metadata describes the outer column, not the element's precision and scale.
+                if (openParen != -1) {
+                    String[] precisionAndScale = upperType.substring(openParen + 1, upperType.length() - 1).split(",");
+                    int precision = Integer.parseInt(precisionAndScale[0].trim());
+                    int scale = Integer.parseInt(precisionAndScale[1].trim());
+                    return createDecimalOrStringType(precision, scale);
+                }
                 int precision = fieldSchema.requiredColumnSize();
                 int scale = fieldSchema.requiredDecimalDigits();
                 return createDecimalOrStringType(precision, scale);
@@ -442,9 +453,9 @@ public class JdbcMySQLClient extends JdbcClient {
             }
             case "CHAR":
             case "CHARACTER":
-                return ScalarType.createCharType(fieldSchema.requiredColumnSize());
+                return ScalarType.createCharType(dorisTypeLength(upperType, openParen, fieldSchema));
             case "VARCHAR":
-                return ScalarType.createVarcharType(fieldSchema.requiredColumnSize());
+                return ScalarType.createVarcharType(dorisTypeLength(upperType, openParen, fieldSchema));
             case "STRING":
             case "TEXT":
             case "JSON":
@@ -455,9 +466,14 @@ public class JdbcMySQLClient extends JdbcClient {
             case "BITMAP":
                 return Type.BITMAP;
             case "VARBINARY":
-                return ScalarType.createVarbinaryType(fieldSchema.requiredColumnSize());
+                return ScalarType.createVarbinaryType(dorisTypeLength(upperType, openParen, fieldSchema));
             default:
                 return Type.UNSUPPORTED;
         }
+    }
+
+    private int dorisTypeLength(String type, int openParen, JdbcFieldSchema fieldSchema) {
+        return openParen == -1 ? fieldSchema.requiredColumnSize()
+                : Integer.parseInt(type.substring(openParen + 1, type.length() - 1).trim());
     }
 }

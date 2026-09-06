@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.system;
 
@@ -410,7 +411,7 @@ public class HeartbeatMgr extends MasterDaemon {
                     return new FrontendHbResponse(fe.getNodeName(), Config.query_port, Config.rpc_port,
                             Config.arrow_flight_sql_port, Env.getCurrentEnv().getMaxJournalId(),
                             System.currentTimeMillis(),
-                            Version.DORIS_BUILD_VERSION + "-" + Version.DORIS_BUILD_SHORT_HASH,
+                            Version.DORIS_PRODUCT_VERSION,
                             ExecuteEnv.getInstance().getStartupTime(), ExecuteEnv.getInstance().getDiskInfos(),
                             ExecuteEnv.getInstance().getProcessUUID());
                 } else {

@@ -4,6 +4,26 @@ MassDB SQL uses independent product version numbers. Its 2.0.5-rc02 number must
 not be used as an Apache Doris version when assigning package identifiers or
 matching vulnerabilities.
 
+Version display: the legal page shows MassDB V2.0.5. SQL @@version_comment
+returns massdb-2.0.5-sql-rc02 without a Git hash. FE and BE heartbeat versions use
+the same value in SHOW FRONTENDS / BACKENDS and SHOW PROC '/frontends' / '/backends'.
+The FE home page, BE home page/footer, version HTTP APIs, FE bootstrap response
+and FE version metric label also use massdb-2.0.5-sql-rc02. Each node must run
+the updated binary and report a heartbeat. @@version and the MySQL handshake
+retain 5.7.99 for client compatibility. Internal build identifiers and package
+names retain massdb-sql-2.0.5-rc02, with source identity in the build records.
+
+JDBC catalogs recognize both Doris and MassDB version comments and retain Doris
+column type mapping for MassDB targets. Older Doris/MassDB clients or third-party
+tools that identify servers only by the word "doris" require a corresponding
+client-side update; the new product version does not change their detection rules.
+JDBC array decoding also preserves exact large integers, including nested arrays,
+instead of rounding them through an intermediate floating-point value.
+Array reads and JDBC insert-select copies retain NULL elements, nested NULL arrays,
+floating-point signed zero and timestamp fractions at precisions 0 through 6.
+Parameterized array elements use the precision, scale and length in the Doris type
+declaration instead of the outer array column's JDBC metadata.
+
 Upstream source baseline: Apache Doris 4.0.5-rc01 source version on branch-4.0.
 Upstream commit: 59de8c4c524008e8ab2e43b79312f716a3a423a8
 Source: https://github.com/apache/doris/commit/59de8c4c524008e8ab2e43b79312f716a3a423a8
@@ -19,7 +39,8 @@ notices and transparent copyright footers.
 
 Changes in rc02: align the Playground sidebar and editor heights, reserve footer
 space within the viewport, and align the search and refresh controls. The sidebar
-resizes with the editor and adapts to narrow screens.
+resizes with the editor and adapts to narrow screens. Simplify the company footer;
+the notices page and NOTICE retain the full copyright scope.
 
 File-level modification notices remain in the distributed scripts and source.
 References to MODIFICATIONS.md in source headers refer to the detailed history
@@ -28,9 +49,23 @@ in the source repository; that development record is not a runtime dependency.
 版本说明：MassDB SQL 2.0.5-rc02 是产品独立编号，上游源码基线为 Apache Doris
 4.0.5-rc01。SBOM/CVE 评估须使用实际组件版本和代码差异，不把产品编号作为上游版本。
 
+版本展示：版权声明页显示 MassDB V2.0.5；@@version_comment 返回
+massdb-2.0.5-sql-rc02，不追加 Git 哈希。SHOW FRONTENDS / BACKENDS 和
+SHOW PROC '/frontends' / '/backends' 的 Version 列使用相同版本；各节点需更新
+程序并完成心跳上报。FE 首页、BE 首页与页尾、版本 HTTP 接口、FE 启动状态
+接口和版本监控标签也统一为 massdb-2.0.5-sql-rc02。@@version 和 MySQL 握手保持 5.7.99，
+用于客户端兼容。内部构建与安装包编号仍为 massdb-sql-2.0.5-rc02，构建记录保留源码信息。
+
+JDBC catalog 同时识别 Doris 和 MassDB 版本声明，连接 MassDB 时保留 Doris 列类型映射。
+旧版 Doris/MassDB 客户端或仅凭 "doris" 识别数据库的第三方工具，需同步更新其识别逻辑。
+同时修复 JDBC 数组解码经浮点数中转导致的大整数精度丢失，涵盖嵌套数组。
+数组读取及 JDBC 查询后写入保留 NULL 元素、嵌套 NULL 数组、浮点负零和 0–6 位时间精度。
+数组元素的小数精度、标度及字符串长度从 Doris 完整类型声明读取，避免误用外层列元数据。
+
 修改说明：包含 MassDB 品牌与页面、SQL/搜索及事务/报告处理调整、上游补丁回移，
 以及构建部署修改。FE/UI 的 Logo、favicon 和登录背景已替换，增加公司署名、
 本地开源声明和透明页脚。详细开发记录保留在源码仓库的 MODIFICATIONS.md。
 
 rc02 更新：Playground 左右面板等高，页脚在视口内统一预留空间；搜索框与刷新
-按钮对齐，侧栏拖动时编辑器随之调整，并适配窄屏显示。
+按钮对齐，侧栏拖动时编辑器随之调整，并适配窄屏显示。简化公司页脚文案，
+完整版权范围说明保留于声明页和 NOTICE。

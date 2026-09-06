@@ -14,8 +14,11 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #include "http/action/version_action.h"
+
+#include <gen_cpp/version.h>
 
 #include <string>
 
@@ -45,7 +48,7 @@ void VersionAction::handle(HttpRequest* req) {
     version_info["dorisBuildVersionMinor"] = version::doris_build_version_minor();
     version_info["dorisBuildVersionPatch"] = version::doris_build_version_patch();
     version_info["dorisBuildVersionRcVersion"] = version::doris_build_version_rc_version();
-    version_info["dorisBuildVersion"] = version::doris_build_version();
+    version_info["dorisBuildVersion"] = DORIS_PRODUCT_VERSION;
     version_info["dorisBuildHash"] = version::doris_build_hash();
     version_info["dorisBuildShortHash"] = version::doris_build_short_hash();
     version_info["dorisBuildTime"] = version::doris_build_time();

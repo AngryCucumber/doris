@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
+
 package org.apache.doris.jdbc;
 
 import org.apache.doris.common.jni.vec.ColumnType;
@@ -27,6 +29,8 @@ import org.apache.doris.thrift.TOdbcTableType;
 import com.google.common.base.Preconditions;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.ToNumberPolicy;
 import com.google.gson.reflect.TypeToken;
 import org.apache.log4j.Logger;
 
@@ -38,6 +42,7 @@ import java.sql.SQLException;
 import java.sql.Types;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.time.temporal.ChronoField;
 import java.util.List;
@@ -46,7 +51,13 @@ import java.util.stream.Collectors;
 public class MySQLJdbcExecutor extends BaseJdbcExecutor {
     private static final Logger LOG = Logger.getLogger(MySQLJdbcExecutor.class);
 
-    private static final Gson gson = new Gson();
+    // Keep the numeric text until the target type is known, preserving large integers and signed zero.
+    private static final Gson gson = new GsonBuilder()
+            .setObjectToNumberStrategy(ToNumberPolicy.LAZILY_PARSED_NUMBER).create();
+    private static final DateTimeFormatter ARRAY_DATETIME_FORMATTER = new DateTimeFormatterBuilder()
+            .appendPattern("yyyy-MM-dd HH:mm:ss")
+            .appendFraction(ChronoField.NANO_OF_SECOND, 0, 6, true)
+            .toFormatter();
 
     public MySQLJdbcExecutor(byte[] thriftParams) throws Exception {
         super(thriftParams);
@@ -233,7 +244,7 @@ public class MySQLJdbcExecutor extends BaseJdbcExecutor {
         if (columnType.getType() == Type.BOOLEAN) {
             List<?> list = gson.fromJson((String) input, List.class);
             return list.stream().map(item -> {
-                if (item instanceof Boolean) {
+                if (item == null || item instanceof Boolean) {
                     return item;
                 } else if (item instanceof Number) {
                     return ((Number) item).intValue() != 0;
@@ -244,7 +255,9 @@ public class MySQLJdbcExecutor extends BaseJdbcExecutor {
         } else if (columnType.getType() == Type.DATE || columnType.getType() == Type.DATEV2) {
             List<?> list = gson.fromJson((String) input, List.class);
             return list.stream().map(item -> {
-                if (item instanceof String) {
+                if (item == null) {
+                    return null;
+                } else if (item instanceof String) {
                     return LocalDate.parse((String) item);
                 } else {
                     throw new IllegalArgumentException("Cannot convert " + item + " to LocalDate.");
@@ -253,14 +266,10 @@ public class MySQLJdbcExecutor extends BaseJdbcExecutor {
         } else if (columnType.getType() == Type.DATETIME || columnType.getType() == Type.DATETIMEV2) {
             List<?> list = gson.fromJson((String) input, List.class);
             return list.stream().map(item -> {
-                if (item instanceof String) {
-                    return LocalDateTime.parse(
-                            (String) item,
-                            new DateTimeFormatterBuilder()
-                                    .appendPattern("yyyy-MM-dd HH:mm:ss")
-                                    .appendFraction(ChronoField.MILLI_OF_SECOND, columnType.getPrecision(),
-                                            columnType.getPrecision(), true)
-                                    .toFormatter());
+                if (item == null) {
+                    return null;
+                } else if (item instanceof String) {
+                    return LocalDateTime.parse((String) item, ARRAY_DATETIME_FORMATTER);
                 } else {
                     throw new IllegalArgumentException("Cannot convert " + item + " to LocalDateTime.");
                 }
@@ -268,7 +277,9 @@ public class MySQLJdbcExecutor extends BaseJdbcExecutor {
         } else if (columnType.getType() == Type.LARGEINT) {
             List<?> list = gson.fromJson((String) input, List.class);
             return list.stream().map(item -> {
-                if (item instanceof Number) {
+                if (item == null) {
+                    return null;
+                } else if (item instanceof Number) {
                     return new BigDecimal(item.toString()).toBigInteger();
                 } else if (item instanceof String) {
                     return new BigDecimal((String) item).toBigInteger();
@@ -281,6 +292,9 @@ public class MySQLJdbcExecutor extends BaseJdbcExecutor {
             List<?> rawList = gson.fromJson((String) input, List.class);
             return rawList.stream()
                     .map(element -> {
+                        if (element == null) {
+                            return null;
+                        }
                         String elementJson = gson.toJson(element);
                         return convertArray(elementJson, childType);
                     })
