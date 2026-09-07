@@ -65,7 +65,7 @@
         "sourceBaseline": "source baseline",
         "entity": "Product entity",
         "copyright": "Copyright and licensing",
-        "copyrightBody": "MassDB SQL is based on Apache Doris. Company copyright notices apply only to modifications and original content in which the company owns the relevant rights. Apache Doris and other upstream and third-party components retain their respective copyrights and licenses. Applicable terms are supplied with this distribution.",
+        "copyrightBody": "MassDB SQL is based on Apache Doris. The company claims copyright only in modifications and additions for which it holds the relevant rights. Apache Doris and other upstream and third-party components retain their respective copyrights and licenses. Previously granted licenses remain applicable.",
         "apache": "Apache software attribution",
         "apacheBody": "This product includes software developed by The Apache Software Foundation. Original upstream copyright and attribution notices are retained in NOTICE below.",
         "upstreamSource": "View upstream source baseline",

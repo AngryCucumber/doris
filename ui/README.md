@@ -89,9 +89,15 @@ release preflight reject a mismatch. Component packaging copies the source NOTIC
 After changing the company names or years, use
 `python3 build-support/prepare-product-notices.py --company-notice` from the root
 to obtain the replacement company addendum, preserving all upstream notices, then
-run the same script with `--check-company-notice`. New implementation file licensing and the
-historical package `ISC` metadata remain separate decisions in the
-[implementation plan](../docs/massdb-sql-copyright-productization-plan.md).
+run the same script with `--check-company-notice`. A02 is confirmed: company-owned
+new implementation files use `LicenseRef-MassDB-Commercial`, with existing Apache
+and third-party grants preserved. `package.json` and its lockfile point to
+`LICENSE.txt`, a checked copy of `../LICENSE-MASSDB.txt`. The historical upstream
+`ISC` metadata is recorded in the [implementation plan](../docs/massdb-sql-copyright-productization-plan.md);
+the scope notice does not revoke any earlier grant. FE packaging and static
+resources include `legal/LICENSE-MASSDB.txt`. At the maintainer's request, the
+public page temporarily omits the commercial summary and company license
+reader/download entry; company copyright and open-source notices remain visible.
 
 The root `build.sh` validates normal and `CUSTOM_UI_DIST` bundles before copying
 them into FE resources and checks the resulting JAR. With `DISABLE_BUILD_UI=ON`,
@@ -133,11 +139,12 @@ tree is clean; use a committed clean checkout or a verified Git export.
 MassDB `2.0.5` remains its own product version, independently of the
 Apache Doris `4.0.5-rc01` source baseline.
 
-New implementation files have explicit pending-license headers registered in
-`dist/source-headers.json`. Run `python3 build-support/check-source-headers.py`
-from the repository root; `--release` intentionally fails until A02 is resolved.
-The remaining files still undergo License Eyes checks. This transition does not
-grant a license or permit release of the unresolved files.
+The 11 independent implementation files use the company commercial header;
+four earlier independent Apache files retain their original grants. Run
+`python3 build-support/check-source-headers.py --release` from the repository
+root to verify these files, upstream headers, license texts and npm metadata.
+Future pending files still block release. Other files undergo License Eyes;
+passing source-header checks does not complete third-party or contract review.
 
 To inventory a complete assembled package (outside `ui/`), run:
 

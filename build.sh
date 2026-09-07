@@ -131,6 +131,7 @@ clean_fe() {
 # Copy the common files like licenses, notice.txt to output folder
 function copy_common_files() {
     cp -r -p "${DORIS_HOME}/NOTICE.txt" "$1/"
+    cp -r -p "${DORIS_HOME}/LICENSE-MASSDB.txt" "$1/"
     cp -r -p "${DORIS_HOME}/dist/NOTICE-dist.txt" "$1/"
     cp -r -p "${DORIS_HOME}/dist/LICENSE-dist.txt" "$1/"
     cp -r -p "${DORIS_HOME}/dist/RELEASE-NOTES.txt" "$1/"

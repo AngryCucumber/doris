@@ -65,7 +65,7 @@
         "sourceBaseline": "源码基线",
         "entity": "产品主体",
         "copyright": "版权与许可",
-        "copyrightBody": "MassDB SQL 基于 Apache Doris 开发。公司版权声明仅适用于公司实际拥有权利的修改与原创内容。Apache Doris 及其他上游、第三方组件保留各自版权与许可证，各部分的适用授权以随发行提供的许可文件为准。",
+        "copyrightBody": "MassDB SQL 基于 Apache Doris 开发。公司仅就依法享有权利的修改和新增内容主张版权。Apache Doris 及其他上游、第三方组件保留各自版权与许可证；已经授予的许可继续有效。",
         "apache": "Apache 软件来源声明",
         "apacheBody": "本产品包含 The Apache Software Foundation 开发的软件。上游原始版权和归属信息保留在下方 NOTICE 中。",
         "upstreamSource": "查看上游源码基线",

@@ -1,6 +1,9 @@
-# MassDB SQL implementation.
-# Licensing decision pending (A02); see dist/source-headers.json.
-# This file does not assert an ASF contributor agreement.
+# Copyright (c) 2026
+# 厦门市美亚柏科信息安全研究所有限公司
+# Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+# SPDX-License-Identifier: LicenseRef-MassDB-Commercial
+# Use is governed by LICENSE-MASSDB.txt and a separate agreement with the company.
+# Upstream and third-party components retain their respective licenses.
 """Exercise distribution checks against the actual UI build and isolated packages."""
 
 import importlib.util
@@ -38,6 +41,15 @@ class ProductNoticesTest(unittest.TestCase):
     def test_missing_license_is_rejected(self):
         (self.ui / "legal/licenses/LICENSE-LGPL.txt").unlink()
         with self.assertRaisesRegex(ValueError, "Missing or unsafe resource"):
+            notices.check_ui(self.ui)
+
+    def test_company_license_is_required_even_if_removed_from_the_manifest(self):
+        (self.ui / "legal/LICENSE-MASSDB.txt").unlink()
+        path = self.ui / "legal/manifest.json"
+        manifest = json.loads(path.read_text())
+        manifest["files"] = [row for row in manifest["files"] if row["path"] != "legal/LICENSE-MASSDB.txt"]
+        path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "Missing legal resources.*LICENSE-MASSDB"):
             notices.check_ui(self.ui)
 
     def test_html_fallback_is_rejected_even_with_matching_hash(self):
@@ -144,6 +156,8 @@ class ProductNoticesTest(unittest.TestCase):
             self.assertEqual(archive.read("org/example/Runtime.class"), b"unchanged class bytes")
             self.assertTrue(all("static/" + name not in archive.namelist() for name in notices.UI_AUDIT_FILES))
             self.assertIn("static/legal/NOTICE.txt", archive.namelist())
+            self.assertEqual(archive.read("static/legal/LICENSE-MASSDB.txt"),
+                             (notices.ROOT / "LICENSE-MASSDB.txt").read_bytes())
             entries = {entry.filename: archive.read(entry) for entry in archive.infolist()}
         with self.assertRaisesRegex(ValueError, "requires --ui-dist"):
             notices.check_fe_jar(jar)
@@ -178,6 +192,7 @@ class ProductNoticesTest(unittest.TestCase):
         data["mariadb"]["jarSha256"] = notices.file_digest(jdbc)
         (source / "BUILD-STATUS.md").write_text("Internal discussion")
         (source / "be/NOTICE.txt").write_text("Old notice")
+        (source / "be/LICENSE-MASSDB.txt").write_text("Old company notice")
         symbols = source / "be/lib/debug_info/doris_be.dbg"
         symbols.parent.mkdir()
         symbols.write_bytes(b"private symbols")
@@ -198,6 +213,10 @@ class ProductNoticesTest(unittest.TestCase):
         self.assertFalse((package / "be/lib/debug_info").exists())
         self.assertFalse((package / "be/NOTICE.txt").exists())
         self.assertFalse((package / "fe/legal/manifest.json").exists())
+        self.assertEqual((package / "fe/legal/LICENSE-MASSDB.txt").read_bytes(),
+                         (notices.ROOT / "LICENSE-MASSDB.txt").read_bytes())
+        self.assertIn("fe/legal/LICENSE-MASSDB.txt", (package / "LICENSE.txt").read_text())
+        self.assertFalse((package / "be/LICENSE-MASSDB.txt").exists())
         self.assertTrue((package / "fe/legal/licenses/LICENSE-LGPL.txt").is_file())
         self.assertTrue((package / "fe/legal/sources/mariadb-connector-j-3.0.9.tar.gz").is_file())
         self.assertTrue((audit / "SHA256SUMS").is_file())
@@ -495,9 +514,11 @@ if '--assemble-package' in sys.argv:
 
     def header_fixture(self):
         policy = json.loads((notices.ROOT / "dist/source-headers.json").read_text())
-        files = policy["pending"] + policy["apache"] + list(policy["modifiedUpstream"])
+        files = policy["pending"] + policy["apache"] + policy["commercial"] + list(policy["modifiedUpstream"])
         files += ["dist/source-headers.json", "dist/product-provenance.json", ".licenserc.yaml", ".gitattributes",
-                  "dist/headers/apache-2.0.txt", "fe/check/checkstyle/checkstyle.xml"]
+                  "dist/headers/apache-2.0.txt", "dist/headers/massdb-commercial.txt",
+                  "LICENSE-MASSDB.txt", "ui/LICENSE.txt", "ui/package.json", "ui/package-lock.json",
+                  "fe/check/checkstyle/checkstyle.xml"]
         root = self.root / "headers"
         for name in set(files):
             target = root / name
@@ -507,19 +528,60 @@ if '--assemble-package' in sys.argv:
 
     def test_pending_headers_allow_review_but_block_release(self):
         root, policy = self.header_fixture()
+        self.assertEqual(headers.check(root, release=True)[0], 0)
+        name = policy["commercial"].pop(0)
+        policy["pending"].append(name)
+        (root / "dist/source-headers.json").write_text(json.dumps(policy))
+        path = root / name
+        path.write_text(headers.pending_header(path) + "// Test future undecided source\n")
         headers.check(root)
         with self.assertRaisesRegex(ValueError, "Release blocked: licensing decision A02"):
             headers.check(root, release=True)
-        path = root / policy["pending"][0]
         path.write_text("// Header removed\n")
         with self.assertRaisesRegex(ValueError, "Missing or changed pending-license header"):
             headers.check(root)
+
+    def test_commercial_header_and_license_scope_cannot_be_omitted(self):
+        root, policy = self.header_fixture()
+        name = policy["commercial"][0]
+        path = root / name
+        original = path.read_text()
+        for before in ["Copyright (c) 2026", "LicenseRef-MassDB-Commercial", "LICENSE-MASSDB.txt"]:
+            with self.subTest(before=before):
+                path.write_text(original.replace(before, "Removed", 1))
+                with self.assertRaisesRegex(ValueError, "Invalid company commercial header"):
+                    headers.check(root, release=True)
+        path.write_text(original)
+        for name, error in [("LICENSE-MASSDB.txt", "Company license text differs"),
+                            ("ui/LICENSE.txt", "UI license text differs"),
+                            ("ui/package.json", "UI package/lockfile license differs")]:
+            with self.subTest(name=name):
+                path = root / name
+                original = path.read_text()
+                if path.suffix == ".json":
+                    data = json.loads(original)
+                    data["license"] = "ISC"
+                    path.write_text(json.dumps(data))
+                else:
+                    path.write_text("Removed\n")
+                with self.assertRaisesRegex(ValueError, error):
+                    headers.check(root, release=True)
+                path.write_text(original)
+
+    def test_commercial_registry_requires_matching_authorization_decision(self):
+        root, policy = self.header_fixture()
+        path = root / "dist/product-provenance.json"
+        company = json.loads(path.read_text())
+        company["newCodeLicense"] = None
+        path.write_text(json.dumps(company))
+        with self.assertRaisesRegex(ValueError, "differs from the A02 decision"):
+            headers.check(root, release=True)
 
     def test_header_checks_respect_explicit_source_archive_exclusions(self):
         root, policy = self.header_fixture()
         name = next(name for name in policy["modifiedUpstream"] if name.startswith("regression-test/"))
         (root / name).unlink()
-        self.assertEqual(headers.check(root)[2], len(policy["modifiedUpstream"]) - 1)
+        self.assertEqual(headers.check(root)[3], len(policy["modifiedUpstream"]) - 1)
         (root / ".git").mkdir()
         with self.assertRaises(FileNotFoundError):
             headers.check(root)

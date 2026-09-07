@@ -1,0 +1,6 @@
+Copyright (c) {copyrightYears}
+{companyZh}
+{companyEn}
+SPDX-License-Identifier: LicenseRef-MassDB-Commercial
+Use is governed by LICENSE-MASSDB.txt and a separate agreement with the company.
+Upstream and third-party components retain their respective licenses.
