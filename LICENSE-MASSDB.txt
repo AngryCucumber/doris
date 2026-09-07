@@ -1,0 +1,68 @@
+MassDB SQL Proprietary License Notice
+SPDX-License-Identifier: LicenseRef-MassDB-Commercial
+
+Copyright (c) 2026
+厦门市美亚柏科信息安全研究所有限公司
+Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+
+1. Scope
+
+This notice covers only original additions and modifications for which the
+company named above holds the relevant rights and that have not been licensed
+under other terms. Independently authored files covered by this notice carry
+the identifier LicenseRef-MassDB-Commercial. The source distribution records
+these files in dist/source-headers.json.
+
+Apache Doris code, upstream backports, third-party components, and content
+already licensed under Apache 2.0 or another license retain their respective
+licenses. This notice does not revoke any license previously granted or
+assert company ownership of those components.
+
+2. Commercial authorization
+
+Rights in the covered company code are reserved. Use, reproduction,
+modification and distribution of that code require authorization under a
+separate agreement with the company, except as permitted by applicable law
+or the third-party rights described below. Possession of source or binary
+copies does not itself grant a general license to the covered company code.
+Customer-specific rights, fees, duration, support and service commitments
+are determined by the applicable agreement; this notice does not set them.
+
+3. Open-source and third-party rights
+
+The applicable open-source or third-party license takes precedence over any
+conflicting company restriction for the rights that license grants. Retain
+the applicable license texts, copyright notices and attributions. Company
+terms do not restrict rights already received under Apache 2.0 or another
+applicable open-source license.
+
+In particular, where LGPL 2.1 section 6 applies to a combined work, company
+terms permit users to modify that work for their own use and to reverse-engineer
+it to debug those changes. Users retain applicable rights to obtain library
+source and to replace or relink the LGPL library. Required notices, source
+and replacement/relinking materials remain governed by the library's license.
+This notice does not claim that every platform binary contains the same libraries.
+
+See the accompanying LICENSE.txt, NOTICE.txt and component license texts.
+In the full installation, component materials are under fe/legal/; the FE's
+public copyright page also provides the relevant license texts.
+
+中文说明
+
+本声明仅适用于公司实际拥有相关权利、且未按其他条款授权的原创新增内容和
+修改。标注 LicenseRef-MassDB-Commercial 的独立文件采用本声明；源码发行中的
+dist/source-headers.json 记录其文件范围。
+
+Apache Doris 原有代码、上游回移补丁、第三方组件及已按 Apache 2.0 或其他
+许可证授权的内容，继续适用各自许可证。本声明不撤销已经授予的许可，也不
+主张这些内容归公司所有。
+
+本声明覆盖的公司代码保留相关权利。除适用法律或下述第三方权利允许的情形外，
+使用、复制、修改和分发应取得公司另行签订的协议授权。持有源码或二进制副本
+本身不构成一般授权。客户具体权限、费用、期限、支持和服务承诺由相应协议约定。
+
+对于开源或第三方许可证授予的权利，如公司条款与之冲突，以相应许可证为准。
+应保留适用的许可正文、版权和归属声明。适用 LGPL 2.1 第 6 条时，公司条款允许
+用户为自身使用而修改组合程序，并为调试这些修改进行逆向工程；用户取得库源码、
+替换或重链接库的适用权利予以保留。相关声明、源码与替换或重链接材料按对应
+许可证履行。本声明不宣称所有平台二进制均包含相同的库。

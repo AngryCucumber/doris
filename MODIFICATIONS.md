@@ -4,6 +4,43 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## FE company license display (2026-09-07)
+
+At the maintainer's request, the FE copyright page temporarily omits the
+company proprietary license reader, download link and commercial summary in
+both languages. Company copyright, upstream attribution and open-source
+readers remain visible. The commercial license decision, source headers and
+license files in the installation and static resources remain unchanged.
+
+## A02 company license decision (2026-09-07)
+
+The maintainer confirmed a proprietary commercial policy for company-owned
+additions and modifications not already licensed under other terms. Earlier
+Apache grants, upstream backports and third-party rights are retained. Historical
+pending-license statements later in this file describe the earlier review state.
+
+- `LICENSE-MASSDB.txt`, `dist/headers/massdb-commercial.txt`,
+  `dist/product-provenance.json`, `dist/source-headers.json`: record the scope,
+  agreement-based authorization and open-source exceptions. Move 11 independent
+  files from pending to `LicenseRef-MassDB-Commercial`; retain the four existing
+  independent Apache files and all original upstream headers.
+- `build-support/check-source-headers.py`, `.licenserc.yaml`,
+  `fe/check/checkstyle/checkstyle.xml`: validate commercial and Apache headers,
+  license text hashes and npm references; keep rejection of future pending files.
+- `ui/LICENSE.txt`, `ui/package{,-lock}.json`: point current package metadata to
+  the complete scope notice, preserving any rights previously granted under the
+  upstream package's historical ISC declaration.
+- `build.sh`, `build-support/prepare-product-notices.py`, `dist/LICENSE-dist.txt`:
+  carry the commercial notice in component builds and `fe/legal/` in the full
+  package; the root license points to that location without extra root files.
+- The public UI legal page adds a company-license reader and download, with
+  Chinese/English scope text. Source-header, package and browser checks cover
+  missing/mismatched notices and preserved third-party rights. Contributor guides
+  and the implementation plan record the decision and remaining release work.
+
+This licensing change does not alter SQL execution or storage code. It does not
+complete third-party license review or determine customer-specific contract terms.
+
 ## Product version presentation (2026-09-07)
 
 - `fe/be-java-extensions/jdbc-scanner/src/main/java/org/apache/doris/jdbc/MySQLJdbcExecutor.java`:

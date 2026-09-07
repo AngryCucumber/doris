@@ -4,7 +4,7 @@
     "companyEn": "Xiamen Meiya Pico Information Security Research Institute Co., Ltd.",
     "copyrightYears": "2026",
     "companyCopyrightConfirmed": true,
-    "newCodeLicense": null,
+    "newCodeLicense": "LicenseRef-MassDB-Commercial",
     "upstream": {
         "name": "Apache Doris",
         "sourceVersion": "4.0.5-rc01",
@@ -26,5 +26,11 @@
         "jarUrl": "https://repo.maven.apache.org/maven2/org/mariadb/jdbc/mariadb-java-client/3.0.9/mariadb-java-client-3.0.9.jar",
         "jarSha256": "2a004c8ab43173a2a0d10d25aadfc57b8012fe1f68bbd816196df814b5000c1a"
     },
-    "versionPolicy": "independent-product-version"
+    "versionPolicy": "independent-product-version",
+    "licenseDecision": {
+        "confirmedOn": "2026-09-07",
+        "authority": "Maintainer confirmation in this repository task",
+        "scope": "Company-owned original additions and modifications not already licensed under other terms; existing Apache and third-party grants retained.",
+        "textSha256": "2f68cfd5033012e4eaca8ee5f53df486a0373bd8d97e7272f6fa3906b4b6ba70"
+    }
 }

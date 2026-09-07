@@ -25,13 +25,17 @@ python3 build-support/prepare-product-notices.py --check-company-notice
 
 ## 哪些材料需要随包
 
+2026-09-07 按维护者要求，FE 声明页暂不展示公司商业许可正文、阅读/下载入口和
+商业许可简介。公司署名、Apache 及第三方开源声明继续展示；包内与静态资源中的
+`LICENSE-MASSDB.txt` 保留，许可决定及文件内容不因页面展示调整而改变。
+
 Apache 2.0 要求交付许可证、保留适用归属，并在修改文件中作显著修改说明，
 没有指定以下构建报告的文件名。NOTICE 可以追加公司归属，但不能借此改变
 许可证。[Apache 2.0 第 4 条](https://www.apache.org/licenses/LICENSE-2.0)
 
 | 文件或材料 | 客户安装包的处理 |
 | --- | --- |
-| `LICENSE.txt`、适用 `NOTICE`、许可正文 | 保留。完整包根目录为 LICENSE/NOTICE，详细组件许可集中于 `fe/legal/`；去除 BE/MS/Broker 根目录的重复副本 |
+| `LICENSE.txt`、适用 `NOTICE`、许可正文 | 保留。完整包根目录为 LICENSE/NOTICE，公司商业许可正文为 `fe/legal/LICENSE-MASSDB.txt`，根 LICENSE 提供范围与位置指引；详细组件许可集中于 `fe/legal/`，去除 BE/MS/Broker 根目录的重复副本 |
 | `BUILD-INFO.json`、`BUILD-STATUS.md` | 不随包。版本、来源、安装方法和验收状态合并到 `README.txt`；构建参数与过程记录留内部 |
 | `MODIFICATIONS.md` | 详细开发历史不随包；README 保留产品修改摘要，原文件中的修改声明继续保留。源码头中的该文件名指向源码仓库历史，不是安装依赖；UI 已不再复制此文档 |
 | `NATIVE-LINK-EVIDENCE.json`、原始链接日志 | 不随包。已调整许可证目录的引用，避免悬空路径和套用历史二进制结论；当前二进制哈希与外部证据仍须核验 |

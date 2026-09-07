@@ -26,7 +26,7 @@ Keep only the latest package/archive/checksum in `output/`; compress matching au
 
 ## Coding Style & Naming Conventions
 
-Use UTF-8, LF endings, and four-space indentation for Java, C++, Python, and shell. Format C++ with clang-format 16 using `.clang-format` (100 columns). Java uses Checkstyle (120 columns): run `(cd fe && mvn checkstyle:check)`. Follow existing `PascalCase` classes, Java `camelCase` members, and C++ `snake_case` functions. Preserve upstream headers; add modification notices and update `MODIFICATIONS.md`. Follow `dist/source-headers.json` for independent headers; run `python3 build-support/check-source-headers.py`.
+Use UTF-8, LF endings, and four-space indentation for Java, C++, Python, and shell. Format C++ with clang-format 16 using `.clang-format` (100 columns). Java uses Checkstyle (120 columns): run `(cd fe && mvn checkstyle:check)`. Follow existing `PascalCase` classes, Java `camelCase` members, and C++ `snake_case` functions. Preserve upstream headers; add modification notices and update `MODIFICATIONS.md`. Follow `dist/source-headers.json` for independent headers; run `python3 build-support/check-source-headers.py`. Company-owned new files use `dist/headers/massdb-commercial.txt` under `LICENSE-MASSDB.txt`; preserve earlier Apache and third-party grants.
 
 ## Testing Guidelines
 

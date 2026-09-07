@@ -1,6 +1,7 @@
 {
-  "schemaVersion": 1,
-  "pending": [
+  "schemaVersion": 2,
+  "pending": [],
+  "commercial": [
     "ui/src/constants/branding.ts",
     "ui/src/components/legal-footer/index.tsx",
     "ui/src/components/legal-footer/index.less",

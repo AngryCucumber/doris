@@ -1,6 +1,9 @@
-// MassDB SQL implementation.
-// Licensing decision pending (A02); see dist/source-headers.json.
-// This file does not assert an ASF contributor agreement.
+// Copyright (c) 2026
+// 厦门市美亚柏科信息安全研究所有限公司
+// Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+// SPDX-License-Identifier: LicenseRef-MassDB-Commercial
+// Use is governed by LICENSE-MASSDB.txt and a separate agreement with the company.
+// Upstream and third-party components retain their respective licenses.
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const http = require('node:http');
@@ -66,6 +69,9 @@ test('legal notices remain public, local and usable under deployment prefixes', 
             await page.getByRole('link', { name: 'Download', exact: true }).first().click();
             const download = await downloaded;
             assert.match(fs.readFileSync(await download.path(), 'utf8'), /GNU LESSER GENERAL PUBLIC LICENSE/);
+            assert.equal(await page.getByRole('button', { name: 'Read company proprietary license and scope', exact: true }).count(), 0);
+            assert.equal(await page.locator('a[href$="/legal/LICENSE-MASSDB.txt"]').count(), 0);
+            assert.doesNotMatch(await page.locator('main').innerText(), /company proprietary commercial notice/);
             const noticeButton = page.getByRole('button', { name: 'Read NOTICE attributions', exact: true });
             for (const response of [
                 { contentType: 'text/html', body: '<html>SPA fallback</html>' },
@@ -104,6 +110,9 @@ test('legal notices remain public, local and usable under deployment prefixes', 
             await page.waitForURL(origin + prefix + '/legal-notices');
             await page.getByRole('button', { name: '中文', exact: true }).click();
             await page.getByRole('heading', { name: 'MassDB SQL — 版权与开源声明', exact: true }).waitFor();
+            assert.equal(await page.getByRole('button', { name: '阅读公司专有许可与适用范围', exact: true }).count(), 0);
+            assert.equal(await page.locator('a[href$="/legal/LICENSE-MASSDB.txt"]').count(), 0);
+            assert.doesNotMatch(await page.locator('main').innerText(), /公司专有商业许可/);
             await page.getByRole('button', { name: 'English', exact: true }).click();
             await page.getByRole('link', { name: 'Back to product', exact: true }).click();
             await page.waitForURL(origin + prefix + '/home');

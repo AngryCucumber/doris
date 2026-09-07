@@ -57,7 +57,10 @@ Preserve [LICENSE.txt](LICENSE.txt), [NOTICE.txt](NOTICE.txt) and applicable
 [distribution licenses](dist/LICENSE-dist.txt). Third-party components retain
 their respective licenses. Review [thirdparty/LICENSE.txt](thirdparty/LICENSE.txt)
 for upstream component-specific license choices and optional build switches.
-New-code licensing, company copyright scope and
+Company-owned additions and modifications not already licensed under other terms
+are covered by [LICENSE-MASSDB.txt](LICENSE-MASSDB.txt). Existing Apache and
+third-party grants remain applicable; the independent-file registry is
+[dist/source-headers.json](dist/source-headers.json). Company copyright scope and
 remaining release-material work are recorded in the
 [copyright implementation plan](docs/massdb-sql-copyright-productization-plan.md).
 The current engineering work does not establish completion of that release review.

@@ -45,6 +45,10 @@ Do not put ASF contributor-agreement statements on independently authored
 files. Confirm the applicable license and rights holder before adding new
 copyright or license claims. The current unresolved decisions and evidence
 requirements are in the [copyright plan](docs/massdb-sql-copyright-productization-plan.md).
+Company-owned new files use the commercial template in
+`dist/headers/massdb-commercial.txt` and must be registered in
+`dist/source-headers.json`; see [LICENSE-MASSDB.txt](LICENSE-MASSDB.txt).
+Preserve earlier grants and determine rights separately for external contributions.
 Keep contracts and identity records in the restricted evidence store; only
 non-sensitive evidence references belong in this repository.
 

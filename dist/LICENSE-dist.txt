@@ -1,3 +1,11 @@
+MassDB SQL distribution license scope
+
+Company-owned original additions and modifications not already licensed under
+other terms are covered by LICENSE-MASSDB.txt. Upstream Apache Doris code,
+upstream backports and third-party components retain their respective licenses.
+Existing license grants are preserved. The Apache 2.0 text below applies to
+Apache-licensed portions; it does not assign one license to the whole product.
+
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/

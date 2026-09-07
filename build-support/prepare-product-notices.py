@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-# MassDB SQL implementation.
-# Licensing decision pending (A02); see dist/source-headers.json.
-# This file does not assert an ASF contributor agreement.
+# Copyright (c) 2026
+# 厦门市美亚柏科信息安全研究所有限公司
+# Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+# SPDX-License-Identifier: LicenseRef-MassDB-Commercial
+# Use is governed by LICENSE-MASSDB.txt and a separate agreement with the company.
+# Upstream and third-party components retain their respective licenses.
 """Prepare and verify product notices without placing source archives in the UI."""
 
 import sys
@@ -317,12 +320,17 @@ def check_company_notice(data=None):
 def notice_files():
     data = metadata()
     check_company_notice(data)
+    commercial = read_text(ROOT / "LICENSE-MASSDB.txt")
+    if (data["newCodeLicense"] != "LicenseRef-MassDB-Commercial"
+            or digest(commercial.encode("utf-8")) != data["licenseDecision"]["textSha256"]):
+        raise ValueError("Company license text differs from the recorded A02 decision")
     notices = read_text(ROOT / "NOTICE.txt")
     distribution = read_text(ROOT / "dist/NOTICE-dist.txt")
     if distribution.strip() not in notices:
         notices += "\n\nDistribution component notices\n\n" + distribution
     files = {
         "LICENSE.txt": read_text(ROOT / "dist/LICENSE-dist.txt"),
+        "LICENSE-MASSDB.txt": commercial,
         "NOTICE.txt": notices,
         "MARIADB-NOTICE.txt": "\n".join([
             f"{data['mariadb']['name']} {data['mariadb']['version']}",
@@ -358,7 +366,7 @@ def check_ui(directory):
     manifest = json.loads(read_text(root / "legal/manifest.json"))
     if manifest.get("schemaVersion") != 1:
         raise ValueError("Unsupported legal manifest")
-    required = {"legal/LICENSE.txt", "legal/NOTICE.txt", "legal/THIRD-PARTY-NOTICES.txt",
+    required = {"legal/LICENSE.txt", "legal/LICENSE-MASSDB.txt", "legal/NOTICE.txt", "legal/THIRD-PARTY-NOTICES.txt",
                 "legal/MARIADB-NOTICE.txt", "legal/SOURCE-ACCESS.txt",
                 "legal/components.json", "legal/sbom.cdx.json",
                 "legal/licenses/LICENSE-LGPL.txt"}
@@ -522,7 +530,7 @@ def assemble_package(source, destination, audit, ui_dist, fe_directory=None, nat
         shutil.copy2(ui_dist / name, target)
     shutil.copy2(ROOT / "MODIFICATIONS.md", audit / "MODIFICATIONS.md")
     (audit / "PRODUCT-PROVENANCE.json").write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
-    excluded = {"legal", "licenses", "LICENSE.txt", "LICENSE-dist.txt", "NOTICE.txt", "NOTICE-dist.txt",
+    excluded = {"legal", "licenses", "LICENSE.txt", "LICENSE-MASSDB.txt", "LICENSE-dist.txt", "NOTICE.txt", "NOTICE-dist.txt",
                 "RELEASE-NOTES.txt", "MODIFICATIONS.md", "NATIVE-LINK-EVIDENCE.json", "BUILD-INFO.json",
                 "BUILD-STATUS.md", "BUILD-SOURCE.patch", "BUILD-SOURCE-HASHES.json", "PRODUCT-PROVENANCE.json",
                 "SHA256SUMS"}
@@ -546,8 +554,14 @@ def assemble_package(source, destination, audit, ui_dist, fe_directory=None, nat
         (fe / name).unlink(missing_ok=True)
     customer_fe_jar(fe / "lib/doris-fe.jar")
     check_fe_jar(fe / "lib/doris-fe.jar", ui_dist)
-    (destination / "LICENSE.txt").write_text(read_text(ROOT / "LICENSE.txt") +
-        "\nAdditional component licenses: fe/legal/LICENSE.txt and fe/legal/licenses/.\n", encoding="utf-8")
+    (destination / "LICENSE.txt").write_text(
+        "MassDB SQL license scope\n\n"
+        "Company-owned code not already licensed under other terms is covered by\n"
+        "the commercial notice at fe/legal/LICENSE-MASSDB.txt. Previously granted\n"
+        "licenses and upstream/third-party rights remain applicable.\n"
+        "Additional component licenses: fe/legal/LICENSE.txt and fe/legal/licenses/.\n\n"
+        "The Apache 2.0 text below applies to the Apache-licensed portions.\n\n" +
+        read_text(ROOT / "LICENSE.txt"), encoding="utf-8")
     (destination / "NOTICE.txt").write_text(inputs["files"]["NOTICE.txt"], encoding="utf-8")
     (destination / "README.txt").write_text(
         f"{data['productVersion']}\n\n"
@@ -562,6 +576,7 @@ def assemble_package(source, destination, audit, ui_dist, fe_directory=None, nat
         "5. Cloud Meta Service 位于 ms/；Broker、Hive UDF 位于 extensions/，FDB 工具位于 tools/。\n\n"
         "版权与材料\n"
         "公司及上游归属见 NOTICE.txt；组件许可正文集中在 fe/legal/。\n"
+        "公司专有许可范围见 fe/legal/LICENSE-MASSDB.txt；已有开源许可继续适用。\n"
         "MariaDB 对应源码及替换说明见 fe/legal/FE-SOURCE-ACCESS.txt。\n"
         "FE 登录前后均可打开版权与开源声明页。仅分发某一组件时须携带其适用声明及源码材料。\n"
         "调试符号和构建审阅记录单独保存，不是运行依赖。\n\n" +
