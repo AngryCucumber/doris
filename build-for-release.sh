@@ -35,6 +35,7 @@ Usage: $0 --version version <options>
      [no option]        build with avx2
      --noavx2           build without avx2
      --tar              pack the output
+     -j jobs            set Backend and Cloud build parallelism
 
   Programs and optional archives: output/
   Compressed internal records: .build-records/
@@ -50,7 +51,7 @@ Usage: $0 --version version <options>
 
 if ! OPTS="$(getopt \
     -n "$0" \
-    -o '' \
+    -o 'j:' \
     -l 'noavx2' \
     -l 'tar' \
     -l 'version:' \
@@ -65,6 +66,7 @@ _USE_AVX2=1
 TAR=0
 HELP=0
 VERSION=
+BUILD_PARALLEL=()
 if [[ "$#" == 1 ]]; then
     _USE_AVX2=1
 else
@@ -80,6 +82,14 @@ else
             ;;
         --version)
             VERSION="$2"
+            shift 2
+            ;;
+        -j)
+            if [[ ! "$2" =~ ^[1-9][0-9]*$ ]]; then
+                echo "Invalid parallelism: expected a positive integer" >&2
+                exit 1
+            fi
+            BUILD_PARALLEL=(-j "$2")
             shift 2
             ;;
         --help)
@@ -183,9 +193,12 @@ echo "BE:    ${OUTPUT_BE}"
 echo "CLOUD: ${OUTPUT_CLOUD}"
 echo "JAR:   ${OUTPUT_EXT}"
 
-bash "${ROOT}/build.sh" --clean
-USE_AVX2="${_USE_AVX2}" bash "${ROOT}/build.sh" --output "${COMPONENTS}"
-USE_AVX2="${_USE_AVX2}" bash "${ROOT}/build.sh" --be --meta-tool --be-extension-ignore avro-scanner --output "${COMPONENTS}"
+USE_AVX2="${_USE_AVX2}" bash "${ROOT}/build.sh" \
+    --fe --be --cloud --broker --hive-udf --clean \
+    "${BUILD_PARALLEL[@]}" --output "${COMPONENTS}"
+USE_AVX2="${_USE_AVX2}" bash "${ROOT}/build.sh" \
+    --be --meta-tool --be-extension-ignore avro-scanner \
+    "${BUILD_PARALLEL[@]}" --output "${COMPONENTS}"
 
 echo "Begin to pack"
 mkdir -p "${COMPONENTS}/hive-udf/lib"

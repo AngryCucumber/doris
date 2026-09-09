@@ -4,6 +4,17 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## Complete rc02 release builds (2026-09-09)
+
+- `build-for-release.sh`: explicitly select FE, BE, Cloud/MS, Broker and Hive UDF
+  for the full build. Apply `--clean` to those selected components so Cloud is
+  rebuilt as well; passing only `--output` previously selected no components.
+  Preserve both AVX2 variants and add a validated `-j` option for the full build
+  and the subsequent BE metadata-tool build on hosts with limited memory.
+- `build-support/test_product_notices.py`: exercise the real component argument
+  parser from the release fixtures. Verify complete component selection, clean
+  rebuilds, CPU mode, job limits, invalid job counts and failure before publication.
+
 ## FE company license display (2026-09-07)
 
 At the maintainer's request, the FE copyright page temporarily omits the

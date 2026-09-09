@@ -321,18 +321,20 @@ class ProductNoticesTest(unittest.TestCase):
         udf = checkout / "fe/hive-udf/target/hive-udf.jar"
         udf.parent.mkdir(parents=True)
         udf.write_bytes(b"fixture udf")
-        (checkout / "build.sh").write_text('''#!/usr/bin/env bash
-set -e
-printf '%s\\n' "$*" >> "$(dirname "$0")/build-calls.txt"
-while [[ "$#" -gt 0 ]]; do
-    if [[ "$1" == "--output" ]]; then
-        mkdir -p "$2"
-        printf 'partial build input' > "$2/partial.txt"
-        if [[ "${MASSDB_TEST_FAIL_BUILD:-0}" == "1" ]]; then exit 37; fi
-        break
-    fi
-    shift
-done
+        # Use build.sh's real parser so a release invocation that omits component
+        # flags cannot pass simply because a stub accepts --output.
+        build = (notices.ROOT / "build.sh").read_text().split("# Fail before third-party compilation")[0]
+        (checkout / "env.sh").write_text("")
+        (checkout / "build.sh").write_text(build + '''
+printf '%s %s %s %s %s %s %s %s %s %s %s\\n' \\
+    "$BUILD_FE" "$BUILD_BE" "$BUILD_CLOUD" "$BUILD_BROKER" "$BUILD_HIVE_UDF" \\
+    "$BUILD_BE_JAVA_EXTENSIONS" "$BUILD_BE_CDC_CLIENT" "$BUILD_META_TOOL" \\
+    "$CLEAN" "${USE_AVX2:-unset}" "$PARALLEL" >> "${DORIS_HOME}/build-calls.txt"
+if [[ -n "${DORIS_OUTPUT}" ]]; then
+    mkdir -p "${DORIS_OUTPUT}"
+    printf 'partial build input' > "${DORIS_OUTPUT}/partial.txt"
+    if [[ "${MASSDB_TEST_FAIL_BUILD:-0}" == "1" ]]; then exit 37; fi
+fi
 ''')
         checker = checkout / "fixture-checker"
         checker.write_text(f"#!{sys.executable}\n" + '''import sys
@@ -347,6 +349,35 @@ if '--assemble-package' in sys.argv:
 ''')
         checker.chmod(0o755)
         return checkout, dict(os.environ, MASSDB_NOTICE_PYTHON=str(checker), MASSDB_TEST_FAIL_BUILD="0")
+
+    def test_release_builds_all_components_in_both_cpu_modes(self):
+        for avx2 in (True, False):
+            with self.subTest(avx2=avx2):
+                checkout, env = self.release_layout_fixture("cpu-" + str(avx2))
+                command = ["bash", str(checkout / "build-for-release.sh"),
+                           "--version", "2.0.5-rc02", "-j", "4", "--tar"]
+                if not avx2:
+                    command.append("--noavx2")
+                result = subprocess.run(command, env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                mode = str(int(avx2))
+                self.assertEqual((checkout / "build-calls.txt").read_text().splitlines(), [
+                    "1 1 1 1 1 1 1 OFF 1 " + mode + " 4",
+                    "0 1 0 0 0 1 1 ON 0 " + mode + " 4",
+                ])
+                package = next(path for path in (checkout / "output").iterdir() if path.is_dir())
+                self.assertEqual(package.name.endswith("-noavx2"), not avx2)
+
+    def test_release_rejects_invalid_parallelism_before_building(self):
+        checkout, env = self.release_layout_fixture("invalid-jobs")
+        for jobs in ("0", "-1", "abc", "1.5"):
+            with self.subTest(jobs=jobs):
+                result = subprocess.run(["bash", str(checkout / "build-for-release.sh"),
+                                         "--version", "2.0.5-rc02", "-j", jobs],
+                                        env=env, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Invalid parallelism", result.stderr)
+                self.assertFalse((checkout / "build-calls.txt").exists())
 
     def test_release_publishes_only_program_and_optional_archive(self):
         for with_tar in (False, True):
@@ -394,7 +425,7 @@ if '--assemble-package' in sys.argv:
         work, = (checkout / ".build-records").iterdir()
         self.assertEqual((work / "components/partial.txt").read_text(), "partial build input")
         self.assertFalse((work / "audit.tar.gz").exists())
-        self.assertEqual(len((checkout / "build-calls.txt").read_text().splitlines()), 2)
+        self.assertEqual(len((checkout / "build-calls.txt").read_text().splitlines()), 1)
 
     def test_source_identity_detects_changes_outside_fe_be(self):
         checkout = self.root / "source-checkout"
