@@ -12,7 +12,9 @@
     "build-support/prepare-product-notices.py",
     "build-support/test_product_notices.py",
     "build-support/check-source-headers.py",
-    "docker/compilation/Dockerfile.ui"
+    "docker/compilation/Dockerfile.ui",
+    "tools/fe-stall-collect.sh",
+    "tools/fe-thread-dump-summary.py"
   ],
   "apache": [
     "docker-compose/docker-compose.be-host.yml",

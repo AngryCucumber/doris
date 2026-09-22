@@ -26,7 +26,7 @@ PENDING = (
 def comment_header(path, body):
     if path.suffix == ".less":
         return "/*\n" + "".join(" * " + line + "\n" for line in body.splitlines()) + " */\n"
-    prefix = "# " if path.suffix == ".py" or path.name.startswith("Dockerfile") else "// "
+    prefix = "# " if path.suffix in (".py", ".sh") or path.name.startswith("Dockerfile") else "// "
     return "".join(prefix + line + "\n" for line in body.splitlines())
 
 

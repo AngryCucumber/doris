@@ -4,6 +4,116 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## Runtime license certificate execution plan (2026-09-22)
+
+- `docs/license-certificate-execution-plan-20260922.md`: define a proposed
+  signed-license lifecycle, SQL/HTTP import, replicated FE state, and query
+  admission that preserves ingestion, updates and metadata operations. Record
+  cache/prepared-statement and external-scanner paths, renewal, time handling,
+  upgrade constraints, implementation phases and acceptance tests. Include
+  signed FE/BE node limits, registered-member counting, shared admission across
+  SQL/HTTP/automatic deployment, concurrent additions and certificate changes,
+  expired-query versus base-capacity policy, safe maintenance and quota tests.
+  This is a design document; no runtime licensing behavior is implemented by
+  this change.
+
+## Master FE lock and journal incident runbook (2026-09-22)
+
+- `docs/fe-lock-journal-runbook-20260922.md`: provide offline collection commands
+  and a source-grounded procedure for following transaction/metadata waiters
+  through journal completion, BDB replication or storage, asynchronous logging,
+  and report task dependencies. Distinguish monitor waits, write-lock ownership,
+  invisible read/StampedLock owners, and per-snapshot lock addresses.
+- `tools/fe-stall-collect.sh`: allow an explicit matching `--jcmd` executable and
+  stop subsequent thread sampling after a failed or timed-out JVM request.
+- `tools/fe-thread-dump-summary.py`: summarize one offline thread dump with
+  bounded stack groups and path indexes; optionally print all blocks referencing
+  a lock address without inferring ownership. Register its commercial header.
+- Validate collector control flow with isolated mocks and thread interpretation
+  with an isolated JDK 17.0.2 lock probe; check parser errors, grouping and lock
+  references locally. No production attach or FE/BE behavior change.
+
+## Production Master FE GC evidence (2026-09-22)
+
+- `docs/fe-gc-log-analysis-20260922.md`: analyze the supplied September 20
+  Master GC excerpt, cross-check 142 collections, 426 pause events and 645
+  statistics blocks, and separate concurrent cycles from pauses, historical
+  allocation stalls from new events, live data from post-GC usage, and missing
+  thread samples from zero threads. Record approximately 12500 Java threads
+  and substantial heap-page allocation without attributing them to a specific
+  application method. Keep parsed data, plots and source checksum under ignored
+  `.build-records/fe-gc-20260922/`.
+- Update prior configuration/source reports with the new evidence and its
+  limited time coverage. No production commands or FE/BE runtime changes.
+
+## Production FE configuration audit (2026-09-22)
+
+- `docs/fe-config-audit-20260922.md`: compare the supplied FE configuration
+  with registered fields, launcher behavior, and runtime consumers. Document
+  ignored keys, Thrift fallback and the 100000-worker ceiling, database quota
+  overrides, distinct transaction deadlines, report coalescing, clone limits,
+  disk selection semantics, and conditional logging/checkpoint pressure.
+- Update `docs/fe-stall-investigation-20260921.md` and its reproduction baseline
+  to the user's confirmed Xms125g/Xmx300g attachment; distinguish source defaults
+  from supplied settings, especially the earlier 4096-worker hypothesis.
+  Incorporate the reported ingestion failures at lower Thrift ceilings: retain
+  the current capacity while distinguishing idle connections, useful work and
+  downstream blocking; do not classify the ceiling itself as a proven cause.
+  Record SSD-backed FE metadata and separate local I/O evidence from replicated
+  journal acknowledgements, in-memory catalog work and lock contention.
+- This is configuration/source analysis; no production settings or FE/BE runtime
+  code are changed, and no full-cluster reproduction is claimed.
+
+## Large-cluster FE stall investigation (2026-09-21)
+
+- `docs/fe-stall-investigation-20260921.md`: trace week-scale ingestion stalls
+  through Thrift idle connections and rejection, journal/metadata locks,
+  checkpoint/GC, transaction cleanup and publishing, metrics collection, BE HTTP
+  waits, and reused RPC timeouts. Distinguish verified code mechanisms from
+  unconfirmed production causes, and include an offline diagnosis/remediation
+  guide. Record isolated libthrift and Spring Boot property-binding evidence.
+  Incorporate the reported 512G/96-core, OpenJDK 17.0.2 ZGC, Xms180g/Xmx360g
+  deployment: distinguish heap limits from commitment, checkpoint's integer
+  used/max threshold, missing ZGC pool metrics, allocation stalls, and runtime
+  version/heap-resizing experiments without claiming a production root cause.
+  Add a phased single-host reproduction plan covering real FE/BE ingestion,
+  simulated report scale, small-heap quorum tests, and isolated production-size
+  JVM tests, with explicit limits on equivalence to the 600-host deployment.
+- `tools/fe-stall-collect.sh`: add opt-in local evidence collection with bounded
+  commands, private new output directories, optional JVM thread snapshots and a
+  single loopback metrics request. Do not collect process arguments/environment,
+  upload evidence, run GC/dumps, or alter services. Register its commercial header
+  and teach the source-header checker shell comment syntax.
+- This investigation does not change FE/BE runtime code or claim to reproduce
+  the production incident; the collector is syntax- and smoke-tested locally.
+
+## Performance deep audit (2026-09-21)
+
+- `docs/performance-deep-audit-20260921.md`: document six additional opportunities
+  in mixed window aggregation, sliding MIN/MAX, JSONB conversion, ARRAY reads,
+  pipeline metrics and LRU recovery. Record isolated algorithm/library results,
+  adverse random-input results and excluded paths after planner checks. Prioritize
+  the existing query, ingestion and lifetime findings alongside ARM/NUMA follow-up
+  experiments. No database implementation changes or end-to-end speedup claims.
+
+## Database bug audit (2026-09-07)
+
+- `docs/bug-audit-20260907.md`: record additional query correctness and JDBC
+  array fidelity findings, reproduction inputs and observed results, plus the
+  transaction visible-version notification overwrite found during broader review.
+- `docs/performance-audit-20260907.md`: document ten optimization opportunities
+  across planning, execution, ingestion, storage, cloud metadata and report
+  processing, with current-method measurements and algorithm-model evidence.
+- `docs/fe-memory-gc-audit-20260907.md`: record FE collector metric compatibility,
+  Arrow native-buffer retention, long-lived object/cache lifecycle findings,
+  isolated current-class checks and a read-only local FE memory observation.
+  Cross-check the external 23-item review, correct overbroad Flight/profile,
+  InsertOverwrite and capacity claims, and extend the report to 22 MEM entries
+  plus nine capacity/GC topics. Add Ranger audit, connection reset, Flight
+  multi-statement cleanup and DFS cleanup-failure findings, with seven new
+  isolated method probes and an equal-heap-limit G1/ZGC flag comparison.
+  These audit reports do not change database implementation or fix the findings.
+
 ## FE company license display (2026-09-07)
 
 At the maintainer's request, the FE copyright page temporarily omits the
