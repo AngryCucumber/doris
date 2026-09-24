@@ -1,0 +1,65 @@
+{
+  "_notice": [
+    "Copyright (c) 2026",
+    "厦门市美亚柏科信息安全研究所有限公司",
+    "Xiamen Meiya Pico Information Security Research Institute Co., Ltd.",
+    "SPDX-License-Identifier: LicenseRef-MassDB-Commercial",
+    "Use is governed by LICENSE-MASSDB.txt and a separate agreement with the company.",
+    "Upstream and third-party components retain their respective licenses."
+  ],
+  "schema_version": 1,
+  "test_only": "All seeds are public RFC 8032 test material. Never install these keys as a production trust root. This resource belongs only to test artifacts.",
+  "source": "https://www.rfc-editor.org/rfc/rfc8032.txt#section-7.1",
+  "source_sha256": "ed63657ff389301282b169b0abde9b5dd2c7e4d524fdfa5da6ff3094fc93c4c3",
+  "provenance": "RFC 8032 section 7.1 TEST 2 and TEST 3 raw known answers are unmodified. MassDB JWS bytes below are separate project fixtures using those public test keys; they are not RFC examples.",
+  "rfc8032": [
+    {
+      "name": "RFC8032-TEST-2",
+      "seed_hex": "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+      "public_key_hex": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+      "message_hex": "72",
+      "signature_hex": "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00"
+    },
+    {
+      "name": "RFC8032-TEST-3",
+      "seed_hex": "c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7",
+      "public_key_hex": "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025",
+      "message_hex": "af82",
+      "signature_hex": "6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a"
+    }
+  ],
+  "repair_challenge": {
+    "schema_version": 1,
+    "product": "MassDB SQL",
+    "deployment_id": "003aaf16-b828-455a-8ce2-1bd393572102",
+    "nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    "clock_epoch": 4,
+    "repair_authorization_version": 12,
+    "leader_term": "dc8c8126-1d8b-493d-aad8-eb8f1b2026fb",
+    "observed_wall_at": 1800000000,
+    "observed_high_water_at": 4070908800,
+    "valid_for_seconds": 86400
+  },
+  "massdb_jws": [
+    {
+      "name": "massdb-license-v1",
+      "purpose": "license",
+      "key_vector": "RFC8032-TEST-2",
+      "kid": "public-test-license",
+      "header_utf8": "{\"alg\":\"Ed25519\",\"kid\":\"public-test-license\",\"typ\":\"massdb-license+jws\"}",
+      "payload_utf8": "{\"customer_id\":\"固定测试客户 🫨\",\"deployment_id\":\"003aaf16-b828-455a-8ce2-1bd393572102\",\"edition\":\"Enterprise\",\"expires_at\":1900000000,\"features\":[\"DATA_QUERY\"],\"issued_at\":1700000000,\"issuer\":\"Public test vector\",\"license_id\":\"fixed-license-1\",\"limits\":{\"max_be_nodes\":8,\"max_fe_nodes\":3},\"not_before\":1800000000,\"policy_version\":1,\"product\":\"MassDB SQL\",\"schema_version\":1,\"sequence\":7}",
+      "compact": "eyJhbGciOiJFZDI1NTE5Iiwia2lkIjoicHVibGljLXRlc3QtbGljZW5zZSIsInR5cCI6Im1hc3NkYi1saWNlbnNlK2p3cyJ9.eyJjdXN0b21lcl9pZCI6IuWbuuWumua1i-ivleWuouaItyDwn6uoIiwiZGVwbG95bWVudF9pZCI6IjAwM2FhZjE2LWI4MjgtNDU1YS04Y2UyLTFiZDM5MzU3MjEwMiIsImVkaXRpb24iOiJFbnRlcnByaXNlIiwiZXhwaXJlc19hdCI6MTkwMDAwMDAwMCwiZmVhdHVyZXMiOlsiREFUQV9RVUVSWSJdLCJpc3N1ZWRfYXQiOjE3MDAwMDAwMDAsImlzc3VlciI6IlB1YmxpYyB0ZXN0IHZlY3RvciIsImxpY2Vuc2VfaWQiOiJmaXhlZC1saWNlbnNlLTEiLCJsaW1pdHMiOnsibWF4X2JlX25vZGVzIjo4LCJtYXhfZmVfbm9kZXMiOjN9LCJub3RfYmVmb3JlIjoxODAwMDAwMDAwLCJwb2xpY3lfdmVyc2lvbiI6MSwicHJvZHVjdCI6Ik1hc3NEQiBTUUwiLCJzY2hlbWFfdmVyc2lvbiI6MSwic2VxdWVuY2UiOjd9.CadzexUV1whe1mdEHvv3WGBys53dq5r-z9l5RuAhbMK0xe5Yg7ctNIEvRWk3E8M9yYubtLjV4XMdNrA-9tZ-BA",
+      "sha256": "bc6c0e83ef1a4c42d9c3a37678a7597b069049e7e7473435c82b3ed6b370990a"
+    },
+    {
+      "name": "massdb-time_repair-v1",
+      "purpose": "time_repair",
+      "key_vector": "RFC8032-TEST-3",
+      "kid": "public-test-time_repair",
+      "header_utf8": "{\"alg\":\"Ed25519\",\"kid\":\"public-test-time_repair\",\"typ\":\"massdb-license-clock-repair+jws\"}",
+      "payload_utf8": "{\"clock_epoch\":4,\"deployment_id\":\"003aaf16-b828-455a-8ce2-1bd393572102\",\"expires_at\":1800086400,\"issued_at\":1800000000,\"leader_term\":\"dc8c8126-1d8b-493d-aad8-eb8f1b2026fb\",\"nonce\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\",\"not_before\":1800000000,\"product\":\"MassDB SQL\",\"repair_authorization_version\":12,\"repair_id\":\"7c2aa6bc-078f-499e-bd31-b5874fcc5b05\",\"schema_version\":1}",
+      "compact": "eyJhbGciOiJFZDI1NTE5Iiwia2lkIjoicHVibGljLXRlc3QtdGltZV9yZXBhaXIiLCJ0eXAiOiJtYXNzZGItbGljZW5zZS1jbG9jay1yZXBhaXIrandzIn0.eyJjbG9ja19lcG9jaCI6NCwiZGVwbG95bWVudF9pZCI6IjAwM2FhZjE2LWI4MjgtNDU1YS04Y2UyLTFiZDM5MzU3MjEwMiIsImV4cGlyZXNfYXQiOjE4MDAwODY0MDAsImlzc3VlZF9hdCI6MTgwMDAwMDAwMCwibGVhZGVyX3Rlcm0iOiJkYzhjODEyNi0xZDhiLTQ5M2QtYWFkOC1lYjhmMWIyMDI2ZmIiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgiLCJub3RfYmVmb3JlIjoxODAwMDAwMDAwLCJwcm9kdWN0IjoiTWFzc0RCIFNRTCIsInJlcGFpcl9hdXRob3JpemF0aW9uX3ZlcnNpb24iOjEyLCJyZXBhaXJfaWQiOiI3YzJhYTZiYy0wNzhmLTQ5OWUtYmQzMS1iNTg3NGZjYzViMDUiLCJzY2hlbWFfdmVyc2lvbiI6MX0.h7lT1Mg9L1qqjtEjgyEQr4_fKpOOrmLbOvKvYLj2RefSiCppti7MOdDIfjJuADZtmie5yufIzawU1K_3UFa-Cg",
+      "sha256": "f41ee2b3c13a0dc577721cc012018216f51c87403d8a6dd00de647864f7b795a"
+    }
+  ]
+}

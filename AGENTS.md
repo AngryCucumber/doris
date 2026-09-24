@@ -34,4 +34,8 @@ Place JUnit `*Test.java` files under `fe/*/src/test/java` and GoogleTest `*_test
 
 ## Commit & Pull Request Guidelines
 
-Follow recent history: `[fix](tools) fix meta_tool startup crashes`, using types such as `fix`, `test`, `opt`, or `chore`. PR titles use `[type](scope) summary`. Complete `.github/PULL_REQUEST_TEMPLATE.md`: explain the problem, link applicable issues/PRs, provide release notes, and record tests, behavior changes, and documentation needs. Explain when tests are unnecessary.
+Before committing, inspect recent Git history (for example, `git log -8 --format='%s%n%b'`) and match its language, formatting, and level of detail. Use an English imperative subject in the form `[type](scope) summary`, such as `[fix](tools) fix meta_tool startup crashes`, with types such as `feat`, `fix`, `test`, `opt`, or `chore`.
+
+Every commit must include a non-empty description (commit body), separated from the subject by a blank line. Write the description in English and explain the problem or motivation, the main changes and resulting behavior, and the relevant validation results (or why tests were not run). Keep the detail proportional to the change. A subject-only commit is not acceptable, even if some historical commits omit the body.
+
+PR titles use `[type](scope) summary`. Complete `.github/PULL_REQUEST_TEMPLATE.md`: explain the problem, link applicable issues/PRs, provide release notes, and record tests, behavior changes, and documentation needs. Explain when tests are unnecessary.

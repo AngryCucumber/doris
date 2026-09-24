@@ -4,18 +4,332 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## Commit message guidance (2026-09-22)
+
+- `AGENTS.md`: require commit messages to follow recent Git history, with an
+  English `[type](scope) summary` subject and a non-empty description explaining
+  motivation, changes, and validation results or why tests were not run.
+
+## Current license P0/P1 completion audit (2026-09-25)
+
+- Freeze the reduced P0 contract in the existing document: 28 query, 14
+  management/quota and four UI test groups with real source hooks, plus seven
+  performance groups and explicit applicability of the historical LP001–026.
+  Keep all future runtime cases unexecuted and retain the original numerical
+  precision criteria and historical failures without adding an audit framework.
+- Cover both Coordinator and NereidsCoordinator queue exits, preserve the original
+  narrow probe shape through optimization, and align renewal gaps with the
+  implemented protection of previously accepted coverage.
+- Recompile the current 14 license sources offline and match all 39 classes to
+  the actual FE JAR. Recompile the eight test classes and pass all 104 tests on
+  that JAR with JDK 17.0.4+8; revalidate existing issuer/interoperability evidence.
+  Record missing historical Maven XML honestly instead of treating it as current
+  proof. Runtime integration and end-to-end performance remain later phases.
+
+## License scope reduction (2026-09-24)
+
+- Limit the current delivery to the user's own deployment. Defer the Kylin,
+  openEuler and CPU-architecture release matrix instead of counting it as
+  remaining work or a P1/development/delivery prerequisite. Retain JDK 17.0.4
+  compatibility, explicit trust configuration and functional/performance checks
+  in the actual deployment environment; preserve historical platform evidence.
+- Replace the broad FE governance plan with five data-output boundaries, a shared
+  guard and the necessary fast-path, queue and external-write hooks. Allow the
+  user-approved narrow table-existence probe and proven empty results; retain
+  certificate import, persistence, registered-node quotas and the FE license tab.
+- Mark previous coverage, protocol and machine-contract definitions as historical
+  expanded-scope inputs pending applicability mapping. Retain their exact JSON
+  and failure evidence, numerical performance criteria and unchanged BE protocol.
+  Disclose additional FE and expression channels outside the reduced proposal.
+- Record the existing terminal receipt for the original UI matrix: client RSS
+  exceeded its limit during preparation of 50 contexts; the full matrix remains
+  unpassed. This documentation change does not implement runtime licensing or
+  rerun database benchmarks.
+
+## License P0 contract and P1 core implementation (2026-09-22)
+
+- Bind background helper startup identities to the requested executable and argv
+  before freezing a process pin. Require two complete matching observations within
+  the original phase deadline; preserve strict later identity checks, real early
+  exit waits and ownership before evidence writes. Validate 48 Python checks and
+  four exact-JDK lifecycle cases without upgrading prior UI runtime failures.
+- Add a pure GC log record-time parser and half-open window mapper with complete
+  FE/log/clock bindings, confirmed-prefix checks and separate terminal-drain
+  classification. Reject missing legacy timestamps and incomplete rotation
+  evidence; do not infer STW boundaries or modify a running FE's logging.
+- Account for architected counter quantization in primitive latency precision,
+  binding actual clock capability and raw output to the current boot, time
+  namespace and clocksource. Unknown clock resolution cannot qualify latency;
+  increasing window counts cannot remove systematic timer uncertainty. Preserve
+  historical reports and the original numerical precision targets.
+- Add owned private namespaces for three original FE voters and four original
+  BEs, with frozen resources, actual membership/replay oracles and pinned-process
+  cleanup. Bootstrap with local FE metadata before registering any BE. Add full
+  ten-million-row fanout fixtures for 64/256/1024 buckets, bounded full-coverage
+  integrity checks and actual four-BE runtime profiles. Add pinned Kafka package
+  and Routine Load fixtures; retain download and query failures separately from
+  completed functional prerequisites and formal performance acceptance.
+- Specify source-backed original-browser and background/HTTP fixture inputs,
+  including real cookie authentication, deployment prefixes, automatic task
+  provenance, ES exchanges and registered-broker preview requirements. Add
+  bounded controllers, an existing-protocol read-only broker and real-browser
+  helpers, with offline test sources. Keep unexecuted implementations and the
+  remaining full matrices distinct from actual functional evidence.
+- Add an independent full-column complex-query oracle bound to the frozen SQL,
+  conservative same-clock DDL overlap classification and unique profile/SQL
+  correlation. Preserve unavailable original planning timings and reject mixed
+  snapshots or substituted fixtures. Add a same-JVM concurrent query/event
+  adapter, frozen open-loop arrivals, raw per-request receipts and independent
+  Profile/EXPLAIN audits. Bound overlap sampling and ownership-based cleanup;
+  retain actual runtime matrices as separate requirements from offline checks.
+- Extend background fixtures with lifecycle resource observations, bounded
+  output capture and cancellation cleanup. Add explicitly selected continuous
+  read/write browser background load, complete million-row content verification
+  and independent write-visibility receipts. Keep each source version and its
+  actual tests separate from frozen performance measurements.
+- Add an explicit fixed browser refresh cadence with original API/DOM checks,
+  serial timing and background-window correlation. Revalidate prepared Kafka
+  files against the pinned official archive before executing its broker.
+  Add a sustained original Stream Load window with complete immutable inputs,
+  open-loop arrivals and independent visibility checks; sample and resource
+  gaps remain explicit rather than becoming full performance passes.
+- Add a read-only public trust review probe against actual delivered FE/Jackson
+  classes and a declared JDK 17.0.4 build. Compare public purpose/fingerprints and
+  explicit rotation dependencies, bind initial input bytes to both runtimes,
+  and bound child processes. Do not install trust or imply that unprovided
+  production keys, dependency completeness or target platforms are qualified.
+- Execute focused tool tests and exact JDK 17.0.4 helper checks after confirming
+  the interrupted primitive measurement has no surviving clients. Preserve its
+  incomplete windows and unknown exit cause. Bound Stream Load batch reads and
+  reject changed input content before upload. Select the installed Parquet
+  format classes ahead of the older copy needed alongside generated broker
+  types; retain failed helper runs and corrected input-validation evidence.
+- Bind background helper registration to stable executable and command identities,
+  validate the original timestamped dictionary success/version format, and set
+  table auto-analysis policy through its supported ALTER workflow. Preserve real
+  partial successes, cancellation and helper-exit sampling failures separately.
+  Recover original packaged UI provenance without substituting a newer local
+  UI build or promoting an unexecuted browser plan to runtime evidence.
+- Separate sparse browser-action observations from the unchanged business-load
+  sample and precision gates as explicitly approved by the user. Preserve UI
+  concurrency, cadence and resource checks without claiming qualified browser
+  P99 from insufficient samples. Persist primitive-run window checkpoints and
+  confirmed counts without treating saved RUNNING state as proof of liveness.
+- Add separate concurrent-browser and sustained Kafka fixture tools. Preserve
+  actual browser contexts and per-window shared business background, and retain
+  complete ten-million-row Kafka input, distinct producer/consumer concurrency,
+  physical offset verification and bounded evidence. Keep development, offline
+  checks and unexecuted runtime matrices explicit rather than claiming coverage
+  from the earlier navigation or 100,000-row Kafka subsets.
+- Validate original UI navigation with actual packaged assets, isolated accounts,
+  real browser requests and explicit logout. Fix fixture selectors and asynchronous
+  waits without changing the product, and preserve the original result-page
+  history-state limitation. Bind shared background overlap receipts, bound larger
+  concurrent-browser reports and stop subsequent windows after incomplete cleanup.
+  Extend workload exclusion to owned Python, Java and Node entrypoints, including
+  orphaned clients, and preserve every failed run under its original source hashes.
+- Use the original parser's complete EXPLAIN ALL PLAN syntax in the complex-query
+  fixture; retain the failed preparation and its confirmed view/process cleanup.
+  Accept the original healthy OK/EOF profile states while preserving the actual
+  state, query/SQL identity and cold-planning timing requirements. Validate with
+  captured profiles and full-column receipts, keeping earlier failures intact.
+- Accept the original FE's list-valued repeated Vary headers in the Stream Load
+  fixture while continuing to reject ambiguous framing/routing fields. Request
+  an explicit server timeout and distinguish acknowledged commits from unknown
+  server transaction termination; local socket or database cleanup does not
+  manufacture evidence that an uncertain transaction has ended.
+  Derive bounded pending-reference queues from frozen arrivals and the unchanged
+  request deadline, preserving the active upload limit and end-to-end latency.
+  Record expired requests as failures without reading their bodies, and retain
+  the original queue-overflow run and server write-stall evidence separately.
+- Add opt-in collection of existing fragment/Thrift RPC counters and bounded
+  tailing of the FE's existing GC log without changing its logging or protocols.
+  Preserve lazy missing counters, process identities, separate read/confirmed
+  archive cursors and the original default collector interface. Keep partial
+  RPC coverage and unmapped GC events explicit; offline tests and a read-only
+  smoke do not establish complete allocation/network attribution or overhead.
+- Add opt-in stop-after-failure handling for concurrent-browser matrices,
+  preserving the complete frozen plan, attempted-window failures and unfinished
+  windows. Keep background cleanup failures and actual child exit evidence
+  separate from browser completion or runtime performance qualification.
+- Resolve incomplete process observations during UI background-helper exit with
+  a bounded parent wait and the original phase deadline. Reject live identity
+  changes and unresolved resource observations, preserve real exit statuses and
+  first failures, and keep previous failed windows separate from repaired runs.
+- Bound browser preparation to four simultaneous setup operations while retaining
+  all declared contexts for the unchanged shared 300-second action window. Record
+  actual created/ready counts, preserve preparation deadlines and first failures,
+  and archive the exact process-RSS observation that crosses the original limit.
+  Validate with 35 Python and 21 Node offline checks after preserving old sources;
+  keep the original 50-context resource failure and full runtime matrix pending.
+- Validate every timed point-query payload against a precomputed deterministic
+  key model, including text/prepared and reused/per-request connections. Reject
+  wrong-key, null, wrong-type and extra-column responses despite a correct row
+  count. Bind oracle coverage to raw key sequences and retain earlier row-count
+  diagnostics under their original tool hashes rather than upgrading them.
+- Extend baseline fixtures with an owned-loopback read-only S3 endpoint serving
+  verified Parquet bytes, per-phase request evidence and real schema/read/write
+  oracles. Expose an explicit BE test memory profile and record fresh 4 GiB
+  startup evidence after preserving 2 GiB memory-pressure failures. Retain the
+  original BE executable, audit settings and transport; fixture reachability
+  and rate-grid width do not establish integrated license or performance gates.
+- Add an original-build Group Commit fixture for four batch sizes, both
+  full-prepare modes and repeated server-prepared execution. Validate actual
+  OK receipts, fast-path reuse, independent visibility and complete row models;
+  preserve driver/protocol parsing failures and verified session/table cleanup.
+- Add full-row Flight connection/batch fixtures and preserve the original
+  65,535-batch payload mismatch as a failing case. Add bounded read-only resource
+  sampling with process identity checks, metric allowlists and honest namespace
+  traffic/GC attribution. Correct LP023 decoded-payload sizes using signed
+  fixtures and a valid-signature invalid-claims negative case; retain every
+  performance gate and keep incomplete cases from being reported as passed.
+- Add an original-build DML/transaction fixture with independent visibility,
+  commit/abort evidence, complete data models and cleanup. Record unsupported
+  combinations and ACK-only START TRANSACTION separately from actual BEGIN.
+  Add a plan-first P1 primitive matrix harness with bounded histograms and
+  explicit missing classifier/integration scope; final tool checks and bounded
+  smoke records remain separate from the unrun formal measurement matrix.
+- Freeze the FE-only entry classification, operation/management contracts,
+  compatibility boundaries and concrete acceptance mappings in
+  `docs/license-p0-contract-20260922.md` and its JSON companion. Add a source
+  inventory checker that detects unreviewed entry or hash changes; passing
+  this design gate does not mean the corresponding runtime hooks are active.
+- Extend the Java license core with an explicit bounded public-key manifest,
+  separate license/clock-repair purposes, retained-key rotation checks and
+  deterministic Unicode scalar rules shared with the offline issuer. Continue
+  using JDK 17 JCA Ed25519 and the existing Jackson dependency, without adding
+  a BE verifier or changing existing FE/BE communication protocols.
+- Add an injectable monotonic license clock, bounded high-water progression,
+  committed repair epochs and dedicated signed clock-repair challenges. Keep
+  challenge consumption and prepared repair facts separate from publication;
+  restarting or changing leadership invalidates unconsumed local challenges.
+- Implement immutable active/pending/base import facts, original commit
+  versions, a bounded 1,024-entry receipt history and strict restoration
+  consistency. Add same-request acknowledgement, renewal coverage and capacity
+  protection, explicit pending-base activation and a final time/member/trust
+  recheck. `docs/license-import-core-20260922.md` and
+  `docs/license-clock-core-20260922.md` specify the P2 persistence boundaries;
+  the P1 core does not itself append or replay database journal records.
+- Preserve allocation-free primary query-status evaluation and add a bounded
+  live-clock epoch check. Provide a separate immutable management evaluation
+  for simultaneous expiry, capability and independent FE/BE quota reasons;
+  isolated-slot/base warnings do not independently reject a valid entitlement.
+- Extend `tools/license-issuer/` with explicit-zone date conversion, claims
+  preparation from an actual deployment request, authenticated renewal
+  preflight, public trust-manifest export and dedicated repair signing and
+  verification. Keep original keygen/sign/verify commands, strict bounded
+  parsing and non-sensitive errors; private test keys are generated only in
+  temporary directories and are not distributed as product trust material.
+- Add `tools/license-checks/` for contract validation, Java/OpenSSL license
+  and repair interoperability, full-code-point text compatibility, explicit
+  source-versus-built-artifact dependency checks and controlled JDBC baseline
+  measurement. The isolated baseline runner uses a private network namespace;
+  statistics tests reject incomplete measurements and unsupported pass claims.
+  Add a separate core-cost probe for snapshot/clock and management primitives,
+  including actual thread allocation, GC and elapsed-time measurements; it
+  does not claim to measure the future P3 classifier. Evidence records identify
+  actual runtimes, loaded artifacts and hashes.
+- Register all new commercial Java/Python source and tests in
+  `dist/source-headers.json` and the matching License Eyes exception block,
+  preserving upstream headers and existing third-party grants. Record targeted
+  JUnit, offline issuer and repository-check results in the implementation
+  evidence. Neither isolated core tests nor an unchanged-build A/A baseline
+  proves integrated A/B business performance, SQL/API/UI enforcement, durable
+  recovery or multi-FE propagation; those require later integration evidence.
+- The first-batch entry below is historical. This batch supplies the trusted
+  clock and import-policy primitives that were absent then; runtime SQL/API/UI
+  admission and database persistence remain separate integration work. BE code,
+  directly accessed BE endpoints and previously issued BE plans remain under
+  the explicitly accepted FE-only scope boundary.
+
+## License acceptance fixtures and validation corrections (2026-09-24)
+
+- Add shared RFC 8032 known answers and fixed project license/repair JWS
+  fixtures, with four Java and three Python/OpenSSL tests. Public test seeds
+  remain test resources and are never installed as production trust roots.
+- Add deterministic full-range point keys and bounded measurement barriers
+  to the JDBC baseline tooling, preserving end-to-end queue latency and
+  recording CPU boundaries separately from reused connection cleanup.
+- Add predeclared rate calibration with explicit latency/drain limits;
+  incomplete sweeps, insufficient confirmation windows and query errors
+  cannot establish a capacity bracket or a release performance pass.
+- Add a deterministic 128-byte CSV fixture and actual FE-to-BE Stream Load
+  checks, including duplicate-label visibility on a DUPLICATE KEY table.
+  Full input generation is recorded separately from actual loaded rows.
+- Add isolated SQL/HTTP metadata and original-permission fixtures, with
+  explicit error-envelope checks, temporary-account cleanup and restoration
+  of the test FE HTTP-auth setting. Preserve failed probes separately.
+- Generate the frozen 100-file Parquet input with existing distribution
+  dependencies, independently read every row and compare complete row/payload
+  digests to a separate model. Keep local fixture proof separate from actual
+  external-store reachability and performance acceptance.
+- Record the requested Kylin/openEuler, ARM64/x86 and JDK 17.0.4 target
+  environment without extending local test results to untested combinations.
+  Update implementation evidence to 104 Java and 25 offline issuer tests;
+  full baseline precision and integrated runtime enforcement remain unproven.
+
+## License primitives and offline issuer, first implementation batch (2026-09-22)
+
+- Add strict compact-JWS verification under
+  `fe/fe-core/src/main/java/org/apache/doris/massdb/license/`, using JDK 17
+  Ed25519 and the existing Jackson dependency. Bound parsing, require the
+  pinned algorithm/type/key, preserve original signing bytes, and distinguish
+  verified immutable claims from deployment/time/member admission decisions.
+- Add immutable query-status evaluation for active/pending entitlement and
+  registered member counts. Keep committed base capacity separate: damaged
+  capacity records do not invalidate otherwise usable query entitlement, and
+  missing records do not imply a fresh-cluster bootstrap allowance. These
+  classes do not implement a trusted clock, import admission or persistence.
+- Add `tools/license-issuer/` with explicit offline key generation, signing,
+  verification and real OpenSSL tests. No production/test trust root or private
+  key is included; the tool is separate from FE/BE packaging.
+- Record the user-approved FE-only license scope in the admission contract and
+  26 performance case definitions. Preserve existing BE code, protocols, ports
+  and connection settings. Previously issued plans may continue or reopen scans
+  at BE after license expiry; new FE queries and plan requests remain subject to
+  admission. Existing direct BE paths are accepted exclusions, not verified
+  closures or measured low-probability events.
+- Remove the previous internal-identity, execution-credential, lease and BE
+  revocation work from current release prerequisites. FE still manages registered
+  FE/BE capacity and releases slots only after committed member removal. All
+  applicable performance cases remain unexecuted; excluded protocol tasks are
+  marked out of scope, never passed.
+- Record targeted FE tests, Java/OpenSSL interoperability, issuer tests and
+  repository checks in `docs/license-implementation-progress-20260922.md`.
+  Register new source headers. No SQL/API/UI/BE hook is active, no database
+  service is changed, and no end-to-end performance or release claim is made.
+
 ## Runtime license certificate execution plan (2026-09-22)
 
-- `docs/license-certificate-execution-plan-20260922.md`: define a proposed
-  signed-license lifecycle, SQL/HTTP import, replicated FE state, and query
-  admission that preserves ingestion, updates and metadata operations. Record
-  cache/prepared-statement and external-scanner paths, renewal, time handling,
-  upgrade constraints, implementation phases and acceptance tests. Include
-  signed FE/BE node limits, registered-member counting, shared admission across
-  SQL/HTTP/automatic deployment, concurrent additions and certificate changes,
-  expired-query versus base-capacity policy, safe maintenance and quota tests.
-  This is a design document; no runtime licensing behavior is implemented by
-  this change.
+- `docs/license-certificate-execution-plan-20260922.md`: define an offline signed
+  license lifecycle, SQL/HTTP import, replicated FE state, FE admission and
+  registered FE/BE node quotas while preserving ingestion, updates and safe
+  metadata. Retain renewal, trusted time and repair, commit receipts, recovery,
+  cache/prepared/queue handling, function capabilities, independent ingestion
+  planning and FE output classification.
+- Apply the user's explicit decision to leave BE unchanged. Classify the 48
+  historical audit items as 25 retained FE items, 16 FE subsets and 7 accepted
+  exclusions. Keep BE source references as boundary evidence; do not require
+  BE credentials, identity redesign, protocol changes, leases or revoked old
+  processes. Recalculate the scoped estimate as 31–45 person-days, provisional.
+- Keep the FE certificate details/import tab in the first release, with existing
+  ADMIN permissions, validation previews, receipts, proxy/i18n support, bounded
+  requests and browser/real-FE acceptance tests. Upgrade and activation gates
+  apply to FE license metadata and admission; BE requires no licensing upgrade.
+- Require no measurable business performance regression under controlled A/A
+  and A/B comparisons with the same unchanged BE build and connection settings.
+  Include all new FE work, ingestion, metadata, UI and state transitions;
+  regressions or insufficient evidence block release. No performance pass is
+  inferred from the scope reduction or isolated certificate tests.
+- `docs/license-code-coverage-20260922.md` and its JSON companion preserve 1,423
+  historical records and 1,171 source hashes. Schema v2 separates historical
+  advice from current requirements: 350 FE records, 891 FE subsets and 182
+  accepted BE exclusions. Keep 19 original requirement mappings and add R20 for
+  the scope decision. These counts are not runtime coverage or passing tests.
+- Preserve historical isolated JDK signature/timezone/dependency probes and the
+  later implementation results in their evidence records. This scope revision
+  changes documentation only; SQL/API/UI admission, persistence and end-to-end
+  integration remain to be implemented and validated.
 
 ## Master FE lock and journal incident runbook (2026-09-22)
 

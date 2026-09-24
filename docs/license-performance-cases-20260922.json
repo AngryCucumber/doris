@@ -1,0 +1,2278 @@
+{
+  "_notice": [
+    "Copyright (c) 2026",
+    "厦门市美亚柏科信息安全研究所有限公司",
+    "Xiamen Meiya Pico Information Security Research Institute Co., Ltd.",
+    "SPDX-License-Identifier: LicenseRef-MassDB-Commercial",
+    "Use is governed by LICENSE-MASSDB.txt and a separate agreement with the company.",
+    "Upstream and third-party components retain their respective licenses."
+  ],
+  "schema_version": 1,
+  "title": "MassDB授权首版性能与边界用例输入",
+  "date": "2026-09-22",
+  "status": "not_run",
+  "baseline_source_commit": "23e39e63295fd730523da8d916c898c28b903216",
+  "candidate_source_commit": null,
+  "scope": "仅FE（含FE页面及厂商离线签发工具）的可复现用例定义；不是可执行压测程序或通过记录，运行时接入和发行可达验证均待完成。BE代码、执行、取数和通信不改。",
+  "protocol_document": "/data/project/massdb-sql/docs/license-protocol-v1-20260922.md",
+  "execution_plan": "/data/project/massdb-sql/docs/license-certificate-execution-plan-20260922.md",
+  "safety": {
+    "service_actions_performed": true,
+    "benchmark_requests_sent": true,
+    "host_clock_modified": false,
+    "production_use_forbidden": true,
+    "allow_only_explicitly_owned_isolated_test_installations": true,
+    "raw_process_arguments_and_credentials_must_not_be_recorded": true,
+    "actual_actions_scope": "仅启动checkout .build-records内的全新私有网络namespace测试安装并发送合成数据测试请求；未操作仓库外已有服务、未修改宿主时间/内核参数/交换区。"
+  },
+  "environment_observation": {
+    "inspection": "只读历史观察，非当前服务健康证明",
+    "host_arch": "aarch64",
+    "logical_cpus": 10,
+    "checkout_installation": "/data/project/massdb-sql/output/massdb-sql-2.0.5-rc02-bin-arm64",
+    "fe_start_script_present": true,
+    "be_binary_present": true,
+    "checkout_pid_files_found": false,
+    "package_build_identity_verified": false,
+    "running_services": [
+      {
+        "service": "FE",
+        "pid": 1371381,
+        "cwd": "/data/massdb-test-cluster/fe",
+        "inside_checkout": false,
+        "used_for_test": false
+      },
+      {
+        "service": "BE",
+        "pid": 1372116,
+        "cwd": "/data/massdb-test-cluster/be",
+        "inside_checkout": false,
+        "used_for_test": false
+      }
+    ],
+    "qualification": "测试环境尚未确认；output文件存在不证明基线可用。记录的仓库外服务及共享10核主机可能产生资源争用，不得因本用例停止或压测它们。"
+  },
+  "environment_profiles": {
+    "single_node_isolated": {
+      "fe": 1,
+      "be": 1,
+      "resources": "专用或可复现绑定的CPU/内存/IO；实际容量待确认。"
+    },
+    "multi_node_isolated": {
+      "fe_voters": 3,
+      "be": 4,
+      "resources": "独立隔离节点或完整记录的资源绑定；不得把单机模拟结果当作未说明的多机结果。"
+    },
+    "external_fixture_isolated": {
+      "extends": "single_node_isolated",
+      "dependencies": [
+        "按用例固定的本地S3/ES/预览服务模拟器"
+      ]
+    },
+    "kafka_fixture_isolated": {
+      "extends": "single_node_isolated",
+      "dependencies": [
+        "固定topic内容和offset的隔离Kafka"
+      ]
+    },
+    "flight_enabled_isolated": {
+      "extends": "single_node_isolated",
+      "dependencies": [
+        "发行包真实FE/BE Flight端点及原有认证客户端，不新增BE许可协议"
+      ]
+    },
+    "external_scanner_enabled_isolated": {
+      "extends": "single_node_isolated",
+      "dependencies": [
+        "发行包既有_query_plan/open_scanner/get_next客户端，不新增票据字段"
+      ]
+    },
+    "clock_injection_isolated": {
+      "extends": "multi_node_isolated",
+      "dependencies": [
+        "仅测试构建注入FE时钟及离线签名修复样例；不修改宿主机时间"
+      ]
+    }
+  },
+  "datasets": {
+    "bench_small": {
+      "seed": 20260922,
+      "rows": 1000000,
+      "setup_sql": [
+        "CREATE DATABASE IF NOT EXISTS license_perf",
+        "CREATE TABLE license_perf.point_rows (id BIGINT NOT NULL, grp INT NOT NULL, v BIGINT NOT NULL, payload VARCHAR(128)) UNIQUE KEY(id) DISTRIBUTED BY HASH(id) BUCKETS 16 PROPERTIES (\"replication_num\"=\"1\", \"enable_unique_key_merge_on_write\"=\"true\", \"store_row_column\"=\"true\", \"light_schema_change\"=\"true\")",
+        "INSERT INTO license_perf.point_rows SELECT number, CAST(number % 1024 AS INT), number % 100000, MD5(CAST(number AS STRING)) FROM numbers(\"number\"=\"1000000\")"
+      ],
+      "verification": [
+        "COUNT(*) = 1000000",
+        "ID范围0至999999",
+        "A/B的SUM(v)、分组校验和及归档的表结构/版本一致"
+      ],
+      "setup_reachability": "已在checkout私有网络namespace的原版1FE/1BE执行，百万行/主键范围/SUM(v)=49999500000校验通过；修正row-store属性后EXPLAIN SHORT-CIRCUIT。见path-probes及setup-rowstore.log。"
+    },
+    "bench_fanout": {
+      "rows": 10000000,
+      "schema_ref": "bench_small",
+      "table_name": "fanout_rows",
+      "bucket_variants": [
+        64,
+        256,
+        1024
+      ],
+      "replication_num": 1,
+      "generation": "使用numbers(number=10000000)及相同确定性表达式；每种分桶归档实际DDL。",
+      "verification": "由实际分片分布及查询profile确认BE扇出，不只按bucket数量推断。"
+    },
+    "bench_small_plus_write_target": {
+      "source_ref": "bench_small",
+      "target": "相同表结构；每个窗口开始为空或恢复到完全相同的预定快照。",
+      "reset": "在计时外重置；每个独立窗口前保存哈希及行数。"
+    },
+    "ingest_fixture": {
+      "seed": 20260922,
+      "rows": 10000000,
+      "format": "UTF-8 CSV；id/grp/v/payload使用相同确定性表达式生成，按声明的目标行字节数填充。",
+      "generation": "计时外生成；归档生成器版本及SHA-256，A/B不改变输入生成成本。"
+    }
+  },
+  "measurement_policy": {
+    "baseline_A": "声明提交上的授权功能接入前源码/构建；发行、工具链、配置、原账号认证一致，先校验实际包SHA。BE使用同一构建及配置。",
+    "candidate_B": "完整FE候选实现，包括许可准入、语义分类、恢复、管理与UI后台任务；不能用关闭许可检查的构建代替。BE与A保持一致。",
+    "minimum_AA_pairs": 5,
+    "minimum_AB_pairs": 5,
+    "pair_order": "预先固定种子及交替A→B/B→A顺序；A/A也使用独立窗口和相同数据重置。",
+    "environment_freeze": [
+      "CPU绑定/配额/频率策略",
+      "内存限制、JDK堆及GC",
+      "存储文件系统与缓存策略",
+      "网络拓扑与外部模拟器",
+      "OS/kernel、编译器、JDK和密码库版本",
+      "FE/BE/会话配置",
+      "数据哈希/行数/分片分布",
+      "客户端驱动、协议和开环到达序列",
+      "背景服务与资源争用",
+      "预热/稳定标准、时长和采样计划"
+    ],
+    "AA_noise_contract": {
+      "state": "pending_baseline_run",
+      "must_complete_before_B_results": true,
+      "method": "对每个主要指标计算独立A/A窗口的配对有符号差值、分布和重复性；查看B结果前在运行清单冻结数值检测精度与置信方法。不能故意放宽精度以掩盖回退。",
+      "default_precision_targets": "目标分辨1%的吞吐/每成功操作CPU变化及2%的P95/P99变化；这些是测量灵敏度，不是允许回退比例。短查询另按计时精度设绝对延迟要求。精度不足则隔离、增加样本或延长，不判通过。",
+      "thresholds": null,
+      "precision_failure": "inconclusive_release_blocked"
+    },
+    "statistical_contract": {
+      "confidence_level": 0.95,
+      "method": "预先声明配对窗口统计和独立窗口bootstrap方法；至少5对只是下限。尾延迟保留足够真实样本、完整直方图和超时，报告置信区间。",
+      "success_evidence": "不利变化的置信上界须落在预先冻结的A/A分辨带内，满足全部精度目标且没有可重复方向性回退。可重复回退无论多小均阻断发布。",
+      "insufficient_evidence": "差异不显著不证明等效；宽置信区间、入口不可达、基线不稳、未解释漂移或用例不完整均为证据不足并阻断发布。",
+      "no_physical_zero_claim": true
+    },
+    "load_contract": {
+      "fixed_rate": "完全相同开环到达序列下比较延迟/资源，包含客户端排队，不能隐藏协调遗漏。",
+      "capacity": "在相同且预先冻结的延迟/错误SLO下比较最大可持续成功吞吐。",
+      "percentile_sample_floor": {
+        "minimum_completed_operations_for_P99_per_window": 10000,
+        "if_unmet": "延长窗口，不能用微量样本制造低尾延迟。",
+        "scope": "Successful business query/write operations; LP-021/LP-022 browser actions use ui_measurement_contract separately."
+      },
+      "denied_requests": "拒绝率及拒绝延迟独立记录；拒绝请求不计入成功吞吐。",
+      "different_semantics": "B独有功能指标仅作描述，不宣称A/B收益；持续允许业务另作相同负载对照，记录实际IO/负载差异。"
+    },
+    "artifacts_required": [
+      "A/B源码提交、脏补丁和包SHA-256",
+      "冻结精度及执行顺序的运行清单",
+      "不含秘密的实际SQL与客户端命令",
+      "数据/模拟器哈希及重置记录",
+      "逐请求或直方图原始延迟、成功、错误记录",
+      "FE/BE既有CPU/RSS/GC/IO/网络时间序列",
+      "FE准入/分类计数与采样率；BE只使用既有观测",
+      "入口可达性与正反向行为日志",
+      "统计程序版本及置信区间"
+    ],
+    "release_gate": "所有本版适用用例可达且语义正确，没有可重复业务吞吐/延迟/资源效率回退，也没有缺失或统计能力不足的证据。所有实际结果当前均为空。范围外BE行为不作为拦截通过条件。",
+    "transport_contract": {
+      "default": "保留既有Thrift、brpc/gRPC、HTTP、Flight、端口及连接配置；不新增BE许可字段、内部身份/签名/租约或传输部署任务。",
+      "profiles": [
+        "existing_transport_unchanged"
+      ],
+      "AB_control": "A/B使用相同BE包、连接配置和既有认证；计入FE全部新增准入及管理/UI成本，不混合不同部署配置。",
+      "microbenchmark_boundary": "微基准只分析FE快照/分类/缓存与管理验签；不要求BE新增计数器、签名、票据或续批认证。",
+      "status": "not_implemented_not_measured"
+    },
+    "ui_measurement_contract": {
+      "decision_date": "2026-09-24",
+      "decision_source": "User selected 明确区分业务与页面指标（推荐） in this task",
+      "case_ids": [
+        "LP-021",
+        "LP-022"
+      ],
+      "business_background": {
+        "measurement_policy_ref": "measurement_policy",
+        "minimum_AA_pairs": 5,
+        "minimum_AB_pairs": 5,
+        "minimum_completed_operations_for_P99_per_window": 10000,
+        "precision_targets_percent": {
+          "successful_throughput": 1,
+          "cpu_per_success": 1,
+          "p95_latency": 2,
+          "p99_latency": 2
+        },
+        "unchanged": "Business query/write arrivals, full content correctness, independent windows, data reset, capacity/SLO, confidence and no-repeatable-regression gates remain unchanged. Browser actions never substitute for successful business operations."
+      },
+      "browser_actions": {
+        "window_seconds": 300,
+        "manual_refresh_interval_seconds": 10,
+        "browser_contexts_by_case": {
+          "LP-021": [
+            1,
+            10,
+            50
+          ],
+          "LP-022": [
+            1,
+            10
+          ]
+        },
+        "scope": "Separate browser concurrency, request counts, action latency and resource-cost evidence; preserve prefix/language/role/node identity and raw failures. Do not pool different semantics or windows to manufacture tail evidence.",
+        "metrics": [
+          "ready_and_active_contexts",
+          "scheduled_completed_failed_cancelled_actions",
+          "request_count_by_endpoint_and_status",
+          "action_latency_ms_including_queue",
+          "maximum_inflight_requests",
+          "requests_after_unmount_or_hidden",
+          "browser_cpu_rss",
+          "existing_fe_be_resource_time_series"
+        ],
+        "p99_if_fewer_than_10000_completed_actions": "not_qualified_insufficient_browser_samples; descriptive latency/raw samples remain, no qualified browser P99 claim",
+        "business_precision_targets_apply_to_browser_actions": false,
+        "acceptance": "Required UI concurrency and behavior, authentication, lazy loading, request cadence/cancellation and resource observations still require actual evidence. Insufficient UI P99 samples do not require inflating a300s browser window solely to satisfy the business sample floor, and do not imply performance equivalence. Actual repeatable business regressions remain release-blocking.",
+        "candidate_only_actions": "License tab/import/receipt/polling are P2U/P2 actions with descriptive B-only costs; never fabricated on original A."
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "LP-001",
+      "name": "FE主键短点查准入",
+      "status": "not_run",
+      "environment": "single_node_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_same_allowed_workload",
+      "license_states": [
+        "VALID"
+      ],
+      "load_shape": {
+        "concurrency": [
+          1,
+          16,
+          64
+        ],
+        "arrival": "种子20260922的开环泊松到达",
+        "rates": "在预先声明的延迟SLO下，按A可持续速率的30%/60%/85%冻结",
+        "connections": [
+          "复用连接",
+          "每连接一个请求"
+        ],
+        "duration_seconds_per_window": 300,
+        "warmup_seconds": 120
+      },
+      "data": {
+        "dataset": "bench_small",
+        "ids": "种子20260922在0至999999上均匀取值"
+      },
+      "setup": [
+        "SET enable_sql_cache=false",
+        "SET enable_query_cache=false",
+        "SET enable_short_circuit_query=true",
+        "SHOW CREATE确认store_row_column、light_schema_change、enable_unique_key_merge_on_write均为true；EXPLAIN显示SHORT-CIRCUIT并核对实际结果。短路路径按设计不生成普通Profile，不用缺失Profile判定失败。"
+      ],
+      "action": [
+        "按固定种子id执行SELECT payload FROM license_perf.point_rows WHERE id = <seeded_id>。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "同一输入返回同一结果；有效状态使用FE轻量准入。"
+      ],
+      "negative_observations": [
+        "不在每次点查验签、写journal或新增RPC；到期后新的FE点查拒绝。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。",
+      "functional_check_states": [
+        "VALID",
+        "EXPIRED"
+      ],
+      "functional_check_measurement": "到期拒绝为独立语义检查；A/B成功读取性能窗口只使用VALID，拒绝不混入成功吞吐。"
+    },
+    {
+      "id": "LP-002",
+      "name": "二进制预编译EXECUTE",
+      "status": "not_run",
+      "environment": "single_node_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_same_allowed_workload",
+      "license_states": [
+        "VALID"
+      ],
+      "load_shape": {
+        "concurrency": [
+          1,
+          16,
+          64
+        ],
+        "arrival": "种子20260922的开环泊松到达",
+        "rates": "在预先声明的延迟SLO下，按A可持续速率的30%/60%/85%冻结",
+        "connections": [
+          "复用连接",
+          "每连接一个请求"
+        ],
+        "duration_seconds_per_window": 300,
+        "warmup_seconds": 120
+      },
+      "data": {
+        "dataset": "bench_small",
+        "statement": "SELECT payload FROM license_perf.point_rows WHERE id = ?"
+      },
+      "setup": [
+        "使用真实COM_STMT_PREPARE/COM_STMT_EXECUTE及可验证的驱动，不用客户端字符串替换冒充。",
+        "每连接PREPARE一次，A/B使用相同参数序列。",
+        "与LP001相同的row-store/MoW/light-schema条件，关闭SQL/query cache并开启short-circuit。",
+        "同一ServerPreparedStatement多参数EXECUTE；schema稳定且不含非确定性函数。协议可达与directExecute快速分支观测分别记录。"
+      ],
+      "action": [
+        "反复EXECUTE；另检查到期前PREPARE、到期后新EXECUTE。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "有效时预编译复用正常，无逐行或每批授权成本。"
+      ],
+      "negative_observations": [
+        "到期前PREPARE不使到期后新EXECUTE获准。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。",
+      "functional_check_states": [
+        "VALID",
+        "EXPIRED"
+      ],
+      "functional_check_measurement": "到期拒绝为独立语义检查；A/B成功读取性能窗口只使用VALID，拒绝不混入成功吞吐。"
+    },
+    {
+      "id": "LP-003",
+      "name": "FE SQL缓存命中准入",
+      "status": "not_run",
+      "environment": "single_node_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_same_allowed_workload",
+      "license_states": [
+        "VALID"
+      ],
+      "load_shape": {
+        "concurrency": [
+          1,
+          16,
+          64
+        ],
+        "arrival": "种子20260922的开环泊松到达",
+        "rates": "在预先声明的延迟SLO下，按A可持续速率的30%/60%/85%冻结",
+        "connections": [
+          "复用连接",
+          "每连接一个请求"
+        ],
+        "duration_seconds_per_window": 300,
+        "warmup_seconds": 120
+      },
+      "data": {
+        "dataset": "bench_small",
+        "query": "SELECT SUM(v) FROM license_perf.point_rows"
+      },
+      "setup": [
+        "SET enable_sql_cache=true",
+        "预热并由FE既有profile/计数确认命中；不可达则阻断，不判通过。",
+        "确认FE cache_enable_sql_mode=true，表最新版本距当前时间至少实际cache_last_version_interval_second（默认30秒）；固定账号、catalog/db及影响结果的session变量，结果满足缓存行/字节限制。",
+        "EXPLAIN PHYSICAL PLAN包含PhysicalSqlCache且Profile Is Cached:Yes；记录backend=none还是BE缓存地址，SUM(v)路径不能写成纯FE零BE。"
+      ],
+      "action": [
+        "无表修改时重复固定查询。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "有效时缓存结果正确，命中仍使用当前许可状态。"
+      ],
+      "negative_observations": [
+        "到期后的FE新查询不得返回旧缓存中的业务行。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。",
+      "functional_check_states": [
+        "VALID",
+        "EXPIRED"
+      ],
+      "functional_check_measurement": "到期拒绝为独立语义检查；A/B成功读取性能窗口只使用VALID，拒绝不混入成功吞吐。"
+    },
+    {
+      "id": "LP-004",
+      "name": "经FE命中BE既有查询/结果缓存",
+      "status": "not_run",
+      "environment": "single_node_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_same_allowed_workload",
+      "license_states": [
+        "VALID"
+      ],
+      "load_shape": {
+        "concurrency": [
+          1,
+          16,
+          64
+        ],
+        "arrival": "种子20260922的开环泊松到达",
+        "rates": "在预先声明的延迟SLO下，按A可持续速率的30%/60%/85%冻结",
+        "connections": [
+          "复用连接",
+          "每连接一个请求"
+        ],
+        "duration_seconds_per_window": 300,
+        "warmup_seconds": 120
+      },
+      "data": {
+        "dataset": "bench_small",
+        "query": "SELECT grp, SUM(v) FROM license_perf.point_rows GROUP BY grp"
+      },
+      "setup": [
+        "SET enable_sql_cache=false",
+        "SET enable_query_cache=true",
+        "用既有BE profile确认该分支缓存资格和命中；冻结实际可命中的计划。",
+        "query_cache_force_refresh=false；记录BE query_cache_size及entry行/字节限制。",
+        "必须在既有Profile看到CACHE_SOURCE_OPERATOR及对应tablet HitCache:1；SQL缓存的Is Cached不能替代BE查询缓存命中证据。"
+      ],
+      "action": [
+        "经FE反复执行固定分组聚合，观测既有BE缓存路径。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "有效时结果与基线一致，BE缓存实现/包保持不变。"
+      ],
+      "negative_observations": [
+        "到期后的新FE查询在FE拒绝；不把直接BE缓存请求是否拒绝作为许可验收。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。",
+      "functional_check_states": [
+        "VALID",
+        "EXPIRED"
+      ],
+      "functional_check_measurement": "到期拒绝为独立语义检查；A/B成功读取性能窗口只使用VALID，拒绝不混入成功吞吐。"
+    },
+    {
+      "id": "LP-005",
+      "name": "探活和安全元数据",
+      "status": "not_run",
+      "environment": "single_node_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_same_allowed_workload",
+      "license_states": [
+        "VALID",
+        "MISSING",
+        "EXPIRED",
+        "LIMIT_EXCEEDED"
+      ],
+      "load_shape": {
+        "concurrency": [
+          1,
+          16,
+          64
+        ],
+        "arrival": "种子20260922的开环泊松到达",
+        "rates": "在预先声明的延迟SLO下，按A可持续速率的30%/60%/85%冻结",
+        "connections": [
+          "复用连接",
+          "每连接一个请求"
+        ],
+        "duration_seconds_per_window": 300,
+        "warmup_seconds": 120
+      },
+      "data": {
+        "dataset": "bench_small"
+      },
+      "setup": [
+        "分别建立原有认证的SQL和FE HTTP元数据客户端。",
+        "固定50% SELECT 1、25% SHOW TABLES FROM license_perf、25% DESCRIBE license_perf.point_rows。"
+      ],
+      "action": [
+        "在VALID、MISSING、EXPIRED和LIMIT_EXCEEDED下执行同一混合负载。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "安全元数据和无业务值探活保持可用，原对象权限仍生效。"
+      ],
+      "negative_observations": [
+        "不能因授权无效统一拒绝所有SELECT或管理HTTP；包含业务值的读取不能混作安全元数据。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。"
+    },
+    {
+      "id": "LP-006",
+      "name": "复杂冷规划",
+      "status": "not_run",
+      "environment": "single_node_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_same_allowed_workload",
+      "license_states": [
+        "VALID"
+      ],
+      "load_shape": {
+        "concurrency": [
+          1,
+          8,
+          32
+        ],
+        "arrival": "种子20260922的开环到达",
+        "rates": "先由A校准，在运行B前冻结",
+        "duration_seconds_per_window": 600,
+        "warmup_seconds": 180
+      },
+      "data": {
+        "dataset": "bench_small",
+        "plan_shape": "CTE内16个UNION ALL分支、按主键4次JOIN、32个算术表达式、固定聚合输出"
+      },
+      "setup": [
+        "计时前按指定形状及种子生成并归档精确SQL。",
+        "关闭SQL/查询缓存，确保每次分析/优化；精确SQL与连接方式归档。新连接不等于OS/JIT/元数据全冷，若清理优化器缓存须明确可执行手段。"
+      ],
+      "action": [
+        "规划并执行冻结SQL；按固定采样比例保存profile。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "FE分类摘要随既有规划生成，结果正确。"
+      ],
+      "negative_observations": [
+        "不重复全量遍历同一棵计划或为逐fragment分发新增许可签名。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。"
+    },
+    {
+      "id": "LP-007",
+      "name": "复杂热规划与依赖失效",
+      "status": "not_run",
+      "environment": "single_node_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_same_allowed_workload",
+      "license_states": [
+        "VALID"
+      ],
+      "load_shape": {
+        "concurrency": [
+          1,
+          8,
+          32
+        ],
+        "arrival": "种子20260922的开环到达",
+        "rates": "先由A校准，在运行B前冻结",
+        "duration_seconds_per_window": 600,
+        "warmup_seconds": 180
+      },
+      "data": {
+        "dataset": "bench_small",
+        "plan_shape_ref": "LP-006"
+      },
+      "setup": [
+        "使用LP006固定复杂形状及真实view依赖，目标复用路径冻结为实际LogicalSqlCache；须以EXPLAIN/Profile证明可达。",
+        "通用复杂PREPARE每次仍可能完整规划，不能作为复杂物理计划复用证据；SQL必须实际引用待变更view。"
+      ],
+      "action": [
+        "复用已证明的SQL缓存路径；t=180秒以固定DDL替换真实引用的兼容view，观测缓存失效及候选分类重建。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "依赖未变时复用FE摘要，变更后正确失效。"
+      ],
+      "negative_observations": [
+        "旧分类不能掩盖新增业务读/外部副作用，许可版本变化也不能复用永久允许位。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。",
+      "functional_check_states": [
+        "VALID",
+        "EXPIRED"
+      ],
+      "functional_check_measurement": "到期拒绝为独立语义检查；A/B成功读取性能窗口只使用VALID，拒绝不混入成功吞吐。"
+    },
+    {
+      "id": "LP-008",
+      "name": "FE控制的TVF结构探测与外部表达式边界",
+      "status": "not_run",
+      "environment": "external_fixture_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "separate_VALID_equivalent_A_B__EXPIRED_allowed_background_A_B__B_only_denial_semantics",
+      "license_states": [
+        "VALID",
+        "EXPIRED"
+      ],
+      "load_shape": {
+        "concurrency": [
+          1,
+          8,
+          32
+        ],
+        "arrival": "种子20260922的开环到达",
+        "rates": "先由A校准，在运行B前冻结",
+        "duration_seconds_per_window": 600,
+        "warmup_seconds": 180
+      },
+      "data": {
+        "dataset": "external_fixture",
+        "fixture": "隔离本地S3兼容服务，100个Parquet文件，每文件10000确定性行，记录请求"
+      },
+      "setup": [
+        "固定本地模拟端点、对象哈希和请求日志，不使用公网或客户端点。",
+        "在可达探测阶段归档本分支支持的TVF SQL及结构推断请求。"
+      ],
+      "action": [
+        "运行结构规划和TVF SELECT；另测同一数据源向内部表INSERT SELECT。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "有效时读取等效；无效时合法写入所需结构准备保持原权限和受控目标。"
+      ],
+      "negative_observations": [
+        "FE控制的被禁止读取在规划副作用前拒绝，不能已有外部请求后才判拒绝。",
+        "不要求BE新增表达式/文件读取许可守卫。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。",
+      "measurement_phases": [
+        {
+          "phase": "valid_equivalent_workload",
+          "A": "冻结的成功读取/写入/元数据混合",
+          "B": "VALID下完全相同混合、输入和到达序列",
+          "inference": "配对成功业务性能比较"
+        },
+        {
+          "phase": "expired_allowed_background",
+          "A": "仅相同合法维护、写入及安全元数据",
+          "B": "EXPIRED下完全相同合法负载",
+          "inference": "两边均不混入被禁止读取，比较持续允许业务"
+        },
+        {
+          "phase": "expired_denial_semantics",
+          "A": null,
+          "B": "独立运行FE禁止读取/规划/外发请求，检查模拟器记录",
+          "inference": "只证明FE语义拒绝；不作为性能改善证据"
+        }
+      ]
+    },
+    {
+      "id": "LP-009",
+      "name": "FE准入下多BE高fragment/tablet扇出",
+      "status": "not_run",
+      "environment": "multi_node_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_same_allowed_workload",
+      "license_states": [
+        "VALID"
+      ],
+      "load_shape": {
+        "concurrency": [
+          1,
+          8,
+          32
+        ],
+        "arrival": "种子20260922的开环到达",
+        "rates": "先由A校准，在运行B前冻结",
+        "duration_seconds_per_window": 600,
+        "warmup_seconds": 180
+      },
+      "data": {
+        "dataset": "bench_fanout",
+        "tablets": [
+          64,
+          256,
+          1024
+        ],
+        "be_count": 4,
+        "rows": 10000000
+      },
+      "setup": [
+        "配置隔离3 FE/4 BE，A/B复用相同BE发行包。",
+        "建立相同确定性数据，用既有profile确认实际fragment/tablet数。",
+        "关闭SQL/query cache，以4个BE实际地址、fragment和tablet分布证明扇出；单BE和仅注册4个BE不能证明本项。"
+      ],
+      "action": [
+        "按每种规模执行SELECT grp, SUM(v), COUNT(*) FROM license_perf.fanout_rows GROUP BY grp。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "结果正确；FE新增成本不随每行/每批增加。"
+      ],
+      "negative_observations": [
+        "不得为本用例改BE或增加每fragment许可签发/验证；高扇出下仍需真实性能证据。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。"
+    },
+    {
+      "id": "LP-010",
+      "name": "FE Flight准入与BE既有分批结果",
+      "status": "not_run",
+      "environment": "flight_enabled_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_same_allowed_workload",
+      "license_states": [
+        "VALID",
+        "EXPIRED"
+      ],
+      "load_shape": {
+        "concurrency": [
+          1,
+          8,
+          32
+        ],
+        "arrival": "种子20260922的开环到达",
+        "rates": "先由A校准，在运行B前冻结",
+        "duration_seconds_per_window": 600,
+        "warmup_seconds": 180
+      },
+      "data": {
+        "dataset": "bench_small",
+        "query": "SELECT id, payload FROM license_perf.point_rows ORDER BY id",
+        "batch_rows": [
+          1024,
+          8192,
+          65535
+        ],
+        "batch_rows_scope": "FE session batch_size（请求上限；实际Flight record batch行数另外测量，不假定每批恰等于它）。"
+      },
+      "setup": [
+        "使用真实FE Flight SQL和BE结果端点，沿用既有客户端/票据格式。",
+        "固定原账号和协商schema；通过客户端与现有profile记录真实批次。",
+        "通过会话SET batch_size或等效SET_VAR设置1024/8192/65535；另以65536验证既有参数拒绝，不能用于有效负载。"
+      ],
+      "action": [
+        "经FE建立查询，完整拉取结果并算流式校验和；分别观测新建和复用连接。",
+        "单独记录到期前已发票据的BE取数，以及到期后向FE发起新查询。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "有效时端到端结果等效；在途结果按原上下文和期限完成。",
+        "已发BE票据到期后按既有行为使用，记录实际结果即可。"
+      ],
+      "negative_observations": [
+        "到期后FE新查询/新计划申请拒绝。",
+        "不将BE旧票据可继续使用记为失败，也不将其拒绝记为新增许可拦截通过。",
+        "原版FE设置batch_size=65536应按既有1..65535范围拒绝，与许可证错误区分。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。",
+      "be_behavior_observation": {
+        "status": "not_run",
+        "acceptance": "只观察原有BE续行/旧计划或票据使用；不要求新增许可拒绝，也不得记为BE拦截通过。",
+        "result": null,
+        "artifacts": []
+      },
+      "accepted_original_defects": [
+        {
+          "id": "LP010-BE-UTF8-OFFSETS",
+          "accepted_on": "2026-09-24",
+          "accepted_by": "user_explicit_reply",
+          "decision": "保留原版缺陷，继续授权开发（推荐）",
+          "scope": "Original BE Flight batch_size=65535 string payload in new/reused channel matrix",
+          "observed_result": "FAIL",
+          "symptom": "Utf8 schema with 64-bit string offset layout; first id0 payload appears empty although raw data bytes contain expected MD5",
+          "evidence_report": ".build-records/license-p0-p1-20260924/lp010-flight-be4g-v5/report.json",
+          "evidence_sha256": "c32419f427d6203133e3b49c6ef6757d4b30a6ce7a0b6c46c6569375383a0522",
+          "development_continues": true,
+          "be_changes_authorized": false,
+          "counts_as_performance_pass": false,
+          "remove_variant": false,
+          "remaining_gates_unchanged": true,
+          "retained_requirements": [
+            "Keep 65535 variant and failing result visible; do not count incorrect results as successful throughput.",
+            "Complete 1024/8192 and FE admission/expiry checks under their original timing/sample/precision requirements.",
+            "The acceptance records an existing defect and continuing development; it does not establish a completed LP010 performance result."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "LP-011",
+      "name": "FE发放_query_plan与BE旧计划观察",
+      "status": "not_run",
+      "environment": "external_scanner_enabled_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_same_allowed_workload",
+      "license_states": [
+        "VALID",
+        "EXPIRED"
+      ],
+      "load_shape": {
+        "concurrency": [
+          1,
+          8,
+          32
+        ],
+        "arrival": "种子20260922的开环到达",
+        "rates": "先由A校准，在运行B前冻结",
+        "duration_seconds_per_window": 600,
+        "warmup_seconds": 180
+      },
+      "data": {
+        "dataset": "bench_small",
+        "batch_rows": [
+          1024,
+          8192
+        ]
+      },
+      "setup": [
+        "在隔离发行包确认既有_query_plan/open_scanner/get_next契约，保存脱敏客户端样例。"
+      ],
+      "action": [
+        "有效时向FE获取计划后在BE创建扫描并读完批次。",
+        "用短有效期样例模拟10:59发计划、11:00到期、11:01持同一计划继续或重开扫描，再向FE申请新计划。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "有效时扫描结果和基线一致。",
+        "旧计划在到期后是否可继续/重开由BE既有数据版本与上下文决定，按实际结果记录，不承诺一次使用。"
+      ],
+      "negative_observations": [
+        "到期后向FE申请新业务读取计划必须拒绝，发计划前发生到期也不能发出新计划。",
+        "BE旧计划重用不是本版拦截目标；不增加BE过期字段、消费记录或校验探针。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。",
+      "be_behavior_observation": {
+        "status": "not_run",
+        "acceptance": "只观察原有BE续行/旧计划或票据使用；不要求新增许可拒绝，也不得记为BE拦截通过。",
+        "result": null,
+        "artifacts": []
+      }
+    },
+    {
+      "id": "LP-012",
+      "name": "Stream Load持续写入",
+      "status": "not_run",
+      "environment": "single_node_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_same_allowed_workload",
+      "license_states": [
+        "VALID",
+        "MISSING",
+        "EXPIRED",
+        "LIMIT_EXCEEDED"
+      ],
+      "load_shape": {
+        "concurrency": [
+          1,
+          8,
+          32
+        ],
+        "arrival": "固定每秒输入字节/行数，种子20260922",
+        "batch_rows": [
+          1000,
+          10000
+        ],
+        "duration_seconds_per_window": 600,
+        "warmup_seconds": 180
+      },
+      "data": {
+        "dataset": "ingest_fixture",
+        "format": "CSV",
+        "row_bytes_target": 128,
+        "unique_labels": "按用例/窗口/客户端/批次确定生成，并使用唯一运行前缀"
+      },
+      "setup": [
+        "每窗口使用空目标；计时外生成和校验完全相同上传数据。"
+      ],
+      "action": [
+        "提交原有认证的Stream Load批次，观测事务提交和可见性。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "全部指定许可状态下合法入库保持可用，BE直连入口沿用原行为。"
+      ],
+      "negative_observations": [
+        "FE重定向/事务准备不能因读取许可失效额外停写；失败请求不能被计为成功吞吐。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。"
+    },
+    {
+      "id": "LP-013",
+      "name": "Routine Load持续写入",
+      "status": "not_run",
+      "environment": "kafka_fixture_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_same_allowed_workload",
+      "license_states": [
+        "VALID",
+        "EXPIRED"
+      ],
+      "load_shape": {
+        "concurrency": [
+          1,
+          8,
+          32
+        ],
+        "arrival": "固定每秒输入字节/行数，种子20260922",
+        "batch_rows": [
+          1000,
+          10000
+        ],
+        "duration_seconds_per_window": 600,
+        "warmup_seconds": 180
+      },
+      "data": {
+        "dataset": "kafka_fixture",
+        "partitions": 8,
+        "rows": 10000000,
+        "key_order": "种子20260922"
+      },
+      "setup": [
+        "使用隔离Kafka，冻结topic内容、分区offset和作业配置。",
+        "归档实际支持的CREATE ROUTINE LOAD语句。"
+      ],
+      "action": [
+        "固定生产速率消费，作业运行期间使证书到期并续期。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "作业、必要内部读取及提交按原权限运行，消费进度正确。"
+      ],
+      "negative_observations": [
+        "许可状态变更不得额外停止任务；不能用重复消费或漏数据美化吞吐。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。"
+    },
+    {
+      "id": "LP-014",
+      "name": "Group Commit小批量写入",
+      "status": "not_run",
+      "environment": "single_node_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_same_allowed_workload",
+      "license_states": [
+        "VALID",
+        "EXPIRED"
+      ],
+      "load_shape": {
+        "concurrency": [
+          1,
+          8,
+          32
+        ],
+        "arrival": "固定每秒输入字节/行数，种子20260922",
+        "batch_rows": [
+          1,
+          100,
+          1000,
+          10000
+        ],
+        "duration_seconds_per_window": 600,
+        "warmup_seconds": 180
+      },
+      "data": {
+        "dataset": "ingest_fixture",
+        "batch_rows": [
+          1,
+          100,
+          1000,
+          10000
+        ]
+      },
+      "setup": [
+        "冻结本分支支持的group_commit及full-prepare配置。",
+        "分别记录请求确认延迟和数据可见时间。"
+      ],
+      "action": [
+        "经实际Group Commit路径提交同一INSERT批次。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "有效和过期状态下写入/确认/可见性符合原契约。"
+      ],
+      "negative_observations": [
+        "缓存准备状态不应被误判为业务读取，也不得把仅确认当作已持久化。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。"
+    },
+    {
+      "id": "LP-015",
+      "name": "INSERT SELECT/UPDATE/DELETE与事务续行",
+      "status": "not_run",
+      "environment": "single_node_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_same_allowed_workload",
+      "license_states": [
+        "VALID",
+        "MISSING",
+        "EXPIRED",
+        "LIMIT_EXCEEDED"
+      ],
+      "load_shape": {
+        "concurrency": [
+          1,
+          8,
+          32
+        ],
+        "arrival": "固定每秒输入字节/行数，种子20260922",
+        "batch_rows": [
+          1000,
+          10000
+        ],
+        "duration_seconds_per_window": 600,
+        "warmup_seconds": 180
+      },
+      "data": {
+        "dataset": "bench_small_plus_write_target",
+        "transactions_per_client": 1000
+      },
+      "setup": [
+        "每窗口重置目标和修改数据。",
+        "冻结内部INSERT SELECT 100行、UPDATE 100行、DELETE 100行；不支持的事务组合另行记录。"
+      ],
+      "action": [
+        "执行实际支持的DML和显式提交/回滚，在合法事务打开时变更证书状态。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "合法内部写入及必要读取继续；提交/回滚/失败语义与原系统一致。"
+      ],
+      "negative_observations": [
+        "带业务结果外发的SQL不能只按写语句名称豁免；不修改BE事务协议。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。"
+    },
+    {
+      "id": "LP-016",
+      "name": "FE排队跨期与有效在途执行",
+      "status": "not_run",
+      "environment": "multi_node_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_allowed_background_plus_B_semantic_checks",
+      "license_states": [
+        "VALID",
+        "EXPIRED"
+      ],
+      "load_shape": {
+        "concurrency": [
+          1,
+          8,
+          32
+        ],
+        "arrival": "种子20260922的开环到达",
+        "rates": "先由A校准，在运行B前冻结",
+        "duration_seconds_per_window": 600,
+        "warmup_seconds": 180
+      },
+      "data": {
+        "dataset": "bench_fanout",
+        "test_certificate_lifetime_seconds": 180
+      },
+      "setup": [
+        "设置隔离工作负载队列，记录入口、入队、出队及执行启动时间。",
+        "到期前启动受控长查询，同时把另一条新查询保留在队列直到到期。"
+      ],
+      "action": [
+        "在合法Stream Load和元数据背景流量恒定下跨到期边界测量。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "真正已启动查询在原期限内完成；合法写入/元数据持续。"
+      ],
+      "negative_observations": [
+        "到期后才从FE队列出队的业务查询拒绝启动。",
+        "重试不延长已执行查询原期限；已发外部扫描计划遵循LP-011，不能套用队列规则承诺BE拒绝。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。"
+    },
+    {
+      "id": "LP-017",
+      "name": "FE续期与pending自动生效",
+      "status": "not_run",
+      "environment": "multi_node_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_allowed_background_plus_B_management_overlay",
+      "license_states": [
+        "VALID",
+        "PENDING",
+        "VALID_RENEWED"
+      ],
+      "load_shape": {
+        "concurrency": [
+          1,
+          8,
+          32
+        ],
+        "arrival": "固定每秒输入字节/行数，种子20260922",
+        "batch_rows": [
+          1000,
+          10000
+        ],
+        "duration_seconds_per_window": 600,
+        "warmup_seconds": 180
+      },
+      "data": {
+        "dataset": "bench_small_plus_write_target",
+        "certificates": "隔离测试密钥的active/pending/renewal样例，序号单调且UTC边界固定"
+      },
+      "setup": [
+        "固定读取/写入/元数据到达率，不修改宿主机时钟。",
+        "t=120秒导入pending、t=240秒生效、t=360秒续期。"
+      ],
+      "action": [
+        "持续流量跨已提交及已应用状态转换，记录各FE实际许可版本。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "精确边界使用正确证书；查询额度与已提交基础ADD额度分离。"
+      ],
+      "negative_observations": [
+        "不能由未提交pending放宽成员ADD，也不能靠定时任务延迟导致过期仍准入。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。"
+    },
+    {
+      "id": "LP-018",
+      "name": "坏证书与并发管理压力",
+      "status": "not_run",
+      "environment": "single_node_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_allowed_background_plus_B_management_overlay",
+      "license_states": [
+        "VALID"
+      ],
+      "load_shape": {
+        "management_concurrency": [
+          1,
+          8,
+          32
+        ],
+        "requests_per_second": [
+          1,
+          10,
+          100
+        ],
+        "background": "固定为A可持续合法写入/元数据速率的60%",
+        "duration_seconds_per_window": 600
+      },
+      "data": {
+        "dataset": "bench_small_plus_write_target",
+        "certificates": [
+          "bad_signature",
+          "wrong_deployment",
+          "oversize_65537_bytes",
+          "valid_duplicate"
+        ]
+      },
+      "setup": [
+        "只使用隔离测试密钥和合成声明。",
+        "冻结请求体、大小上限及FE管理计数，不记录完整证书。"
+      ],
+      "action": [
+        "合法业务负载恒定时混合校验/导入请求。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "管理验签队列、输入上限和错误处理有界。"
+      ],
+      "negative_observations": [
+        "坏签名、错部署、超大文件不改变有效状态；相同提交重试不重复应用。",
+        "管理压力不能挤占写入或诱发逐查询验签。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。"
+    },
+    {
+      "id": "LP-019",
+      "name": "FE成员名额的缩容/重新加入/切主",
+      "status": "not_run",
+      "environment": "multi_node_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_allowed_background_plus_B_semantic_checks",
+      "license_states": [
+        "VALID",
+        "EXPIRED"
+      ],
+      "load_shape": {
+        "concurrency": [
+          1,
+          8,
+          32
+        ],
+        "arrival": "种子20260922的开环到达",
+        "rates": "先由A校准，在运行B前冻结",
+        "duration_seconds_per_window": 600,
+        "warmup_seconds": 180
+      },
+      "data": {
+        "dataset": "bench_fanout",
+        "topology": "3个投票FE、4个BE，预留1个可删除的空BE"
+      },
+      "setup": [
+        "只删除预留空BE，不动不可替代数据。",
+        "记录FE实际成员提交版本和许可基础额度；仅使用自有隔离节点。"
+      ],
+      "action": [
+        "分别尝试并发超额ADD、成功DROP后的重新ADD、失败DROP、重复请求和FE切主恢复。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms",
+        "fe_membership_commit_latency_ms",
+        "fe_registered_fe_count",
+        "fe_registered_be_count",
+        "fe_add_denial_count"
+      ],
+      "positive_observations": [
+        "离线注册节点仍占额；真正删除提交后释放一次，合法重新ADD占一次。",
+        "切主恢复使用已提交容量和成员事实，过期查询证书不自行清空基础额度。"
+      ],
+      "negative_observations": [
+        "不得将离线/未提交DROP当作释放；并发ADD不能超过额度。",
+        "旧BE进程和直接请求不承诺撤权；不再测试32秒强制撤权或成员租约。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。",
+      "measurement_phases": [
+        {
+          "phase": "equivalent_membership_background",
+          "A": "相同支持的合法ADD/DROP/切主事件及固定写入/元数据背景",
+          "B": "相同合法事件及背景，全部处于许可容量内",
+          "inference": "只比较等效成功操作和恒定合法业务性能"
+        },
+        {
+          "phase": "quota_denial_semantics",
+          "A": null,
+          "B": "独立检查超额ADD、失败/重复DROP及切主恢复",
+          "inference": "只判定FE额度正确性；拒绝与失败请求不计入成功性能对照"
+        }
+      ]
+    },
+    {
+      "id": "LP-020",
+      "name": "FE异常授权高频拒绝不挤占写入",
+      "status": "not_run",
+      "environment": "single_node_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_allowed_background_with_explicit_denial_control_not_successful_query_equivalence",
+      "license_states": [
+        "MISSING",
+        "EXPIRED",
+        "LIMIT_EXCEEDED"
+      ],
+      "load_shape": {
+        "reader_requests_per_second": [
+          100,
+          1000,
+          10000
+        ],
+        "writer_load": "固定为A可持续Stream Load速率的60%",
+        "metadata_requests_per_second": 100,
+        "duration_seconds_per_window": 600
+      },
+      "data": {
+        "dataset": "bench_small_plus_write_target"
+      },
+      "setup": [
+        "A使用原账号权限拒绝相同SELECT，B使用有对象权限但证书过期的账号；合法写入/元数据账号及流量相同。",
+        "单独报告拒绝负载对照，不混作等效成功查询比较。"
+      ],
+      "action": [
+        "确定性高频FE业务读取拒绝与恒定合法入库/元数据并行。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "拒绝路径内存/日志/CPU有界，合法业务不受可测回退。"
+      ],
+      "negative_observations": [
+        "拒绝不能计入成功吞吐；不得因删除读取IO后写入变快就宣称授权有性能收益。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。"
+    },
+    {
+      "id": "LP-021",
+      "name": "FE页面懒加载与状态刷新",
+      "status": "not_run",
+      "environment": "single_node_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_allowed_background_plus_B_UI_overlay",
+      "license_states": [
+        "VALID"
+      ],
+      "load_shape": {
+        "browser_contexts": [
+          1,
+          10,
+          50
+        ],
+        "tabs": [
+          "Home",
+          "Playground",
+          "Configuration",
+          "License"
+        ],
+        "manual_refresh_interval_seconds": 10,
+        "duration_seconds_per_window": 300
+      },
+      "data": {
+        "dataset": "bench_small",
+        "ui_languages": [
+          "zh-CN",
+          "en"
+        ],
+        "prefixes": [
+          "",
+          "/proxy/fe",
+          "/gateway/cluster/fe/default"
+        ]
+      },
+      "setup": [
+        "用对应FE构建A/B UI；测试账号秘密不进入归档。",
+        "维持恒定查询/写入背景；License页面仅B存在，其页面延迟单独描述。"
+      ],
+      "action": [
+        "打开其他Tab、打开License、手动刷新、离开页面以及浏览器前进/后退。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "其他页面不主动拉取证书详情；详情展示UTC及本地时间解释，容量来源清晰。"
+      ],
+      "negative_observations": [
+        "不产生永久轮询或重复挂载请求；证书正文不进localStorage、URL和日志。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。",
+      "metric_scope": {
+        "business_metrics": "Existing metrics list describes the same allowed business background and retains original sample/precision gates.",
+        "browser_metrics_ref": "measurement_policy.ui_measurement_contract.browser_actions",
+        "candidate_only_metrics": "License tab/import/receipt/polling costs are separate descriptive B-only data."
+      }
+    },
+    {
+      "id": "LP-022",
+      "name": "FE页面导入确认与有限轮询",
+      "status": "not_run",
+      "environment": "multi_node_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_allowed_background_plus_B_UI_overlay",
+      "license_states": [
+        "VALID"
+      ],
+      "load_shape": {
+        "browser_contexts": [
+          1,
+          10
+        ],
+        "imports_per_context": 3,
+        "poll_budget_seconds": 120,
+        "duration_seconds_per_window": 300,
+        "confirmation_polling": {
+          "initial_interval_seconds": 2,
+          "multiplier": 2,
+          "max_interval_seconds": 30,
+          "budget_seconds": 120,
+          "max_inflight": 1,
+          "deadline_action": "stop_and_offer_manual_receipt_lookup",
+          "visibility_action": "stop_when_hidden_or_unmounted"
+        }
+      },
+      "data": {
+        "dataset": "bench_small",
+        "fixtures": [
+          "valid_utf8_file",
+          "pasted_jws",
+          "malformed",
+          "future_certificate"
+        ]
+      },
+      "setup": [
+        "隔离代理只中断测试导入提交后的响应，记录触发时间。",
+        "测试Master/Follower页面及ADMIN/非ADMIN会话。"
+      ],
+      "action": [
+        "校验预览后确认导入；中断响应、按指纹查回执、切Tab/可见性；新证书覆盖后重查旧回执。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "有限轮询预算内辨别提交结果；已历史接受回执不能重应用旧证书。"
+      ],
+      "negative_observations": [
+        "未授权导入拒绝，文件超限/无效预览不能应用；离开页面终止无用轮询。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。",
+      "metric_scope": {
+        "business_metrics": "Existing metrics list describes the same allowed business background and retains original sample/precision gates.",
+        "browser_metrics_ref": "measurement_policy.ui_measurement_contract.browser_actions",
+        "candidate_only_metrics": "License tab/import/receipt/polling costs are separate descriptive B-only data."
+      }
+    },
+    {
+      "id": "LP-023",
+      "name": "FE状态/分类及管理验签微基准",
+      "status": "not_run",
+      "environment": "single_node_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "microbenchmark_cost_attribution_not_standalone_release_evidence",
+      "license_states": [
+        "VALID"
+      ],
+      "load_shape": {
+        "threads": [
+          1,
+          8,
+          32
+        ],
+        "operations_per_window": 1000000,
+        "duration_seconds_per_window": 60,
+        "payload_sizes_bytes": [
+          512,
+          4096,
+          16384
+        ],
+        "payload_size_unit": "decoded_canonical_json_utf8_bytes",
+        "classification_dependency_counts": [
+          1,
+          64,
+          4096
+        ]
+      },
+      "data": {
+        "dataset": "FE真实快照/分类摘要及厂商JWS测试输入",
+        "seed": 20260922,
+        "fixture_tool": "tools/license-checks/license_payload_fixture.py",
+        "fixture_documentation": "tools/license-checks/license-payload-fixture.md",
+        "payload_size_rule": "512/4096/16384均为生产schema合法、含DATA_QUERY且在冻结时刻为VALID的canonical JSON UTF-8字节数；分别记录compact JWS完整字节数，禁止按base64长度或空白填充冒充载荷档。"
+      },
+      "negative_payload_cases": {
+        "payload_sizes_bytes": [
+          256
+        ],
+        "payload_size_unit": "decoded_canonical_json_utf8_bytes",
+        "construction": "精确256字节canonical JSON，只缺deployment_id必需字段，其余字段满足schema；夹具临时Ed25519私钥签名，先独立验证签名正确，再要求生产LicenseVerifier拒绝INVALID_CLAIMS。生产发行工具必须拒绝签发该输入。",
+        "expected_error": "INVALID_CLAIMS",
+        "count_as_valid_management_work": false,
+        "measurement_rule": "按相同threads和独立窗口要求记录拒绝数、拒绝延迟及CPU；不得计入VALID成功吞吐或有效管理验签成本，也不替代三个合法载荷档。"
+      },
+      "setup": [
+        "仅使用实际FE生产实现，不用简化比较器替代。",
+        "固定工具链、CPU绑定和Java预热；查询快路径与导入/恢复验签分开计时。",
+        "计时前使用license_payload_fixture.py构造、签名并核对精确载荷尺寸，记录原始JSON/JWS和实际生产类摘要；295字节schema最小证明已过期且无DATA_QUERY，不得作为VALID档。",
+        "VALID夹具必须绑定本次测试deployment/固定时间、信任公钥和允许节点数，含DATA_QUERY；管理提交另按具体导入语义生成唯一license_id/sequence并保持最终payload尺寸，不能把幂等命中当实际验签。256字节负例独立统计。"
+      ],
+      "action": [
+        "分别测许可快照读取/时间版本比较、分类摘要命中和失效，以及管理JWS验签/JSON解析。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms",
+        "nanoseconds_per_operation",
+        "fe_allocation_bytes_per_operation",
+        "management_vendor_verifications_per_second"
+      ],
+      "positive_observations": [
+        "记录纳秒/操作、分配、CPU及分布；查询路径不调用厂商验签。"
+      ],
+      "negative_observations": [
+        "微基准不能替代端到端发布证据；不编写BE内部签名/连接认证微基准。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。"
+    },
+    {
+      "id": "LP-024",
+      "name": "FE长期状态/分类/管理缓存有界性",
+      "status": "not_run",
+      "environment": "multi_node_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_same_allowed_workload",
+      "license_states": [
+        "VALID"
+      ],
+      "load_shape": {
+        "concurrency": [
+          16,
+          64
+        ],
+        "duration_seconds_per_window": 14400,
+        "arrival": "固定种子混合：30%点查、20%预编译、20%分批读取、20%写入、10%元数据",
+        "connection_recycle_seconds": 60
+      },
+      "data": {
+        "dataset": "bench_small_plus_write_target"
+      },
+      "setup": [
+        "使用不同FE查询ID、分类依赖和导入请求；按声明节奏轮换测试厂商公钥/证书。",
+        "A/B前冻结FE缓存上限，不能反复清空掩盖增长。"
+      ],
+      "action": [
+        "运行四小时窗口，覆盖查询完成/取消/重试、会话关闭、分类失效及导入回执淘汰。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms",
+        "fe_rss_slope_bytes_per_hour",
+        "fe_live_completed_context_counts",
+        "fe_cache_eviction_count",
+        "last_hour_business_p99_ms"
+      ],
+      "positive_observations": [
+        "FE内存/缓存条目增长有界，尾延迟和吞吐在整个窗口稳定。"
+      ],
+      "negative_observations": [
+        "已完成查询或旧分类/回执不得无限保留；淘汰历史回执不能重应用低序号证书。",
+        "不要求新增BE防重放缓存或检查其有界性。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。"
+    },
+    {
+      "id": "LP-025",
+      "name": "FE时钟异常与签名修复",
+      "status": "not_run",
+      "environment": "clock_injection_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "paired_A_B_allowed_background_plus_B_semantic_checks",
+      "license_states": [
+        "CLOCK_SUSPECT",
+        "VALID",
+        "EXPIRED"
+      ],
+      "load_shape": {
+        "concurrency": 16,
+        "duration_seconds_per_window": 600,
+        "background": "恒定写入/元数据，另有固定在途查询和FE队列中的待执行查询"
+      },
+      "data": {
+        "dataset": "bench_small_plus_write_target"
+      },
+      "setup": [
+        "只向隔离FE测试构建注入Clock和签名修复样例，不改宿主机时间。",
+        "记录原在途单调期限、已提交时间水位及FE clock_epoch。"
+      ],
+      "action": [
+        "注入FE时间向前/向后异常，经原有认证的当前Master管理入口提交修复，测试重连/切主/恢复。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms",
+        "fe_repair_apply_ms",
+        "fe_inflight_deadline_delta_ms",
+        "business_p99_during_repair"
+      ],
+      "positive_observations": [
+        "合法写入和安全元数据持续；修复不延长证书到期或原在途期限。",
+        "恢复入口保留账号认证，当前可信时间决定FE新申请。"
+      ],
+      "negative_observations": [
+        "旧Master/进程挑战、已消费修复或错误部署修复不能再次应用。",
+        "没有新增BE租约及内部epoch票据；不能把旧BE计划可用当作修复绕过失败。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。"
+    },
+    {
+      "id": "LP-026",
+      "name": "FE后台维护及独立HTTP读取",
+      "status": "not_run",
+      "environment": "external_fixture_isolated",
+      "reachability": "pending_real_distribution_probe",
+      "comparison": "separate_VALID_equivalent_A_B__EXPIRED_allowed_background_A_B__B_only_denial_semantics",
+      "license_states": [
+        "VALID",
+        "EXPIRED"
+      ],
+      "load_shape": {
+        "concurrency": [
+          1,
+          8,
+          32
+        ],
+        "arrival": "种子20260922的开环到达",
+        "rates": "先由A校准，在运行B前冻结",
+        "duration_seconds_per_window": 600,
+        "warmup_seconds": 180
+      },
+      "data": {
+        "dataset": "bench_small_plus_write_target",
+        "fixtures": [
+          "registered_dictionary",
+          "supported_MV_refresh",
+          "ES_mock",
+          "remote_preview_mock"
+        ]
+      },
+      "setup": [
+        "可达探测时冻结实际支持的字典/MV/统计作业及FE端点URL。",
+        "使用记录请求的本地外部模拟器，不接客户服务。"
+      ],
+      "action": [
+        "跨到期边界运行维护作业及FE ES搜索/file_review/安全结构接口。"
+      ],
+      "metrics": [
+        "successful_operations_per_second",
+        "client_end_to_end_p50_p95_p99_ms_including_queue",
+        "timeouts_errors_retries",
+        "fe_cpu_seconds_per_success",
+        "be_existing_cpu_seconds_per_success",
+        "fe_be_existing_rss_peak_and_growth",
+        "fe_allocation_bytes_gc_pause_ms",
+        "existing_rpc_count_bytes",
+        "fe_license_snapshot_classification_admission_counts",
+        "fe_license_cache_entries_bytes_hit_miss",
+        "management_queue_wait_ms"
+      ],
+      "positive_observations": [
+        "合法维护、入库及安全元数据按原账号/作业来源和受控目标运行。"
+      ],
+      "negative_observations": [
+        "到期后的FE新ES搜索/file_review在外部业务读取前拒绝。",
+        "用户AI/RPC表达式不因维护类别得到任意外发豁免；不要求BE新守卫。",
+        "拒绝的业务读取不计入成功对照，也不把省掉IO解释成性能提升。"
+      ],
+      "sampling_policy_ref": "measurement_policy",
+      "required_pairs": 5,
+      "result": null,
+      "artifacts": [],
+      "implementation_scope": "FE准入/管理实现及端到端观测；BE不改。",
+      "measurement_phases": [
+        {
+          "phase": "valid_equivalent_workload",
+          "A": "冻结的成功读取/写入/元数据混合",
+          "B": "VALID下完全相同混合、输入和到达序列",
+          "inference": "配对成功业务性能比较"
+        },
+        {
+          "phase": "expired_allowed_background",
+          "A": "仅相同合法维护、写入及安全元数据",
+          "B": "EXPIRED下完全相同合法负载",
+          "inference": "两边均不混入被禁止读取，比较持续允许业务"
+        },
+        {
+          "phase": "expired_denial_semantics",
+          "A": null,
+          "B": "独立运行FE禁止读取/规划/外发请求，检查模拟器记录",
+          "inference": "只证明FE语义拒绝；不作为性能改善证据"
+        }
+      ],
+      "accepted_original_defects": [
+        {
+          "id": "LP026-FE-PARQUET-READER-CLOSE",
+          "accepted_on": "2026-09-24",
+          "accepted_by": "user_explicit_reply",
+          "decision": "保留原版缺陷，继续授权开发（推荐）",
+          "scope": "Original FE POST /rest/v2/api/import/file_review PARQUET returns correct content without closing one broker reader",
+          "observed_result": "FAIL",
+          "evidence_report": ".build-records/license-p0-p1-20260924/lp026-background-http-actual-v7/report.json",
+          "evidence_sha256": "ebbd9f5b3274c26819173ed4d82319ad6277a7ee12fb382c17402eea01c42b4a",
+          "broker_summary": {
+            "path": ".build-records/license-p0-p1-20260924/lp026-background-http-actual-v7/broker/summary.json",
+            "sha256": "74423fddbffb0962d78cc33738f38c3db234c6558ec91fafb324989f123dceea"
+          },
+          "http_receipt": {
+            "path": ".build-records/license-p0-p1-20260924/lp026-background-http-actual-v7/http-004.json",
+            "sha256": "712bcb397067445fe18c5fabc3e641ec8723df78b40dbb2d60016d436ac1947c"
+          },
+          "physical_cleanup": {
+            "path": ".build-records/license-p0-p1-20260924/lp026-background-http-actual-v7-control/cleanup-audit/report.json",
+            "sha256": "4d3eb8ceff4643b2a88a49a4e25a3407aee9350a424bf74bdf8c35dfc1be90c6"
+          },
+          "reader_counts": {
+            "opened_readers": 2,
+            "closed_readers": 1,
+            "active_readers_before_cleanup": 1,
+            "cleanup_closed_readers": 1,
+            "active_readers": 0
+          },
+          "development_continues": true,
+          "product_fix_in_this_scope": false,
+          "be_changes_authorized": false,
+          "counts_as_performance_pass": false,
+          "counts_as_client_cleanup_pass": false,
+          "remove_variant": false,
+          "remaining_gates_unchanged": true,
+          "retained_requirements": [
+            "Keep original FAILED and cleanup.complete=false; independently record physical fixture cleanup without converting forced cleanup to original FE close.",
+            "Preserve PARQUET alongside CSV and retain actual response/content/network evidence.",
+            "Continue FE license development with existing protocols; acceptance does not establish full LP026 or performance success."
+          ]
+        }
+      ]
+    }
+  ],
+  "protocol_status": "FE实施范围与P0接口/生命周期/恢复契约已冻结并有静态漂移校验；部分原版路径已实测。完整基线精度与剩余fixture可达性仍待证明。旧内部协议任务保持out_of_scope。",
+  "scope_revision": {
+    "reason": "用户明确接受已下发计划到期后按BE原行为继续或重复使用，要求本版不修改BE。",
+    "accepted_boundary": "FE拒绝到期后的新业务读取及新计划申请；BE不新增许可检查，旧计划、结果票据和直接读取继续遵循既有规则。",
+    "risk_probability": "未经测量，不据此称发生概率极低。",
+    "compatibility": "保留现有协议、端口和连接配置；不以关闭直连功能、网络改造或新增BE凭证要求替代范围调整。",
+    "stable_case_ids": "LP-001至LP-026保留；主用例范围已更新且全部not_run，移除的内部协议子任务单独标记out_of_scope，不能作为通过记录。"
+  },
+  "out_of_scope_tasks": [
+    {
+      "id": "LP-OOS-001",
+      "related_cases": [
+        "LP-009",
+        "LP-010",
+        "LP-011",
+        "LP-023"
+      ],
+      "status": "out_of_scope",
+      "name": "节点身份PKI、私钥持有证明及原协议消息认证",
+      "reason": "本版不修改BE及节点间通信，不建立新的内部身份体系。",
+      "result": null
+    },
+    {
+      "id": "LP-OOS-002",
+      "related_cases": [
+        "LP-010",
+        "LP-011",
+        "LP-023",
+        "LP-024"
+      ],
+      "status": "out_of_scope",
+      "name": "BE执行范围签名凭证、资源绑定、续批认证与防重放缓存",
+      "reason": "用户接受旧计划按原BE规则使用或重开；不新增BE许可验证。",
+      "result": null
+    },
+    {
+      "id": "LP-OOS-003",
+      "related_cases": [
+        "LP-019"
+      ],
+      "status": "out_of_scope",
+      "name": "成员租约、多数任期证明与32秒旧节点撤权",
+      "reason": "本版仅保证FE已提交注册名额的准入/释放，不保证旧BE进程撤权。",
+      "result": null
+    },
+    {
+      "id": "LP-OOS-004",
+      "related_cases": [
+        "LP-023"
+      ],
+      "status": "out_of_scope",
+      "name": "Java/C++内部凭证线格式互通与BE密码开销微基准",
+      "reason": "内部凭证未纳入本版；保留厂商证书Java/OpenSSL互通验证。",
+      "result": null
+    },
+    {
+      "id": "LP-OOS-005",
+      "related_cases": [
+        "LP-025"
+      ],
+      "status": "out_of_scope",
+      "name": "时间异常下内部租约可用性与内部epoch票据修复",
+      "reason": "本版不建立内部租约；FE可信时间和签名修复仍由LP-025覆盖。",
+      "result": null
+    },
+    {
+      "id": "LP-OOS-006",
+      "related_cases": [
+        "LP-004",
+        "LP-010",
+        "LP-011",
+        "LP-026"
+      ],
+      "status": "out_of_scope",
+      "name": "BE直连扫描、结果、缓存、文件及binlog许可拦截",
+      "reason": "BE接口保持原行为，不将关闭接口或网络改造作为替代验收。",
+      "result": null
+    }
+  ],
+  "retired_design_blockers": [
+    {
+      "id": "P0-APPLICATION-AUTH",
+      "status": "out_of_scope",
+      "reason": "所属内部身份/租约候选方案移出本版；不是修复通过，不再阻断仅FE范围。"
+    },
+    {
+      "id": "P0-TIME-AVAILABILITY",
+      "status": "out_of_scope",
+      "reason": "所属内部身份/租约候选方案移出本版；不是修复通过，不再阻断仅FE范围。"
+    },
+    {
+      "id": "P0-REVOCATION-BOUND",
+      "status": "out_of_scope",
+      "reason": "所属内部身份/租约候选方案移出本版；不是修复通过，不再阻断仅FE范围。"
+    }
+  ],
+  "case_status_summary": {
+    "main_cases": {
+      "not_run": 26,
+      "passed": 0,
+      "failed": 0,
+      "out_of_scope": 0
+    },
+    "retired_subtasks": {
+      "out_of_scope": 6
+    },
+    "retired_design_blockers": {
+      "out_of_scope": 3
+    },
+    "be_behavior_observations": {
+      "not_run": 2
+    },
+    "note": "以上为用例定义状态；历史26项FE单测、9项签发测试、14项Java/OpenSSL互通不是性能通过记录。"
+  },
+  "baseline_evidence": {
+    "candidate_B_measured": false,
+    "all_cases_passed": false,
+    "static_contract": "docs/license-p0-contract-20260922.json",
+    "path_probe_report": ".build-records/license-p0-p1-20260922/path-probes/reachability-report.json",
+    "path_document": "docs/license-baseline-reachability-20260922.md",
+    "dataset_log": ".build-records/license-p0-p1-20260922/setup-rowstore.log",
+    "diagnostic_smoke": ".build-records/license-p0-p1-20260922/point-smoke/report.json",
+    "diagnostic_smoke_limitation": "早期fixture无row-store，实际普通OLAP路径且短窗口，不能作为LP001短路性能记录。",
+    "precision_established": false,
+    "qualification": "共享ARM64宿主上的隔离网络/数据/CPU绑定环境；不是独占硬件或生产OS发行资格证明。",
+    "short_rate_calibration": {
+      "report": ".build-records/license-p0-p1-20260922/point-calibration/calibration-summary.json",
+      "raw_audit": ".build-records/license-p0-p1-20260922/point-calibration/raw-audit.json",
+      "successful_requests": 151014,
+      "error_requests": 0,
+      "windows": 8,
+      "precision_established": false,
+      "capacity_proven": false,
+      "scope": "四级速率短窗口诊断；不是正式时长、A/A精度、容量边界或许可候选性能通过。"
+    },
+    "core_cost_probe": {
+      "report": ".build-records/license-p1-release-20260922/core-cost-report.json",
+      "scope": "P1实际JAR单线程函数成本，未包含P3用途分类器；不标LP023或端到端通过。"
+    },
+    "external_scanner_observation": {
+      "report": ".build-records/license-p0-p1-20260922/direct-read-probe/report.json",
+      "scope": "原协议FE取计划、BE扫描关闭后重复open观察；原版没有license，不能证明候选跨到期限制。"
+    }
+  },
+  "definition_corrections": [
+    {
+      "date": "2026-09-24",
+      "case_id": "LP-010",
+      "reason": "源码SessionVariable.checkBatchSize仅允许1..65535，修正不可执行的有效负载65536，保留为负向边界。",
+      "source": "fe/fe-core/src/main/java/org/apache/doris/qe/SessionVariable.java:5605",
+      "before": [
+        1024,
+        8192,
+        65536
+      ],
+      "after": [
+        1024,
+        8192,
+        65535
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "case_id": "LP-014",
+      "reason": "两处batch_rows不一致，取并集保留全部原场景，不删较重批次。",
+      "before": {
+        "load_shape": [
+          1000,
+          10000
+        ],
+        "data": [
+          1,
+          100,
+          1000
+        ]
+      },
+      "after": [
+        1,
+        100,
+        1000,
+        10000
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "case_id": "LP-022",
+      "reason": "明确主计划退避与P0初始2秒，固定2/4/8/16/30秒上限与120秒总预算。"
+    },
+    {
+      "date": "2026-09-24",
+      "case_ids": [
+        "LP-021",
+        "LP-022"
+      ],
+      "reason": "Explicit user decision separates business background statistical gates from sparse300s browser actions; preserve browser matrices and do not claim qualified P99 from insufficient samples.",
+      "authorization": "明确区分业务与页面指标（推荐）",
+      "business_sample_and_precision_gates_changed": false,
+      "historical_results_reclassified": false
+    }
+  ]
+}
