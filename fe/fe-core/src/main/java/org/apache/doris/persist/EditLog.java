@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
+
 package org.apache.doris.persist;
 
 import org.apache.doris.alter.AlterJobV2;
@@ -84,6 +86,7 @@ import org.apache.doris.load.StreamLoadRecordMgr.FetchStreamLoadRecord;
 import org.apache.doris.load.loadv2.LoadJob.LoadJobStateUpdateInfo;
 import org.apache.doris.load.loadv2.LoadJobFinalOperation;
 import org.apache.doris.load.routineload.RoutineLoadJob;
+import org.apache.doris.massdb.license.LicensePersistRecord;
 import org.apache.doris.meta.MetaContext;
 import org.apache.doris.metric.MetricRepo;
 import org.apache.doris.mysql.privilege.UserPropertyInfo;
@@ -1370,6 +1373,19 @@ public class EditLog {
                     ((CloudEnv) env).replayUpdateCloudReplica(info);
                     break;
                 }
+                case OperationType.OP_MASSDB_LICENSE_INITIALIZE:
+                case OperationType.OP_MASSDB_LICENSE_ACCEPT:
+                case OperationType.OP_MASSDB_LICENSE_BASE_CAPACITY:
+                case OperationType.OP_MASSDB_LICENSE_WATERMARK:
+                case OperationType.OP_MASSDB_LICENSE_CLOCK_REPAIR:
+                case OperationType.OP_MASSDB_LICENSE_INTEGRITY: {
+                    LicensePersistRecord record = (LicensePersistRecord) journal.getData();
+                    if (record.getOperation() != opCode) {
+                        throw new IOException("Mismatched license journal operation");
+                    }
+                    env.getLicenseManager().replay(record);
+                    break;
+                }
                 case OperationType.OP_CREATE_DICTIONARY: {
                     CreateDictionaryPersistInfo info = (CreateDictionaryPersistInfo) journal.getData();
                     env.getDictionaryManager().replayCreateDictionary(info);
@@ -1458,6 +1474,9 @@ public class EditLog {
                 LOG.error("replay Operation Type {}, log id: {}", opCode, logId, e);
                 System.exit(-1);
             } else {
+                if (OperationType.isMassdbLicenseOperation(opCode)) {
+                    env.markLicenseRecoveryIncomplete();
+                }
                 LOG.warn("Skip replay Operation Type {} due to exception, log id: {}", opCode, logId, e);
             }
         }
@@ -2475,6 +2494,13 @@ public class EditLog {
 
     private boolean exceedMaxJournalSize(short op, Writable writable) throws IOException {
         return journal.exceedMaxJournalSize(op, writable);
+    }
+
+    public long logLicense(short opCode, LicensePersistRecord record) throws IOException {
+        if (!OperationType.isMassdbLicenseOperation(opCode) || record.getOperation() != opCode) {
+            throw new IOException("Invalid license journal operation");
+        }
+        return logEdit(opCode, record);
     }
 
     public void logCreateDictionary(Dictionary dictionary) {

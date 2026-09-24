@@ -205,6 +205,12 @@ public final class LicenseSnapshot {
         return evaluate(reading.getTrustedMillis() / 1000, true);
     }
 
+    /** Evaluates exactly the immutable clock tuple used in a management response. */
+    public Evaluation evaluate(LicenseClock.Reading reading) {
+        Objects.requireNonNull(reading, "reading");
+        return evaluate(reading.getTrustedMillis() / 1000, reading.isSuspect());
+    }
+
     private Evaluation evaluate(long trustedNowSeconds, boolean currentClockSuspect) {
         EnumSet<Reason> reasons = EnumSet.noneOf(Reason.class);
         EnumSet<Warning> warnings = EnumSet.noneOf(Warning.class);

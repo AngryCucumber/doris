@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
+
 package org.apache.doris.common;
 
 public final class FeMetaVersion {
@@ -102,6 +104,10 @@ public final class FeMetaVersion {
     public static final int VERSION_139 = 139;
 
     public static final int VERSION_140 = 140;
+
+    // A conditional image gate, written only once this Env contains FE license facts.
+    // Keep the normal journal version unchanged during the all-FE capability upgrade window.
+    public static final int VERSION_MASSDB_LICENSE_V1 = 141;
 
     // note: when increment meta version, should assign the latest version to VERSION_CURRENT
     public static final int VERSION_CURRENT = VERSION_140;

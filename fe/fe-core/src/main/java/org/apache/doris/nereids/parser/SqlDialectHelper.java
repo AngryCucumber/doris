@@ -15,9 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+// Redact license-bearing SQL and plugin exception details in converter diagnostics.
+
 package org.apache.doris.nereids.parser;
 
 import org.apache.doris.catalog.Env;
+import org.apache.doris.massdb.license.LicenseSqlRedactor;
 import org.apache.doris.plugin.DialectConverterPlugin;
 import org.apache.doris.plugin.PluginMgr;
 import org.apache.doris.qe.SessionVariable;
@@ -56,8 +60,13 @@ public class SqlDialectHelper {
                         break;
                     }
                 } catch (Throwable throwable) {
-                    LOG.warn("Convert sql with dialect {} failed, plugin: {}, sql: {}, use origin sql.",
-                            sqlDialect, plugin.getClass().getSimpleName(), originStmt, throwable);
+                    if (LicenseSqlRedactor.isSensitive(originStmt)) {
+                        LOG.warn("Convert license-bearing SQL with dialect {} failed; input and details redacted",
+                                sqlDialect);
+                    } else {
+                        LOG.warn("Convert sql with dialect {} failed, plugin: {}, sql: {}, use origin sql.",
+                                sqlDialect, plugin.getClass().getSimpleName(), originStmt, throwable);
+                    }
                 }
             }
         }

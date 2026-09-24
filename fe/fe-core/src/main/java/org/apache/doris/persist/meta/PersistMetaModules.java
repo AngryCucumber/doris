@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
+
 package org.apache.doris.persist.meta;
 
 import org.apache.doris.common.Config;
@@ -42,7 +44,7 @@ public class PersistMetaModules {
             "paloAuth", "transactionState", "colocateTableIndex", "routineLoadJobs", "loadJobV2", "smallFiles",
             "plugins", "deleteHandler", "sqlBlockRule", "policy", "globalFunction", "workloadGroups",
             "binlogs", "resourceGroups", "AnalysisMgrV2", "AsyncJobManager", "workloadSchedPolicy",
-            "insertOverwrite", "plsql", "dictionaryManager", "indexPolicy", "KeyManagerStore");
+            "insertOverwrite", "plsql", "dictionaryManager", "indexPolicy", "KeyManagerStore", "massdbLicenseV1");
 
     // The modules in `CloudEnv`.
     public static final ImmutableList<String> CLOUD_MODULE_NAMES = ImmutableList.of("cloudWarmUpJob");

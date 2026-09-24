@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+// Add FE license management SQL and protect certificate material in diagnostics.
+
 package org.apache.doris.httpv2.rest;
 
 import org.apache.doris.catalog.Env;
@@ -24,6 +27,7 @@ import org.apache.doris.datasource.InternalCatalog;
 import org.apache.doris.httpv2.entity.ResponseEntityBuilder;
 import org.apache.doris.httpv2.util.ExecutionResultSet;
 import org.apache.doris.httpv2.util.StatementSubmitter;
+import org.apache.doris.massdb.license.LicenseSqlRedactor;
 import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.nereids.NereidsPlanner;
 import org.apache.doris.nereids.StatementContext;
@@ -107,8 +111,8 @@ public class StmtExecutionAction extends RestBaseController {
         if (Strings.isNullOrEmpty(stmtRequestBody.stmt)) {
             return ResponseEntityBuilder.badRequest("Missing statement request body");
         }
-        LOG.info("stmt: {}, isSync:{}, limit: {}", stmtRequestBody.stmt, stmtRequestBody.is_sync,
-                stmtRequestBody.limit);
+        LOG.info("stmt: {}, isSync:{}, limit: {}", LicenseSqlRedactor.redact(stmtRequestBody.stmt),
+                stmtRequestBody.is_sync, stmtRequestBody.limit);
 
         ConnectContext.get().changeDefaultCatalog(ns);
         ConnectContext.get().setDatabase(fullDbName);
@@ -144,7 +148,7 @@ public class StmtExecutionAction extends RestBaseController {
         if (StringUtils.isNotBlank(sql)) {
             sql = sql.replaceAll(NEW_LINE_PATTERN, NEW_LINE_REPLACEMENT);
         }
-        LOG.info("sql: {}", sql);
+        LOG.info("sql: {}", LicenseSqlRedactor.redact(sql));
         ConnectContext.get().changeDefaultCatalog(ns);
         ConnectContext.get().setDatabase(getFullDbName(dbName));
         return getSchema(sql);

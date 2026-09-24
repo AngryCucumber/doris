@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+// Add FE license management SQL and protect certificate material in diagnostics.
+
 package org.apache.doris.qe;
 
 import org.apache.doris.analysis.Expr;
@@ -62,6 +65,7 @@ import org.apache.doris.common.util.TimeUtils;
 import org.apache.doris.common.util.Util;
 import org.apache.doris.datasource.FileScanNode;
 import org.apache.doris.datasource.tvf.source.TVFScanNode;
+import org.apache.doris.massdb.license.LicenseSqlException;
 import org.apache.doris.metric.MetricRepo;
 import org.apache.doris.mysql.FieldInfo;
 import org.apache.doris.mysql.MysqlChannel;
@@ -91,6 +95,7 @@ import org.apache.doris.nereids.trees.plans.commands.DeleteFromCommand;
 import org.apache.doris.nereids.trees.plans.commands.DeleteFromUsingCommand;
 import org.apache.doris.nereids.trees.plans.commands.EmptyCommand;
 import org.apache.doris.nereids.trees.plans.commands.Forward;
+import org.apache.doris.nereids.trees.plans.commands.LicenseCommand;
 import org.apache.doris.nereids.trees.plans.commands.LoadCommand;
 import org.apache.doris.nereids.trees.plans.commands.PrepareCommand;
 import org.apache.doris.nereids.trees.plans.commands.Redirect;
@@ -327,7 +332,7 @@ public class StmtExecutor {
         builder.defaultCatalog(context.getCurrentCatalog().getName());
         builder.defaultDb(context.getDatabase());
         builder.workloadGroup(context.getWorkloadGroupName());
-        builder.sqlStatement(originStmt == null ? "" : originStmt.originStmt);
+        builder.sqlStatement(originStmt == null ? "" : originStmt.getSafeSql());
         builder.isCached(isCached ? "Yes" : "No");
 
         Map<String, Integer> beToInstancesNum = coord == null ? Maps.newTreeMap() : coord.getBeToInstancesNum();
@@ -481,7 +486,7 @@ public class StmtExecutor {
         TUniqueId queryId = new TUniqueId(uuid.getMostSignificantBits(), uuid.getLeastSignificantBits());
         if (Config.enable_print_request_before_execution) {
             LOG.info("begin to execute query {} {}",
-                    DebugUtil.printId(queryId), originStmt == null ? "null" : originStmt.originStmt);
+                    DebugUtil.printId(queryId), originStmt == null ? "null" : originStmt.getSafeSql());
         }
         queryRetry(queryId);
     }
@@ -541,6 +546,12 @@ public class StmtExecutor {
             try {
                 executeByNereids(queryId);
             } catch (NereidsException | ParseException e) {
+                LicenseSqlException licenseFailure = LicenseSqlException.find(e);
+                if (licenseFailure != null) {
+                    context.getState().setError(licenseFailure.getMysqlErrorCode(), licenseFailure.getMessage());
+                    context.getState().setErrType(QueryState.ErrType.ANALYSIS_ERR);
+                    return;
+                }
                 if (context.getMinidump() != null && context.getMinidump().toString(4) != null) {
                     MinidumpUtils.saveMinidumpString(context.getMinidump(), DebugUtil.printId(context.queryId()));
                 }
@@ -604,7 +615,7 @@ public class StmtExecutor {
 
     private void executeByNereids(TUniqueId queryId) throws Exception {
         if (LOG.isDebugEnabled()) {
-            LOG.debug("Nereids start to execute query:\n {}", originStmt.originStmt);
+            LOG.debug("Nereids start to execute query:\n {}", originStmt.getSafeSql());
         }
         context.setQueryId(queryId);
         context.setStartTime();
@@ -624,6 +635,9 @@ public class StmtExecutor {
         LogicalPlan logicalPlan = ((LogicalPlanAdapter) parsedStmt).getLogicalPlan();
         checkSqlBlocked(logicalPlan.getClass());
         if (context.getCommand() == MysqlCommand.COM_STMT_PREPARE) {
+            if (logicalPlan instanceof LicenseCommand) {
+                throw new UserException("License management does not support server PREPARE; use text SQL or HTTP");
+            }
             if (isForwardToMaster()) {
                 throw new UserException("Forward master command is not supported for prepare statement");
             }
@@ -647,6 +661,9 @@ public class StmtExecutor {
             }
         }
         if (logicalPlan instanceof Command) {
+            if (logicalPlan instanceof LicenseCommand) {
+                ((LicenseCommand) logicalPlan).checkPermission(context);
+            }
             if (logicalPlan instanceof Redirect) {
                 OlapGroupCommitInsertExecutor.analyzeGroupCommit(context, logicalPlan);
                 redirectStatus = ((Redirect) logicalPlan).toRedirectStatus();
@@ -662,6 +679,9 @@ public class StmtExecutor {
                         // This is already a stmt forwarded from other FE.
                         // If we goes here, means we can't find a valid Master FE(some error happens).
                         // To avoid endless forward, throw exception here.
+                        if (logicalPlan instanceof LicenseCommand) {
+                            throw ((LicenseCommand) logicalPlan).forwardingUnknown();
+                        }
                         throw new NereidsException(new UserException("The statement has been forwarded to master FE("
                                 + Env.getCurrentEnv().getSelfNode().getHost() + ") and failed to execute"
                                 + " because Master FE is not ready. You may need to check FE's status"));
@@ -685,15 +705,15 @@ public class StmtExecutor {
                 ((Command) logicalPlan).run(context, this);
             } catch (QueryStateException e) {
                 if (LOG.isDebugEnabled()) {
-                    LOG.debug("Command({}) process failed.", originStmt.originStmt, e);
+                    LOG.debug("Command({}) process failed.", originStmt.getSafeSql(), e);
                 }
                 context.setState(e.getQueryState());
-                throw new NereidsException("Command(" + originStmt.originStmt + ") process failed",
+                throw new NereidsException("Command(" + originStmt.getSafeSql() + ") process failed",
                         new AnalysisException(e.getMessage(), e));
             } catch (UserException e) {
                 // Return message to info client what happened.
                 if (LOG.isDebugEnabled()) {
-                    LOG.debug("Command({}) process failed.", originStmt.originStmt, e);
+                    LOG.debug("Command({}) process failed.", originStmt.getSafeSql(), e);
                 }
                 if (Config.isCloudMode() && SystemInfoService.needRetryWithReplan(e.getDetailMessage())) {
                     // For errors in SystemInfoService.NEED_REPLAN_ERRORS,
@@ -701,15 +721,18 @@ public class StmtExecutor {
                     throw e;
                 }
                 context.getState().setError(e.getMysqlErrorCode(), e.getMessage());
-                throw new NereidsException("Command (" + originStmt.originStmt + ") process failed",
+                if (e instanceof LicenseSqlException) {
+                    throw new NereidsException(e, true);
+                }
+                throw new NereidsException("Command (" + originStmt.getSafeSql() + ") process failed",
                         new AnalysisException(e.getMessage(), e));
             } catch (Exception | Error e) {
                 // Maybe our bug
                 if (LOG.isDebugEnabled()) {
-                    LOG.debug("Command({}) process failed.", originStmt.originStmt, e);
+                    LOG.debug("Command({}) process failed.", originStmt.getSafeSql(), e);
                 }
                 context.getState().setError(ErrorCode.ERR_UNKNOWN_ERROR, e.getMessage());
-                throw new NereidsException("Command (" + originStmt.originStmt + ") process failed.",
+                throw new NereidsException("Command (" + originStmt.getSafeSql() + ") process failed.",
                         new AnalysisException(e.getMessage() == null ? e.toString() : e.getMessage(), e));
             }
         } else {
@@ -749,7 +772,7 @@ public class StmtExecutor {
                 planner.plan(parsedStmt, context.getSessionVariable().toThrift());
                 checkBlockRulesByScan(planner);
             } catch (Exception e) {
-                LOG.warn("Nereids plan query failed:\n{}", originStmt.originStmt, e);
+                LOG.warn("Nereids plan query failed:\n{}", originStmt.getSafeSql(), e);
                 throw new NereidsException(new AnalysisException(e.getMessage(), e));
             }
             profile.getSummaryProfile().setQueryPlanFinishTime(TimeUtils.getStartTimeMs());
@@ -899,7 +922,7 @@ public class StmtExecutor {
                         // in the begining of retryTime/2
                         int randomMillis = 1000 + (int) (Math.random() * (1000 - 500));
                         LOG.debug("stmt executor retry times {}, wait randomMillis:{}, stmt:{}",
-                                i, randomMillis, originStmt.originStmt);
+                                i, randomMillis, originStmt.getSafeSql());
                         try {
                             if (i > retryTime / 2) {
                                 // sleep random millis [2000, 2500] ms
@@ -966,7 +989,7 @@ public class StmtExecutor {
                 }
                 if (i != retryTime - 1 && isNeedRetry
                         && context.getConnectType().equals(ConnectType.MYSQL) && !context.getMysqlChannel().isSend()) {
-                    LOG.warn("retry {} times. stmt: {}", (i + 1), parsedStmt.getOrigStmt().originStmt);
+                    LOG.warn("retry {} times. stmt: {}", (i + 1), parsedStmt.getOrigStmt().getSafeSql());
                 } else {
                     throw e;
                 }
@@ -1048,12 +1071,26 @@ public class StmtExecutor {
     }
 
     private void forwardToMaster() throws Exception {
-        masterOpExecutor = new MasterOpExecutor(originStmt, context, redirectStatus, isQuery());
+        LicenseCommand licenseCommand = parsedStmt instanceof LogicalPlanAdapter
+                && ((LogicalPlanAdapter) parsedStmt).getLogicalPlan() instanceof LicenseCommand
+                ? (LicenseCommand) ((LogicalPlanAdapter) parsedStmt).getLogicalPlan() : null;
+        masterOpExecutor = new MasterOpExecutor(originStmt, context, redirectStatus,
+                isQuery() && licenseCommand == null);
         if (LOG.isDebugEnabled()) {
             LOG.debug("need to transfer to Master. stmt: {}", context.getStmtId());
         }
         masterOpExecutor.setMoreStmtExists(moreStmtExists);
-        masterOpExecutor.execute();
+        try {
+            masterOpExecutor.execute();
+        } catch (Exception exception) {
+            if (licenseCommand != null) {
+                throw licenseCommand.forwardingUnknown();
+            }
+            throw exception;
+        }
+        if (licenseCommand != null) {
+            LicenseCommand.awaitLocalApplication(context, masterOpExecutor.getProxyResultSet());
+        }
         if (parsedStmt instanceof LogicalPlanAdapter) {
             // for nereids command
             if (((LogicalPlanAdapter) parsedStmt).getLogicalPlan() instanceof Forward) {
@@ -1189,7 +1226,7 @@ public class StmtExecutor {
     private void handleQueryStmt() throws Exception {
         if (LOG.isDebugEnabled()) {
             LOG.debug("Handling query {} with query id {}",
-                          originStmt.originStmt, DebugUtil.printId(context.queryId));
+                          originStmt.getSafeSql(), DebugUtil.printId(context.queryId));
         }
 
         if (context.getConnectType() == ConnectType.MYSQL) {
@@ -2055,21 +2092,21 @@ public class StmtExecutor {
             }
             return httpStreamParams;
         } catch (QueryStateException e) {
-            LOG.debug("Command(" + originStmt.originStmt + ") process failed.", e);
+            LOG.debug("Command(" + originStmt.getSafeSql() + ") process failed.", e);
             context.setState(e.getQueryState());
-            throw new NereidsException("Command(" + originStmt.originStmt + ") process failed",
+            throw new NereidsException("Command(" + originStmt.getSafeSql() + ") process failed",
                     new AnalysisException(e.getMessage(), e));
         } catch (UserException e) {
             // Return message to info client what happened.
-            LOG.debug("Command(" + originStmt.originStmt + ") process failed.", e);
+            LOG.debug("Command(" + originStmt.getSafeSql() + ") process failed.", e);
             context.getState().setError(e.getMysqlErrorCode(), e.getMessage());
-            throw new NereidsException("Command (" + originStmt.originStmt + ") process failed",
+            throw new NereidsException("Command (" + originStmt.getSafeSql() + ") process failed",
                     new AnalysisException(e.getMessage(), e));
         } catch (Exception e) {
             // Maybe our bug
-            LOG.debug("Command (" + originStmt.originStmt + ") process failed.", e);
+            LOG.debug("Command (" + originStmt.getSafeSql() + ") process failed.", e);
             context.getState().setError(ErrorCode.ERR_UNKNOWN_ERROR, e.getMessage());
-            throw new NereidsException("Command (" + originStmt.originStmt + ") process failed.",
+            throw new NereidsException("Command (" + originStmt.getSafeSql() + ") process failed.",
                     new AnalysisException(e.getMessage(), e));
         }
     }
@@ -2088,7 +2125,7 @@ public class StmtExecutor {
                 // try to fall back to legacy planner
                 if (LOG.isDebugEnabled()) {
                     LOG.debug("nereids cannot process statement\n{}\n because of {}",
-                            originStmt.originStmt, e.getMessage(), e);
+                            originStmt.getSafeSql(), e.getMessage(), e);
                 }
                 if (e instanceof NereidsException) {
                     LOG.warn("Analyze failed. {}", context.getQueryIdentifier(), e);
@@ -2138,7 +2175,7 @@ public class StmtExecutor {
 
     public String getOriginStmtInString() {
         if (originStmt != null && originStmt.originStmt != null) {
-            return originStmt.originStmt;
+            return originStmt.getSafeSql();
         }
         return "";
     }

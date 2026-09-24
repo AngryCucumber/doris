@@ -4,6 +4,22 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License P2 management integration (2026-09-25, in progress)
+
+- Add FE-owned bounded certificate metadata, journal/image recovery, deployment
+  initialization, import and repair receipts, dedicated management queues and
+  public-key configuration. Preserve committed identity and activation after
+  incomplete recovery; gate new formats on actual registered FE capabilities.
+- Add SQL and HTTP license management with ADMIN checks, bounded request parsing,
+  original-user forwarding, exact HTTP status and local application receipts.
+  Redact license literals before parser failures, audit and profile output.
+- Add focused management, persistence, parser, transport and clock-repair tests.
+  The FE Maven package build passes on JDK 17.0.4 with all 173 license tests;
+  the text-SQL import helper passes four tests. Actual single/multi-FE recovery,
+  forwarding and failover acceptance remains pending. P2 is not yet complete.
+- Keep BE protocols and query/node admission enforcement outside this change;
+  those guards remain P3, and the UI remains P2U.
+
 ## Commit message guidance (2026-09-22)
 
 - `AGENTS.md`: require commit messages to follow recent Git history, with an

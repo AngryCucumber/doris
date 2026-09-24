@@ -7,19 +7,23 @@ Use is governed by LICENSE-MASSDB.txt and a separate agreement with the company.
 Upstream and third-party components retain their respective licenses.
 -->
 
-# 授权证书 P0/P1 实施记录
+# 授权证书 P0/P1/P2 实施记录
 
-> **2026-09-24 范围收敛：后续工作以[五出口执行计划](/data/project/massdb-sql/docs/license-certificate-execution-plan-20260922.md)为准。** 用户明确允许窄式 `SELECT 1 FROM t LIMIT 1`；保留可证明最终零行的空计划。旧全函数/FE 出口审计、零规划外部访问和全部 26 项基线前置要求已移出当前任务。下文历史阶段编号、强制矩阵与待办不自动恢复为新要求；核心/发行、导入、持久化、额度、页面和正式性能数值继续保留。当前仅修订文档，未接入运行时、未重启基准，也未删除旧代码或证据。
+> **2026-09-24 范围收敛：后续工作以[五出口执行计划](/data/project/massdb-sql/docs/license-certificate-execution-plan-20260922.md)为准。** 用户明确允许窄式 `SELECT 1 FROM t LIMIT 1`；保留可证明最终零行的空计划。旧全函数/FE 出口审计、零规划外部访问和全部 26 项基线前置要求已移出当前任务。下文历史阶段编号、强制矩阵与待办不自动恢复为新要求；核心/发行、导入、持久化、额度、页面和正式性能数值继续保留。范围收敛当时仅修订文档，未接入运行时、未重启基准，也未删除旧代码或证据；后续 P2 进展以本节更新为准。
 
-初始日期：2026-09-22；更新：2026-09-25。分支：`2.0.5-license`；基线：`23e39e63295fd730523da8d916c898c28b903216`。本次变更尚未提交。
+初始日期：2026-09-22；更新：2026-09-25。分支：`2.0.5-license`；初始基线：`23e39e63295fd730523da8d916c898c28b903216`；P0/P1 交付提交：`77e367e422a0df2843e4dee52873ab8d2249a51c`。
 
 **最新使用范围：用户明确本版本先供自己使用，麒麟/openEuler 及目标架构矩阵暂不列为目标、剩余工作或验收前置条件。P1 证书核心按已完成记录；后续聚焦 P2 管理持久化、P3 五出口与额度、P2U 页面和 P4 实际自用环境的集成/性能验证。** JDK 17.0.4 兼容、实际公钥信任配置及原性能要求保留。下文历史“目标平台待验证”“发行矩阵未完成”不再作为当前任务阻塞项；原始测试和失败证据不改变。
 
 当前 P0 已重冻为五出口契约，补齐 Q01–Q28、M01–M14、U01–U04 共 **46 组具体输入/预期/清理/挂点**，并把旧 LP001–026 明确映射到七组当前性能负载；全部运行用例仍为 `specified_not_executed`。补足两种 coordinator 出队复核，限定原始窄式探测形状，并使续期空档规则与已实现核心一致。详见[当前 P0 契约](/data/project/massdb-sql/docs/license-p0-contract-20260922.md)。
 
-P1 本轮[独立核验](/data/project/massdb-sql/.build-records/license-p0-p1-current-scope-20260924/p1-audit/review.md)完成：14 个现有源码在隔离断网环境编译得到的 **39 个 class 与实际 FE JAR 逐字一致**；8 个现有测试类重新编译并在该 JAR、Temurin 17.0.4+8 上执行 **104/104 通过**，零失败/跳过。签发工具 25 项与实际 JDK 互通 42 项的历史源码、日志、依赖及产物绑定仍一致。29 项审计检查不能与测试数量相加。历史 Maven target 的 8 份 XML 已不存在，本次全量核心重跑补足当前证明；完整 Maven 离线构建日志保留，但没有在本轮重跑整个 FE 构建。
+P1 提交前的[独立核验](/data/project/massdb-sql/.build-records/license-p0-p1-current-scope-20260924/p1-audit/review.md)完成：当时 14 个源码在隔离断网环境编译得到的 **39 个 class 与实际 FE JAR 逐字一致**；8 个测试类重新编译并在该 JAR、Temurin 17.0.4+8 上执行 **104/104 通过**，零失败/跳过。签发工具 25 项与实际 JDK 互通 42 项的历史源码、日志、依赖及产物绑定仍一致。29 项审计检查不能与测试数量相加。该记录保留其原有源码和产物范围，P2 修改后的源码以本次重新构建和测试为准。
 
-**当前 P0/P1 的设计与核心交付不等于数据库授权功能完成：旧范围完整性能基线仍未通过，新范围集成和性能也尚无通过记录，授权尚未在数据库生效。** FE Env/journal、管理 SQL/HTTP、五出口准入、成员 ADD/DROP 与页面仍待接入；当前不再将全部旧基线或平台矩阵完成作为这些开发的前置条件。以下按日期保留的旧契约、待办和基线状态只描述历史阶段，不覆盖本节当前结论。
+**2026-09-25 P2 阶段提交：管理与持久化代码已接入，真实集群验收仍未完成。** 已实现 Env/journal/image、部署标识、导入与时间修复回执、已注册 FE 兼容检查、SQL/HTTP 管理、权限与脱敏、有界队列及限流。精确 JDK 17.0.4 上执行 `mvn -o -pl fe-core -am package -Dtest=License*Test -DfailIfNoTests=false`，FE 构建与 173 项授权测试全部通过，无失败或跳过，见[构建及测试日志](/data/project/massdb-sql/.build-records/license-p2-20260925/package-2.log)。173 项包含原有 104 项核心测试；新增 SQL 文本导入工具另有 4 项测试通过，不能合并成数据库集成通过数量。
+
+尚待真实单/多 FE 导入、过期续期、失败保旧、重启恢复、切主、旧 FE 拒绝、JDBC/HTTP 错误传播及日志/Profile 脱敏验收；本次提交不将 P2 标为完成。历史构建和测试失败日志保留在同一证据目录，临时夹具、测试密钥与构建产物不提交。
+
+**当前交付不等于数据库授权功能完成：五出口准入、成员 ADD/DROP 额度拦截、页面和完整性能验收仍待后续阶段。** 旧范围完整性能基线仍未通过，新范围集成和性能也尚无通过记录；当前不再将全部旧基线或平台矩阵完成作为开发的前置条件。以下按日期保留的旧契约、待办和基线状态只描述历史阶段，不覆盖本节当前结论。
 
 历史阶段状态见[逐项完成清单](/data/project/massdb-sql/.build-records/license-p0-p1-20260924/completion-audit-inventory.json)和
 [证据索引](/data/project/massdb-sql/.build-records/license-p0-p1-20260924/results.json)；后文按时间保留的“尚未执行”“正在运行”只描述当时状态。原版页面 actual-v4 已结束，以下终态回执优先于旧索引中的 RUNNING，不据此更新为新范围通过。

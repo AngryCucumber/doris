@@ -15,11 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
+
 package org.apache.doris.persist.meta;
 
 import org.apache.doris.catalog.Env;
 import org.apache.doris.common.Config;
 import org.apache.doris.common.DdlException;
+import org.apache.doris.massdb.license.LicensePersistRecord;
 
 import com.google.common.base.Preconditions;
 import org.apache.commons.io.IOUtils;
@@ -27,6 +30,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.io.BufferedInputStream;
+import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -74,6 +78,7 @@ public class MetaReader {
         MetaHeader metaHeader = MetaHeader.read(imageFile);
         MetaFooter metaFooter = MetaFooter.read(imageFile);
 
+        env.beginLicenseImageRecovery();
         long checksum = 0;
         long footerIndex = imageFile.length()
                 - metaFooter.length - MetaFooter.FOOTER_LENGTH_SIZE - MetaMagicNumber.MAGIC_STR.length();
@@ -123,7 +128,24 @@ public class MetaReader {
                                 + PersistMetaModules.MODULE_NAMES);
                     }
                 }
-                checksum = (long) persistMethod.readMethod.invoke(env, dis, checksum);
+                if ("massdbLicenseV1".equals(metaIndex.name)) {
+                    long nextOffset = i + 1 < metaFooter.metaIndices.size()
+                            ? metaFooter.metaIndices.get(i + 1).offset : footerIndex;
+                    long moduleBytes = nextOffset - metaIndex.offset;
+                    if (moduleBytes <= 0 || moduleBytes > LicensePersistRecord.MAX_BYTES) {
+                        throw new IOException("Invalid bounded license image module length");
+                    }
+                    byte[] bytes = new byte[(int) moduleBytes];
+                    dis.readFully(bytes);
+                    try (DataInputStream moduleInput = new DataInputStream(new ByteArrayInputStream(bytes))) {
+                        checksum = (long) persistMethod.readMethod.invoke(env, moduleInput, checksum);
+                        if (moduleInput.available() != 0) {
+                            throw new IOException("Trailing bytes in license image module");
+                        }
+                    }
+                } else {
+                    checksum = (long) persistMethod.readMethod.invoke(env, dis, checksum);
+                }
             }
         } catch (InvocationTargetException | IllegalAccessException e) {
             throw new IOException(e);
@@ -131,6 +153,7 @@ public class MetaReader {
 
         long remoteChecksum = metaFooter.checksum;
         Preconditions.checkState(remoteChecksum == checksum, remoteChecksum + " vs. " + checksum);
+        env.completeLicenseImageRecovery();
 
         long loadImageEndTime = System.currentTimeMillis();
         LOG.info("finished to load image in " + (loadImageEndTime - loadImageStartTime) + " ms");

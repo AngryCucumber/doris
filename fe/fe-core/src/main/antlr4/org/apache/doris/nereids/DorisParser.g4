@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+// Add FE license management SQL and protect certificate material in diagnostics.
+
 // Copied from Apache Spark and modified for Apache Doris
 
 parser grammar DorisParser;
@@ -437,6 +440,8 @@ supportedShowStatement
     | SHOW FULL? TRIGGERS ((FROM | IN) database=multipartIdentifier)? wildWhere?    #showTriggers
     | SHOW TABLET DIAGNOSIS tabletId=INTEGER_VALUE                                  #showDiagnoseTablet
     | SHOW OPEN TABLES ((FROM | IN) database=multipartIdentifier)? wildWhere?       #showOpenTables
+    | SHOW LICENSE (DEPLOYMENT | IMPORT fingerprint=STRING_LITERAL
+        | CLOCK REPAIR repairId=STRING_LITERAL)?                                    #showLicense
     | SHOW FRONTENDS name=identifier?                                               #showFrontends
     | SHOW DATABASE databaseId=INTEGER_VALUE                                        #showDatabaseId
     | SHOW FULL? (COLUMNS | FIELDS) (FROM | IN) tableName=multipartIdentifier
@@ -614,7 +619,10 @@ supportedCancelStatement
     ;
 
 supportedAdminStatement
-    : ADMIN SHOW REPLICA DISTRIBUTION FROM baseTableRef                             #adminShowReplicaDistribution
+    : ADMIN operation=(IMPORT | VALIDATE) LICENSE certificate=STRING_LITERAL        #adminLicenseCertificate
+    | ADMIN LICENSE CLOCK CHALLENGE                                                #adminLicenseClockChallenge
+    | ADMIN REPAIR LICENSE CLOCK certificate=STRING_LITERAL                         #adminLicenseClockRepair
+    | ADMIN SHOW REPLICA DISTRIBUTION FROM baseTableRef                             #adminShowReplicaDistribution
     | ADMIN REBALANCE DISK (ON LEFT_PAREN backends+=STRING_LITERAL
         (COMMA backends+=STRING_LITERAL)* RIGHT_PAREN)?                             #adminRebalanceDisk
     | ADMIN CANCEL REBALANCE DISK (ON LEFT_PAREN backends+=STRING_LITERAL
@@ -1943,7 +1951,8 @@ number
 // TODO: need to stay consistent with the legacy
 nonReserved
 //--DEFAULT-NON-RESERVED-START
-    : ACTIONS
+    : LICENSE | IMPORT | VALIDATE | DEPLOYMENT | CLOCK | CHALLENGE
+    | ACTIONS
     | AFTER
     | AGG_STATE
     | AGGREGATE

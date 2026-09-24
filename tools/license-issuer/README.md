@@ -11,7 +11,16 @@ Upstream and third-party components retain their respective licenses.
 
 这是签发方使用的独立工具，不接入 FE/BE 打包，不附带任何生产或测试密钥，也不会自动创建生产信任根。
 它使用 Python 3 标准库和本机 OpenSSL 3，无 Python 第三方包、联网请求或远程公钥发现。
-数据库的可信公钥安装、SQL/API 导入、集群序号、节点额度和运行时限制由数据库实现负责；本工具不能启用这些尚未接入的能力。
+数据库的可信公钥安装、SQL/API 导入、集群序号、节点额度和运行时限制由数据库实现负责。P2 管理接入已通过构建和针对性测试，真实集群验收仍待完成；本工具本身不能启用查询和节点额度拦截。
+
+配套 `license_sql_import.py` 将本地证书文件转换为文本 SQL，默认生成 `ADMIN IMPORT LICENSE`；`--operation validate` 或 `--operation clock-repair` 分别生成验证或时间修复语句。输出交给 MySQL 客户端标准输入执行，证书不是 FE 服务器路径，管理语句不支持服务端 PREPARE。例如：
+
+```bash
+python3 tools/license-issuer/license_sql_import.py /secure/vendor/customer-license.jws \
+    | mysql --defaults-extra-file=/secure/client.cnf
+```
+
+该辅助工具只校验紧凑 JWS 的字符和长度，密码使用客户端配置，FE 仍负责验签与 ADMIN 权限检查。四项辅助工具测试通过不代表上述真实客户端链路已验收。
 
 ## 运行环境
 

@@ -171,6 +171,11 @@ public final class LicenseClock {
         return anchor.suspect.get();
     }
 
+    /** Restores an already committed anomaly fact; only a later repair epoch can clear it. */
+    void restoreSuspect() {
+        anchor.suspect.set(true);
+    }
+
     public Facts getCommittedFacts() {
         return anchor.facts;
     }

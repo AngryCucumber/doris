@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+// Add FE license management SQL and protect certificate material in diagnostics.
+
 package org.apache.doris.nereids.parser;
 
 import org.apache.doris.analysis.BrokerDesc;
@@ -43,6 +46,18 @@ public class LogicalPlanBuilderForEncryption extends LogicalPlanBuilder {
                                            Map<Pair<Integer, Integer>, String> indexInSqlToString) {
         super(selectHintMap);
         this.indexInSqlToString = Objects.requireNonNull(indexInSqlToString, "indexInSqlToString is null");
+    }
+
+    @Override
+    public LogicalPlan visitAdminLicenseCertificate(DorisParser.AdminLicenseCertificateContext ctx) {
+        encryptPassword(ctx.certificate.getStartIndex(), ctx.certificate.getStopIndex());
+        return super.visitAdminLicenseCertificate(ctx);
+    }
+
+    @Override
+    public LogicalPlan visitAdminLicenseClockRepair(DorisParser.AdminLicenseClockRepairContext ctx) {
+        encryptPassword(ctx.certificate.getStartIndex(), ctx.certificate.getStopIndex());
+        return super.visitAdminLicenseClockRepair(ctx);
     }
 
     // select into outfile clause

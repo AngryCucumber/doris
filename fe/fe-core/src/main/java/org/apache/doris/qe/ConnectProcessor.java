@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+// Add FE license management SQL and protect certificate material in diagnostics.
+
 package org.apache.doris.qe;
 
 import org.apache.doris.analysis.ExplainOptions;
@@ -40,6 +43,8 @@ import org.apache.doris.common.util.SqlUtils;
 import org.apache.doris.common.util.Util;
 import org.apache.doris.datasource.CatalogIf;
 import org.apache.doris.datasource.InternalCatalog;
+import org.apache.doris.massdb.license.LicenseSqlException;
+import org.apache.doris.massdb.license.LicenseSqlRedactor;
 import org.apache.doris.metric.MetricRepo;
 import org.apache.doris.mysql.MysqlChannel;
 import org.apache.doris.mysql.MysqlCommand;
@@ -228,7 +233,9 @@ public abstract class ConnectProcessor {
             }
         }
 
-        String convertedStmt = SqlDialectHelper.convertSqlByDialect(originStmt, ctx.getSessionVariable());
+        String convertedStmt = LicenseSqlRedactor.requiresNativeParser(originStmt,
+                (ctx.getSessionVariable().getSqlMode() & SqlModeHelper.MODE_NO_BACKSLASH_ESCAPES) != 0) ? originStmt
+                : SqlDialectHelper.convertSqlByDialect(originStmt, ctx.getSessionVariable());
         String sqlHash = DigestUtils.md5Hex(convertedStmt);
         ctx.setSqlHash(sqlHash);
 
@@ -263,7 +270,8 @@ public abstract class ConnectProcessor {
             try {
                 origSingleStmtList = SqlUtils.splitMultiStmts(convertedStmt);
             } catch (Exception ignore) {
-                LOG.warn("Try to parse multi origSingleStmt failed, originStmt: \"{}\"", convertedStmt);
+                LOG.warn("Try to parse multi origSingleStmt failed, originStmt: \"{}\"",
+                        LicenseSqlRedactor.redact(convertedStmt));
             }
         }
         long parseSqlFinishTime = System.currentTimeMillis();
@@ -435,7 +443,7 @@ public abstract class ConnectProcessor {
         } catch (Exception e) {
             if (LOG.isDebugEnabled()) {
                 LOG.debug("Nereids parse sql failed. Reason: {}. Statement: \"{}\".",
-                        e.getMessage(), convertedStmt, e);
+                        e.getMessage(), LicenseSqlRedactor.redact(convertedStmt), e);
             }
             Throwable exception = new AnalysisException(e.getMessage(), e);
             List<StatementBase> stmts = tryRetryOriginalSql(originStmt, convertedStmt, sessionVariable);
@@ -465,7 +473,8 @@ public abstract class ConnectProcessor {
                 if (LOG.isDebugEnabled()) {
                     LOG.debug("Retry with original SQL failed. "
                                     + "Reason: {}. Original Statement: \"{}\". Converted Statement: \"{}\".",
-                            e.getMessage(), originStmt, convertedStmt, e);
+                            e.getMessage(), LicenseSqlRedactor.redact(originStmt),
+                            LicenseSqlRedactor.redact(convertedStmt), e);
                 }
                 // Retry failed, return null
                 return null;
@@ -480,7 +489,11 @@ public abstract class ConnectProcessor {
         if (ctx.getMinidump() != null) {
             MinidumpUtils.saveMinidumpString(ctx.getMinidump(), DebugUtil.printId(ctx.queryId()));
         }
-        if (throwable instanceof SyntaxParseException) {
+        LicenseSqlException licenseFailure = LicenseSqlException.find(throwable);
+        if (licenseFailure != null) {
+            ctx.getState().setError(licenseFailure.getMysqlErrorCode(), licenseFailure.getMessage());
+            ctx.getState().setErrType(QueryState.ErrType.ANALYSIS_ERR);
+        } else if (throwable instanceof SyntaxParseException) {
             // Syntax parse exception.
             Throwable e = new AnalysisException(throwable.getMessage(), throwable);
             ctx.getState().setError(ErrorCode.ERR_UNKNOWN_ERROR, e.getMessage());
@@ -724,8 +737,15 @@ public abstract class ConnectProcessor {
         } catch (Throwable e) {
             // Catch all throwable.
             // If reach here, maybe Doris bug.
-            LOG.warn("Process one query failed because unknown reason: ", e);
-            ctx.getState().setError(ErrorCode.ERR_UNKNOWN_ERROR, "Unexpected exception: " + e.getMessage());
+            LicenseSqlException licenseFailure = LicenseSqlException.find(e);
+            if (licenseFailure != null) {
+                ctx.getState().setError(licenseFailure.getMysqlErrorCode(), licenseFailure.getMessage());
+            } else if (e instanceof UserException) {
+                ctx.getState().setError(((UserException) e).getMysqlErrorCode(), e.getMessage());
+            } else {
+                LOG.warn("Process one query failed because unknown reason: ", e);
+                ctx.getState().setError(ErrorCode.ERR_UNKNOWN_ERROR, "Unexpected exception: " + e.getMessage());
+            }
         }
         // no matter the master execute success or fail, the master must transfer the result to follower
         // and tell the follower the current journalID.
@@ -797,4 +817,3 @@ public abstract class ConnectProcessor {
         throw new NotSupportedException("Just MysqlConnectProcessor support execute");
     }
 }
-

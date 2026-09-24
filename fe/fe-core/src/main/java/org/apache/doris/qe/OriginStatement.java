@@ -15,7 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+// Add FE license management SQL and protect certificate material in diagnostics.
+
 package org.apache.doris.qe;
+
+import org.apache.doris.massdb.license.LicenseSqlRedactor;
 
 import com.google.gson.annotations.SerializedName;
 
@@ -37,10 +42,14 @@ public class OriginStatement {
         this.idx = idx;
     }
 
+    public String getSafeSql() {
+        return LicenseSqlRedactor.redact(originStmt);
+    }
+
     @Override
     public String toString() {
         return "OriginStatement{"
-                + "originStmt='" + originStmt + '\''
+                + "originStmt='" + getSafeSql() + '\''
                 + ", idx=" + idx
                 + '}';
     }

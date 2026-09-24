@@ -15,12 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+// Add FE license management SQL and protect certificate material in diagnostics.
+
 package org.apache.doris.common.profile;
 
 import org.apache.doris.common.Config;
 import org.apache.doris.common.io.Text;
 import org.apache.doris.common.util.SafeStringBuilder;
 import org.apache.doris.common.util.TimeUtils;
+import org.apache.doris.massdb.license.LicenseSqlRedactor;
 import org.apache.doris.persist.gson.GsonUtils;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.qe.StmtExecutor;
@@ -798,7 +802,7 @@ public class SummaryProfile {
         }
 
         public SummaryBuilder sqlStatement(String val) {
-            map.put(SQL_STATEMENT, val);
+            map.put(SQL_STATEMENT, LicenseSqlRedactor.redact(val));
             return this;
         }
 

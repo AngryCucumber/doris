@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
+
 package org.apache.doris.persist;
 
 import java.lang.reflect.Field;
@@ -24,6 +26,14 @@ import java.lang.reflect.Modifier;
  * Operation name and code mapping.
  **/
 public class OperationType {
+    // FE-only license facts. Each operation contains one atomic, bounded v1 envelope.
+    public static final short OP_MASSDB_LICENSE_INITIALIZE = 6200;
+    public static final short OP_MASSDB_LICENSE_ACCEPT = 6201;
+    public static final short OP_MASSDB_LICENSE_BASE_CAPACITY = 6202;
+    public static final short OP_MASSDB_LICENSE_WATERMARK = 6203;
+    public static final short OP_MASSDB_LICENSE_CLOCK_REPAIR = 6204;
+    public static final short OP_MASSDB_LICENSE_INTEGRITY = 6205;
+
     // OP_LOCAL_EOF is only for local edit log, to indicate the end of a edit log run.
     public static final short OP_LOCAL_EOF = -1;
     public static final short OP_SAVE_NEXTID = 0;
@@ -424,6 +434,10 @@ public class OperationType {
     public static final short OP_MODIFY_CLOUD_WARM_UP_JOB = 1002;
 
     public static final short OP_BEGIN_SNAPSHOT = 1100;
+
+    public static boolean isMassdbLicenseOperation(short opCode) {
+        return opCode >= OP_MASSDB_LICENSE_INITIALIZE && opCode <= OP_MASSDB_LICENSE_INTEGRITY;
+    }
 
     /**
      * Get opcode name by op code.

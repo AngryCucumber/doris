@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+// Add FE license management SQL and protect certificate material in diagnostics.
+
 // Copied from Apache Spark and modified for Apache Doris
 
 lexer grammar DorisLexer;
@@ -44,6 +47,13 @@ lexer grammar DorisLexer;
     }
   }
 }
+
+LICENSE: 'LICENSE';
+IMPORT: 'IMPORT';
+VALIDATE: 'VALIDATE';
+DEPLOYMENT: 'DEPLOYMENT';
+CLOCK: 'CLOCK';
+CHALLENGE: 'CHALLENGE';
 
 SEMICOLON: ';';
 

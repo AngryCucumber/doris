@@ -19,6 +19,7 @@ under the License.
 -->
 <!-- Modified for MassDB SQL. See MODIFICATIONS.md for details. -->
 
+<!-- MassDB modification: validate commercial headers for the license SQL and HTTP adapters. -->
 <!DOCTYPE module PUBLIC
         "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
         "https://checkstyle.org/dtds/configuration_1_3.dtd">
@@ -63,11 +64,11 @@ under the License.
     </module>
     <module name="SuppressionSingleFilter">
         <property name="id" value="asfHeader"/>
-        <property name="files" value="(?:[/\\]master[/\\]ReportHandlerTest\.java$|[/\\]massdb[/\\])"/>
+        <property name="files" value="(?:[/\\]master[/\\]ReportHandlerTest\.java$|[/\\]massdb[/\\]|[/\\]httpv2[/\\]rest[/\\]LicenseController(?:Test)?\.java$|[/\\]nereids[/\\]trees[/\\]plans[/\\]commands[/\\]LicenseCommand\.java$)"/>
     </module>
     <module name="SuppressionSingleFilter">
         <property name="id" value="independentHeader"/>
-        <property name="files" value="^(?!.*(?:[/\\]master[/\\]ReportHandlerTest\.java$|[/\\]massdb[/\\])).*"/>
+        <property name="files" value="^(?!.*(?:[/\\]master[/\\]ReportHandlerTest\.java$|[/\\]massdb[/\\]|[/\\]httpv2[/\\]rest[/\\]LicenseController(?:Test)?\.java$|[/\\]nereids[/\\]trees[/\\]plans[/\\]commands[/\\]LicenseCommand\.java$)).*"/>
     </module>
     <module name="LineLength">
         <property name="fileExtensions" value="java"/>

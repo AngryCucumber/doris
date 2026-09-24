@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
+
 package org.apache.doris.persist.meta;
 
 import org.apache.doris.catalog.Env;
@@ -264,6 +266,12 @@ public class MetaPersistMethod {
                 metaPersistMethod.readMethod = Env.class.getDeclaredMethod("loadDictionaryManager",
                         DataInputStream.class, long.class);
                 metaPersistMethod.writeMethod = Env.class.getDeclaredMethod("saveDictionaryManager",
+                        CountingDataOutputStream.class, long.class);
+                break;
+            case "massdbLicenseV1":
+                metaPersistMethod.readMethod = Env.class.getDeclaredMethod("loadMassdbLicenseV1",
+                        DataInputStream.class, long.class);
+                metaPersistMethod.writeMethod = Env.class.getDeclaredMethod("saveMassdbLicenseV1",
                         CountingDataOutputStream.class, long.class);
                 break;
             case "KeyManagerStore":

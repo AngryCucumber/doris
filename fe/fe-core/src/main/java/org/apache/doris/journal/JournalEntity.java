@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
+
 package org.apache.doris.journal;
 
 import org.apache.doris.alter.AlterJobV2;
@@ -61,6 +63,7 @@ import org.apache.doris.load.loadv2.LoadJob.LoadJobStateUpdateInfo;
 import org.apache.doris.load.loadv2.LoadJobFinalOperation;
 import org.apache.doris.load.routineload.RoutineLoadJob;
 import org.apache.doris.load.sync.SyncJob;
+import org.apache.doris.massdb.license.LicensePersistRecord;
 import org.apache.doris.mysql.privilege.UserPropertyInfo;
 import org.apache.doris.persist.AlterConstraintLog;
 import org.apache.doris.persist.AlterDatabasePropertyInfo;
@@ -989,6 +992,20 @@ public class JournalEntity implements Writable {
             }
             case OperationType.OP_BEGIN_SNAPSHOT: {
                 data = SnapshotState.read(in);
+                isRead = true;
+                break;
+            }
+            case OperationType.OP_MASSDB_LICENSE_INITIALIZE:
+            case OperationType.OP_MASSDB_LICENSE_ACCEPT:
+            case OperationType.OP_MASSDB_LICENSE_BASE_CAPACITY:
+            case OperationType.OP_MASSDB_LICENSE_WATERMARK:
+            case OperationType.OP_MASSDB_LICENSE_CLOCK_REPAIR:
+            case OperationType.OP_MASSDB_LICENSE_INTEGRITY: {
+                LicensePersistRecord record = LicensePersistRecord.read(in);
+                if (record.getOperation() != opCode) {
+                    throw new IOException("Mismatched license journal operation");
+                }
+                data = record;
                 isRead = true;
                 break;
             }

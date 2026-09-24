@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+// Add FE license management SQL and protect certificate material in diagnostics.
+
 package org.apache.doris.common;
 
 import java.util.MissingFormatArgumentException;
@@ -1233,7 +1236,13 @@ public enum ErrorCode {
     ERR_NO_CLUSTER_ERROR(5099, new byte[]{'4', '2', '0', '0', '0'}, "No compute group (cloud cluster) selected"),
 
     ERR_NOT_CLOUD_MODE(6000, new byte[]{'4', '2', '0', '0', '0'},
-            "Command only support in cloud mode.");
+            "Command only support in cloud mode."),
+
+    ERR_LICENSE_QUERY_DENIED(6200, new byte[]{'4', '5', '0', '0', '0'}, "%s"),
+    ERR_LICENSE_CANDIDATE_INVALID(6201, new byte[]{'4', '5', '0', '0', '0'}, "%s"),
+    ERR_LICENSE_CONFLICT(6202, new byte[]{'4', '0', '0', '0', '1'}, "%s"),
+    ERR_LICENSE_NOT_READY(6203, new byte[]{'H', 'Y', '0', '0', '0'}, "%s"),
+    ERR_LICENSE_HISTORY_UNKNOWN(6204, new byte[]{'H', 'Y', '0', '0', '0'}, "%s");
 
     // This is error code
     private final int code;

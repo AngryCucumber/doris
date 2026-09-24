@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+// Add FE license management SQL and protect certificate material in diagnostics.
+
 package org.apache.doris.nereids.parser;
 
 import org.apache.doris.alter.QuotaType;
@@ -66,6 +69,7 @@ import org.apache.doris.datasource.InternalCatalog;
 import org.apache.doris.dictionary.LayoutType;
 import org.apache.doris.job.common.IntervalUnit;
 import org.apache.doris.load.loadv2.LoadTask;
+import org.apache.doris.massdb.license.LicenseManager.Action;
 import org.apache.doris.mtmv.MTMVPartitionInfo.MTMVPartitionType;
 import org.apache.doris.mtmv.MTMVRefreshEnum.BuildMode;
 import org.apache.doris.mtmv.MTMVRefreshEnum.RefreshMethod;
@@ -755,6 +759,7 @@ import org.apache.doris.nereids.trees.plans.commands.InstallPluginCommand;
 import org.apache.doris.nereids.trees.plans.commands.KillAnalyzeJobCommand;
 import org.apache.doris.nereids.trees.plans.commands.KillConnectionCommand;
 import org.apache.doris.nereids.trees.plans.commands.KillQueryCommand;
+import org.apache.doris.nereids.trees.plans.commands.LicenseCommand;
 import org.apache.doris.nereids.trees.plans.commands.LoadCommand;
 import org.apache.doris.nereids.trees.plans.commands.LockTablesCommand;
 import org.apache.doris.nereids.trees.plans.commands.PauseJobCommand;
@@ -6704,6 +6709,36 @@ public class LogicalPlanBuilder extends DorisParserBaseVisitor<Object> {
     @Override
     public LogicalPlan visitAdminSetReplicaVersion(DorisParser.AdminSetReplicaVersionContext ctx) {
         return new AdminSetReplicaVersionCommand(visitPropertyItemList(ctx.propertyItemList()));
+    }
+
+    @Override
+    public LogicalPlan visitAdminLicenseCertificate(DorisParser.AdminLicenseCertificateContext ctx) {
+        return new LicenseCommand(ctx.IMPORT() != null ? Action.IMPORT : Action.VALIDATE,
+                stripQuotes(ctx.certificate.getText()));
+    }
+
+    @Override
+    public LogicalPlan visitAdminLicenseClockChallenge(DorisParser.AdminLicenseClockChallengeContext ctx) {
+        return new LicenseCommand(Action.CLOCK_CHALLENGE, null);
+    }
+
+    @Override
+    public LogicalPlan visitAdminLicenseClockRepair(DorisParser.AdminLicenseClockRepairContext ctx) {
+        return new LicenseCommand(Action.CLOCK_REPAIR, stripQuotes(ctx.certificate.getText()));
+    }
+
+    @Override
+    public LogicalPlan visitShowLicense(DorisParser.ShowLicenseContext ctx) {
+        if (ctx.DEPLOYMENT() != null) {
+            return new LicenseCommand(Action.DEPLOYMENT, null);
+        }
+        if (ctx.fingerprint != null) {
+            return new LicenseCommand(Action.IMPORT_RECEIPT, stripQuotes(ctx.fingerprint.getText()));
+        }
+        if (ctx.repairId != null) {
+            return new LicenseCommand(Action.CLOCK_REPAIR_RECEIPT, stripQuotes(ctx.repairId.getText()));
+        }
+        return new LicenseCommand(Action.STATUS, null);
     }
 
     @Override

@@ -15,12 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+// Add FE license management SQL and protect certificate material in diagnostics.
+
 package org.apache.doris.nereids.parser;
 
 import org.apache.doris.analysis.ExplainOptions;
 import org.apache.doris.analysis.StatementBase;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.common.Pair;
+import org.apache.doris.massdb.license.LicenseSqlRedactor;
 import org.apache.doris.nereids.DorisLexer;
 import org.apache.doris.nereids.DorisParser;
 import org.apache.doris.nereids.DorisParser.NonReservedContext;
@@ -233,6 +237,11 @@ public class NereidsParser {
 
     private List<StatementBase> parseSQLWithDialect(String sql,
                                                     SessionVariable sessionVariable) {
+        // Native management syntax must not expose certificate bytes to dialect converters.
+        if (LicenseSqlRedactor.requiresNativeParser(sql,
+                (sessionVariable.getSqlMode() & SqlModeHelper.MODE_NO_BACKSLASH_ESCAPES) != 0)) {
+            return parseSQL(sql);
+        }
         @Nullable Dialect sqlDialect = Dialect.getByName(sessionVariable.getSqlDialect());
         if (sqlDialect == null) {
             return parseSQL(sql);
@@ -247,8 +256,13 @@ public class NereidsParser {
                     return statementBases;
                 }
             } catch (Throwable throwable) {
-                LOG.warn("Parse sql with dialect {} failed, plugin: {}, sql: {}.",
+                if (LicenseSqlRedactor.isSensitive(sql)) {
+                    LOG.warn("Parse license-bearing SQL with dialect {} failed; input and details redacted",
+                            sqlDialect);
+                } else {
+                    LOG.warn("Parse sql with dialect {} failed, plugin: {}, sql: {}.",
                             sqlDialect, plugin.getClass().getSimpleName(), sql, throwable);
+                }
             }
         }
 
@@ -346,12 +360,22 @@ public class NereidsParser {
 
     private <T> T parse(String sql, @Nullable LogicalPlanBuilder logicalPlanBuilder,
                         Function<DorisParser, ParserRuleContext> parseFunction) {
-        CommonTokenStream tokenStream = parseAllTokens(sql);
-        ParserRuleContext tree = toAst(tokenStream, parseFunction);
-        LogicalPlanBuilder realLogicalPlanBuilder = logicalPlanBuilder == null
-                    ? new LogicalPlanBuilder(getHintMap(sql, tokenStream, DorisParser::selectHint))
-                    : logicalPlanBuilder;
-        return (T) realLogicalPlanBuilder.visit(tree);
+        try {
+            CommonTokenStream tokenStream = parseAllTokens(sql);
+            ParserRuleContext tree = toAst(tokenStream, parseFunction);
+            LogicalPlanBuilder realLogicalPlanBuilder = logicalPlanBuilder == null
+                        ? new LogicalPlanBuilder(getHintMap(sql, tokenStream, DorisParser::selectHint))
+                        : logicalPlanBuilder;
+            return (T) realLogicalPlanBuilder.visit(tree);
+        } catch (RuntimeException exception) {
+            if (LicenseSqlRedactor.isSensitive(sql)) {
+                // Never retain the original parser exception: its message/cause can contain raw tokens.
+                throw new org.apache.doris.nereids.exceptions.SyntaxParseException(
+                        "License management SQL could not be parsed; certificate text redacted",
+                        new Origin(0, 0), Optional.empty());
+            }
+            throw exception;
+        }
     }
 
     public LogicalPlan parseForCreateView(String sql) {
@@ -392,8 +416,16 @@ public class NereidsParser {
             if (hintToken.getChannel() == 2 && sql.charAt(hintToken.getStartIndex() + 2) == '+') {
                 String hintSql = sql.substring(hintToken.getStartIndex() + 3, hintToken.getStopIndex() + 1);
                 DorisLexer newHintLexer = new DorisLexer(new CaseInsensitiveStream(CharStreams.fromString(hintSql)));
+                if (LicenseSqlRedactor.isSensitive(sql)) {
+                    newHintLexer.removeErrorListeners();
+                    newHintLexer.addErrorListener(PARSE_ERROR_LISTENER);
+                }
                 CommonTokenStream newHintTokenStream = new CommonTokenStream(newHintLexer);
                 DorisParser hintParser = new DorisParser(newHintTokenStream);
+                if (LicenseSqlRedactor.isSensitive(sql)) {
+                    hintParser.removeErrorListeners();
+                    hintParser.addErrorListener(PARSE_ERROR_LISTENER);
+                }
                 ParserRuleContext hintContext = parseFunction.apply(hintParser);
                 selectHintMap.put(hintToken.getStartIndex(), hintContext);
             }
@@ -471,6 +503,10 @@ public class NereidsParser {
     private static CommonTokenStream parseAllTokens(String sql) {
         DorisLexer lexer = new DorisLexer(new CaseInsensitiveStream(CharStreams.fromString(sql)));
         lexer.isNoBackslashEscapes = SqlModeHelper.hasNoBackSlashEscapes();
+        if (LicenseSqlRedactor.isSensitive(sql)) {
+            lexer.removeErrorListeners();
+            lexer.addErrorListener(PARSE_ERROR_LISTENER);
+        }
         CommonTokenStream tokenStream = new CommonTokenStream(lexer);
         tokenStream.fill();
         return tokenStream;

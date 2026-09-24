@@ -27,6 +27,16 @@ public class Config extends ConfigBase {
                     + "The configuration in this file will override the configuration in fe.conf"})
     public static String custom_config_dir = EnvUtils.getDorisHome() + "/conf";
 
+    @ConfField(description = {"授权证书验签公钥清单路径；仅公钥，空值表示尚未安装信任清单，重启生效",
+            "Path to the license public-key trust manifest; public keys only. "
+                    + "An empty value leaves trust unconfigured. Takes effect after restart."})
+    public static String massdb_license_trust_store_file = "";
+
+    @ConfField(description = {"已注册 FE 的授权管理端口映射，格式 host:edit_log_port=management_port；重启生效",
+            "Optional registered-FE license management ports: host:edit_log_port=management_port. "
+                    + "Only the port may be overridden; protocol follows enable_https. Takes effect after restart."})
+    public static String[] massdb_license_fe_management_ports = {};
+
     @ConfField(description = {"fe.log 和 fe.audit.log 的最大文件大小。超过这个大小后，日志文件会被切分",
             "The maximum file size of fe.log and fe.audit.log. After exceeding this size, the log file will be split"})
     public static int log_roll_size_mb = 1024; // 1 GB

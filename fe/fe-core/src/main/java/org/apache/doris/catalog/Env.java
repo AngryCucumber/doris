@@ -141,6 +141,9 @@ import org.apache.doris.load.loadv2.ProgressManager;
 import org.apache.doris.load.routineload.RoutineLoadManager;
 import org.apache.doris.load.routineload.RoutineLoadScheduler;
 import org.apache.doris.load.routineload.RoutineLoadTaskScheduler;
+import org.apache.doris.massdb.license.LicenseFeCompatibility;
+import org.apache.doris.massdb.license.LicenseManager;
+import org.apache.doris.massdb.license.LicensePersistRecord;
 import org.apache.doris.master.Checkpoint;
 import org.apache.doris.master.MetaHelper;
 import org.apache.doris.master.PartitionInfoCollector;
@@ -307,6 +310,7 @@ import org.apache.logging.log4j.Logger;
 import org.apache.thrift.TException;
 
 import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.net.HttpURLConnection;
@@ -333,6 +337,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import java.util.zip.CRC32;
+import java.util.zip.CheckedInputStream;
+import java.util.zip.CheckedOutputStream;
 
 
 /**
@@ -425,6 +432,11 @@ public class Env {
     private MetaIdGenerator idGenerator = new MetaIdGenerator(NEXT_ID_INIT_VALUE);
 
     private EditLog editLog;
+    // Owned by this Env; checkpoint must never borrow the serving Env's current license state.
+    private final LicenseManager licenseManager;
+    private volatile boolean licenseLeadership;
+    private boolean licenseImageFormatRequired;
+    private boolean licenseImageModuleLoaded;
     protected int clusterId;
     protected String token;
     // For checkpoint and observer memory replayed marker
@@ -840,6 +852,45 @@ public class Env {
         this.globalExternalTransactionInfoMgr = new GlobalExternalTransactionInfoMgr();
         this.tokenManager = new TokenManager();
         this.dictionaryManager = new DictionaryManager();
+        this.licenseManager = new LicenseManager(new LicenseManager.Host() {
+            @Override
+            public boolean isMaster() {
+                return licenseLeadership;
+            }
+
+            @Override
+            public LicenseManager.Membership membership() {
+                return LicenseFeCompatibility.membership(Env.this);
+            }
+
+            @Override
+            public long frontendVersion() {
+                return LicenseFeCompatibility.frontendVersion(Env.this);
+            }
+
+            @Override
+            public void commit(short operation, LicensePersistRecord record) throws IOException {
+                if (!licenseLeadership || isCheckpointCatalog) {
+                    throw new IOException("License commits require the current serving master");
+                }
+                editLog.logLicense(operation, record);
+            }
+
+            @Override
+            public boolean activationReady() {
+                return LicenseFeCompatibility.checkAll(Env.this, getLicenseManager().capability());
+            }
+
+            @Override
+            public String trustStorePath() {
+                return Config.massdb_license_trust_store_file;
+            }
+
+            @Override
+            public Map<String, Object> localCapability(String trustDigest) {
+                return LicenseFeCompatibility.localCapability(Env.this, trustDigest);
+            }
+        }, isCheckpointCatalog);
         this.keyManagerStore = new KeyManagerStore();
         this.keyManager = KeyManagerFactory.getKeyManager();
         if (Config.agent_task_health_check_intervals_ms > 0) {
@@ -905,6 +956,15 @@ public class Env {
     // but in some cases, we should get the serving catalog explicitly.
     public static Env getServingEnv() {
         return SingletonHolder.INSTANCE;
+    }
+
+    public LicenseManager getLicenseManager() {
+        return licenseManager;
+    }
+
+    public void markLicenseRecoveryIncomplete() {
+        licenseImageFormatRequired = true;
+        licenseManager.markRecoveryIncomplete();
     }
 
     public BrokerMgr getBrokerMgr() {
@@ -1652,8 +1712,15 @@ public class Env {
 
             toMasterProgress = "replay journal";
             long replayStartTime = System.currentTimeMillis();
+            // Empty storage is independent evidence; an absent license module alone is not a new cluster.
+            long licenseReplayTarget = getMaxJournalId();
+            boolean pristineLicenseBootstrap = isFirstTimeStartUp && replayedJournalId.get() == 0
+                    && licenseReplayTarget == 0;
             // replay journals. -1 means replay all the journals larger than current journal id.
             replayJournal(-1);
+            if (licenseReplayTarget < 0 || replayedJournalId.get() < licenseReplayTarget) {
+                markLicenseRecoveryIncomplete();
+            }
             long replayEndTime = System.currentTimeMillis();
             LOG.info("finish replay in " + (replayEndTime - replayStartTime) + " msec");
 
@@ -1744,6 +1811,9 @@ public class Env {
                             "true");
                 }
             }
+
+            licenseLeadership = true;
+            licenseManager.onMasterStart(pristineLicenseBootstrap);
 
             getPolicyMgr().createDefaultStoragePolicy();
 
@@ -1969,6 +2039,7 @@ public class Env {
 
     // start threads that should run on all FE
     protected void startNonMasterDaemonThreads() {
+        licenseManager.start();
         // start load manager thread
         tokenManager.start();
         loadManager.start();
@@ -1994,6 +2065,8 @@ public class Env {
     }
 
     private void transferToNonMaster(FrontendNodeType newType) {
+        licenseLeadership = false;
+        licenseManager.onNonMaster();
         isReady.set(false);
 
         try {
@@ -2214,12 +2287,14 @@ public class Env {
 
     public long loadHeaderCOR1(DataInputStream dis, long checksum) throws IOException {
         int journalVersion = dis.readInt();
-        if (journalVersion > FeMetaVersion.VERSION_CURRENT) {
+        int maximumImageVersion = Math.max(FeMetaVersion.VERSION_CURRENT, FeMetaVersion.VERSION_MASSDB_LICENSE_V1);
+        if (journalVersion > maximumImageVersion) {
             throw new IOException("The meta version of image is " + journalVersion
-                    + ", which is higher than FE current version " + FeMetaVersion.VERSION_CURRENT
+                    + ", which is higher than FE current image version " + maximumImageVersion
                     + ". Please upgrade your cluster to the latest version first.");
         }
 
+        licenseImageFormatRequired = journalVersion >= FeMetaVersion.VERSION_MASSDB_LICENSE_V1;
         long newChecksum = checksum ^ journalVersion;
         MetaContext.get().setMetaVersion(journalVersion);
 
@@ -2236,6 +2311,24 @@ public class Env {
 
         LOG.info("finished replay header from image");
         return newChecksum;
+    }
+
+    public void beginLicenseImageRecovery() {
+        licenseImageModuleLoaded = false;
+    }
+
+    public void completeLicenseImageRecovery() {
+        if (licenseImageFormatRequired && !licenseImageModuleLoaded) {
+            markLicenseRecoveryIncomplete();
+        }
+    }
+
+    public long loadMassdbLicenseV1(DataInputStream dis, long checksum) throws IOException {
+        CRC32 moduleChecksum = new CRC32();
+        licenseManager.loadImage(new DataInputStream(new CheckedInputStream(dis, moduleChecksum)));
+        licenseImageModuleLoaded = true;
+        licenseImageFormatRequired = true;
+        return checksum ^ moduleChecksum.getValue();
     }
 
     public long loadMasterInfo(DataInputStream dis, long checksum) throws IOException {
@@ -2579,8 +2672,12 @@ public class Env {
 
     public long saveHeader(CountingDataOutputStream dos, long replayedJournalId, long checksum) throws IOException {
         // Write meta version
-        checksum ^= FeConstants.meta_version;
-        dos.writeInt(FeConstants.meta_version);
+        int imageVersion = FeConstants.meta_version;
+        if (licenseImageFormatRequired || licenseManager.getAppliedVersion() > 0) {
+            imageVersion = Math.max(imageVersion, FeMetaVersion.VERSION_MASSDB_LICENSE_V1);
+        }
+        checksum ^= imageVersion;
+        dos.writeInt(imageVersion);
 
         // Write replayed journal id
         checksum ^= replayedJournalId;
@@ -2595,6 +2692,16 @@ public class Env {
         // so just write a true value.
         dos.writeBoolean(true);
 
+        return checksum;
+    }
+
+    public long saveMassdbLicenseV1(CountingDataOutputStream dos, long checksum) throws IOException {
+        // During a mixed-FE upgrade an uninitialized Env emits an empty module (old readers skip it).
+        if (licenseImageFormatRequired || licenseManager.getAppliedVersion() > 0) {
+            CRC32 moduleChecksum = new CRC32();
+            licenseManager.saveImage(new DataOutputStream(new CheckedOutputStream(dos, moduleChecksum)));
+            return checksum ^ moduleChecksum.getValue();
+        }
         return checksum;
     }
 
@@ -3072,6 +3179,7 @@ public class Env {
             newToJournalId = getMaxJournalId();
         }
         if (newToJournalId <= replayedJournalId.get()) {
+            licenseManager.onReplayComplete();
             return false;
         }
 
@@ -3094,6 +3202,8 @@ public class Env {
             JournalEntity entity = kv.second;
             if (entity == null) {
                 if (logId != null && forceSkipJournalIds.contains(String.valueOf(logId))) {
+                    // The skipped opcode may itself be unreadable; completeness cannot be inferred.
+                    markLicenseRecoveryIncomplete();
                     replayedJournalId.incrementAndGet();
                     String msg = "journal " + replayedJournalId + " has skipped by config force_skip_journal_id";
                     LOG.info(msg);
@@ -3135,6 +3245,9 @@ public class Env {
             LOG.debug("replay journal cost too much time: {} replayedJournalId: {}", cost, replayedJournalId);
         }
 
+        if (replayedJournalId.get() >= newToJournalId) {
+            licenseManager.onReplayComplete();
+        }
         return hasLog;
     }
 

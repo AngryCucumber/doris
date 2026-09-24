@@ -13,7 +13,7 @@ Upstream and third-party components retain their respective licenses.
 
 **当前方案：只改 FE、FE 管理页面和独立签发工具，围绕五类出口限制新的业务读取。保留入库、更新、元数据、节点额度、证书导入及详情页面；不改 BE，不改内部通信协议，不要求启用 SSL 或 mTLS。** 用户最新确认：另允许窄式 `SELECT 1 FROM t LIMIT 1` 探测。
 
-这是收敛后的实施计划，不是整个授权功能已完成声明。当前 P0 的具体用例/挂点与性能适用映射已补齐，P1 核心源码、实际 JAR 和测试证据已核对；尚未接入数据库运行时。实现状态见[实施记录](/data/project/massdb-sql/docs/license-implementation-progress-20260922.md)。
+这是收敛后的实施计划，不是整个授权功能已完成声明。当前 P0 的具体用例/挂点与性能适用映射已补齐，P1 核心已交付；P2 的 Env/journal/image、SQL/HTTP 管理接入代码已构建并通过 173 项授权相关测试，真实集群验收仍未完成。五出口与节点额度拦截、页面和完整性能验收仍待后续阶段。实现状态见[实施记录](/data/project/massdb-sql/docs/license-implementation-progress-20260922.md)。
 
 本文替代旧版的全面 FE 出口治理要求。[当前 P0 契约](/data/project/massdb-sql/docs/license-p0-contract-20260922.md)定义 46 组具体运行用例、源码挂点及旧 LP001–026 到七组当前负载的适用映射。旧[协议说明](/data/project/massdb-sql/docs/license-protocol-v1-20260922.md)、[源码清单](/data/project/massdb-sql/docs/license-code-coverage-20260922.md)及旧 P0/性能/覆盖 JSON 保留为历史扩展范围参考；其中 H/C/LC 全量覆盖、全函数审计、规划零外部访问、全部 26 项基线前置要求和旧机器门槛不再定义当前任务。历史 FAIL、未执行和精度不足记录不能因此改为通过。证书核心契约及本文保留的性能数值继续有效。
 

@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+// Add FE license management SQL and protect certificate material in diagnostics.
+
 package org.apache.doris.nereids.trees.plans;
 
 /**
@@ -349,6 +352,7 @@ public enum PlanType {
     ADMIN_REBALANCE_DISK_COMMAND,
     ADMIN_SET_REPLICA_VERSION_COMMAND,
     ADMIN_CANCEL_REBALANCE_DISK_COMMAND,
+    LICENSE_COMMAND,
     ADMIN_SET_FRONTEND_CONFIG_COMMAND,
     CREATE_ENCRYPTKEY_COMMAND,
     CREATE_WORKLOAD_GROUP_COMMAND,

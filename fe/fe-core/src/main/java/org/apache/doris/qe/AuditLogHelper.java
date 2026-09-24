@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+// Add FE license management SQL and protect certificate material in diagnostics.
+
 package org.apache.doris.qe;
 
 import org.apache.doris.analysis.Queriable;
@@ -29,6 +32,7 @@ import org.apache.doris.common.profile.SummaryProfile;
 import org.apache.doris.common.util.DebugUtil;
 import org.apache.doris.datasource.CatalogIf;
 import org.apache.doris.datasource.InternalCatalog;
+import org.apache.doris.massdb.license.LicenseSqlRedactor;
 import org.apache.doris.metric.MetricRepo;
 import org.apache.doris.mysql.MysqlCommand;
 import org.apache.doris.nereids.NereidsPlanner;
@@ -84,7 +88,7 @@ public class AuditLogHelper {
     public static void logAuditLog(ConnectContext ctx, String origStmt, StatementBase parsedStmt,
             org.apache.doris.proto.Data.PQueryStatistics statistics, boolean printFuzzyVariables) {
         try {
-            logAuditLogImpl(ctx, origStmt, parsedStmt, statistics, printFuzzyVariables);
+            logAuditLogImpl(ctx, LicenseSqlRedactor.redact(origStmt), parsedStmt, statistics, printFuzzyVariables);
         } catch (Throwable t) {
             LOG.warn("Failed to write audit log.", t);
         }
@@ -376,7 +380,9 @@ public class AuditLogHelper {
             auditEventBuilder.setErrorMessage("Syntax Error");
         }
         // We put origin query stmt at the end of audit log, for parsing the log more convenient.
-        if (parsedStmt instanceof LogicalPlanAdapter) {
+        if (LicenseSqlRedactor.REDACTED.equals(origStmt)) {
+            encryptSql = origStmt;
+        } else if (parsedStmt instanceof LogicalPlanAdapter) {
             LogicalPlan logicalPlan = ((LogicalPlanAdapter) parsedStmt).getLogicalPlan();
             if ((logicalPlan instanceof NeedAuditEncryption)) {
                 encryptSql = ((NeedAuditEncryption) logicalPlan).geneEncryptionSQL(origStmt);
