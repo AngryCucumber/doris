@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+// Enforce license admission after queueing and before the first pipeline execution.
+
 package org.apache.doris.qe;
 
 import org.apache.doris.analysis.DescriptorTable;
@@ -140,6 +143,7 @@ public class NereidsCoordinator extends Coordinator {
     @Override
     public void exec() throws Exception {
         enqueue(coordinatorContext.connectContext);
+        checkLicenseBeforeDispatch();
 
         processTopSink(coordinatorContext, coordinatorContext.topDistributedPlan);
 
@@ -148,7 +152,11 @@ public class NereidsCoordinator extends Coordinator {
         Map<DistributedPlanWorker, TPipelineFragmentParamsList> workerToFragments
                 = ThriftPlansBuilder.plansToThrift(coordinatorContext);
         executionTask = PipelineExecutionTaskBuilder.build(coordinatorContext, workerToFragments);
-        executionTask.execute();
+        coordinatorContext.withLock(() -> {
+            markLicenseQueryStarted();
+            executionTask.execute();
+            return null;
+        });
     }
 
     @Override

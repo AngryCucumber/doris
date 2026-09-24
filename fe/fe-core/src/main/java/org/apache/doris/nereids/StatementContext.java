@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// MassDB modification: retain FE license query facts across planning and cache reuse.
+
 package org.apache.doris.nereids;
 
 import org.apache.doris.analysis.StatementBase;
@@ -33,6 +35,7 @@ import org.apache.doris.common.Pair;
 import org.apache.doris.datasource.mvcc.MvccSnapshot;
 import org.apache.doris.datasource.mvcc.MvccTable;
 import org.apache.doris.datasource.mvcc.MvccTableInfo;
+import org.apache.doris.massdb.license.LicenseQueryGuard;
 import org.apache.doris.mtmv.BaseTableInfo;
 import org.apache.doris.nereids.analyzer.UnboundRelation;
 import org.apache.doris.nereids.exceptions.AnalysisException;
@@ -165,6 +168,8 @@ public class StatementContext implements Closeable {
     private final Map<CTEId, LogicalPlan> rewrittenCteConsumer = new HashMap<>();
     private final Set<String> viewDdlSqlSet = Sets.newHashSet();
     private final SqlCacheContext sqlCacheContext;
+    private final LicenseQueryGuard.Facts licenseQueryFacts = new LicenseQueryGuard.Facts();
+    private LicenseQueryGuard.Classification licenseQueryClassification;
 
     // generate for next id for prepared statement's placeholders, which is
     // connection level
@@ -347,6 +352,18 @@ public class StatementContext implements Closeable {
         } else {
             this.sqlCacheContext = null;
         }
+    }
+
+    public LicenseQueryGuard.Facts getLicenseQueryFacts() {
+        return licenseQueryFacts;
+    }
+
+    public LicenseQueryGuard.Classification getLicenseQueryClassification() {
+        return licenseQueryClassification;
+    }
+
+    public void setLicenseQueryClassification(LicenseQueryGuard.Classification classification) {
+        licenseQueryClassification = classification;
     }
 
     public void setNeedLockTables(boolean needLockTables) {

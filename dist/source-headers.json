@@ -138,7 +138,22 @@
     "tools/license-issuer/test_license_sql_import.py",
     "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseManagerTest.java",
     "fe/fe-core/src/main/java/org/apache/doris/massdb/license/LicenseConfirmationIds.java",
-    "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseConfirmationIdsTest.java"
+    "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseConfirmationIdsTest.java",
+    "fe/fe-core/src/main/java/org/apache/doris/massdb/license/LicenseQueryGuard.java",
+    "fe/fe-core/src/test/java/org/apache/doris/load/LicenseExportAdmissionTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/load/LicenseExportSchedulerTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseMembershipIntegrationTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseQueryGuardTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/nereids/trees/plans/commands/LicenseCtasAdmissionTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/qe/LicenseQueryExecutionTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/httpv2/rest/LicenseTableQueryPlanAdmissionTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseQueryPlannerTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/nereids/trees/plans/commands/insert/LicenseOverwriteAdmissionTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseProcedureAdmissionTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/nereids/trees/plans/commands/insert/LicenseInsertAdmissionTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicensePreparedAdmissionTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseMembershipSqlTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/qe/LicenseQueryRetryTest.java"
   ],
   "apache": [
     "docker-compose/docker-compose.be-host.yml",
@@ -446,6 +461,94 @@
     "docker/README.md": {
       "originalHeaderSha256": "39ca8960d75ef7b3cfe38dc961093aa093e736a4ab2667a7baf837b39d32cd24",
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/common/cache/NereidsSqlCacheManager.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "MassDB modification: retain FE license query facts across planning and cache reuse."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/httpv2/rest/TableQueryPlanAction.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/load/ExportMgr.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/load/ExportTaskExecutor.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/nereids/NereidsPlanner.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "MassDB modification: retain FE license query facts across planning and cache reuse."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/nereids/SqlCacheContext.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "MassDB modification: retain FE license query facts across planning and cache reuse."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/nereids/StatementContext.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "MassDB modification: retain FE license query facts across planning and cache reuse."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/nereids/rules/analysis/BindExpression.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "MassDB modification: retain FE license query facts across planning and cache reuse."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/nereids/rules/analysis/BindRelation.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "MassDB modification: retain FE license query facts across planning and cache reuse."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/nereids/rules/analysis/ExpressionAnalyzer.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "MassDB modification: retain FE license query facts across planning and cache reuse."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/CreateTableCommand.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/ExecuteCommand.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/ExportCommand.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/insert/InsertIntoTableCommand.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/insert/InsertOverwriteTableCommand.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/logical/LogicalSqlCache.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "MassDB modification: retain FE license query facts across planning and cache reuse."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/qe/NereidsCoordinator.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/qe/StmtExecutor.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/plsql/Exec.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "MassDB modification: preserve typed license errors from procedure subqueries."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/qe/PointQueryExecutor.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "MassDB modification: recheck licensing immediately before the first point-query dispatch."
+    },
+    "fe/fe-core/src/test/java/org/apache/doris/cluster/SystemInfoServiceTest.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/test/java/org/apache/doris/qe/OldCoordinatorTest.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "MassDB modification: give the existing fragment-assignment test an explicit valid license fixture."
     }
   }
 }

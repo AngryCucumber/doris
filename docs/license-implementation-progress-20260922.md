@@ -7,7 +7,7 @@ Use is governed by LICENSE-MASSDB.txt and a separate agreement with the company.
 Upstream and third-party components retain their respective licenses.
 -->
 
-# 授权证书 P0/P1/P2 实施记录
+# 授权证书 P0/P1/P2/P3 实施记录
 
 > **2026-09-24 范围收敛：后续工作以[五出口执行计划](/data/project/massdb-sql/docs/license-certificate-execution-plan-20260922.md)为准。** 用户明确允许窄式 `SELECT 1 FROM t LIMIT 1`；保留可证明最终零行的空计划。旧全函数/FE 出口审计、零规划外部访问和全部 26 项基线前置要求已移出当前任务。下文历史阶段编号、强制矩阵与待办不自动恢复为新要求；核心/发行、导入、持久化、额度、页面和正式性能数值继续保留。范围收敛当时仅修订文档，未接入运行时、未重启基准，也未删除旧代码或证据；后续 P2 进展以本节更新为准。
 
@@ -23,7 +23,45 @@ P1 提交前的[独立核验](/data/project/massdb-sql/.build-records/license-p0
 
 实际多 FE 已验证 SQL/HTTP 导入与失败保旧、自然到期/续期、重启恢复、Master 故障切换、旧 FE 拒绝、新 Observer 加入、权限撤销与原主体重验、响应丢失和 202→200 原提交确认。最终日志/Profile 扫描及临时集群清理通过，原 FE/BE 未改。每个 M 用例的真实范围、单测注入范围、包/源码绑定与失败保留见[P2 验收记录](license-p2-acceptance-20260925.md)；操作步骤见[管理说明](license-management-p2.md)。不把 1,024 条历史、坏元数据、队列饱和等受控测试写成真实集群压测。临时夹具、测试密钥与构建产物不提交。
 
-**当前交付不等于数据库授权功能完成：五出口准入、成员 ADD/DROP 额度拦截、页面和完整性能验收仍待后续阶段。** 旧范围完整性能基线仍未通过，新范围业务拦截集成和性能也尚无通过记录；P2 管理验证不替代这些结果。当前不再将全部旧基线或平台矩阵完成作为开发的前置条件。以下按日期保留的旧契约、待办和基线状态只描述历史阶段，不覆盖本节当前结论。
+**2026-09-25 P3 完成：五出口与节点额度已实现并完成约定范围的分层功能验收。** 已接入共享读取守卫、规划/缓存分类、首次派发前复核，以及与证书提交串行的成员 ADD/DROP 额度准入。Q01–Q28、M09–M12 的实际协议、受控故障和不适用边界见[P3 验收记录](license-p3-acceptance-20260925.md)；不把 P2 的 183 项或分轮测试相加当作一次 P3 全绿。下列各轮记录保留当时的包、源码与结论，最新收口及清理事实在本节末尾说明；原始失败保存在 `.build-records/license-p3-20260925/`。
+
+P3 历史开发轮次 `tests-5` 编译并执行 242 项测试：241 项通过、1 项过程查询桥接断言失败，零错误或跳过；完整报告保存在 `tests-5-evidence/`。查询分类、真实规划/缓存、点查派发前复核、两类协调器出队清理、外部写入副作用边界、EXPORT、连接器控制器适配和额度用例已有通过记录；控制器适配单测不是实际 HTTP 网络验收。过程错误传递已补保留 6200 的路径，当时仍需定位该剩余断言；后续锁等待和按 ID 删除并发测试在该轮尚未执行。原始失败保留，不将本轮部分通过写成 P3 完成。
+
+P3 `tests-6` 随后执行 286 项：原有成员管理测试 2 项失败、协调器测试 1 项错误，授权测试 244 项全部通过；原始 XML 和日志保留。前者的模拟管理器未执行成员回调，后者缺少显式有效许可状态，现已仅修复测试夹具并保留原断言。过程桥接、首次派发前跨期、执行锁等待跨期和排队删除遇同地址新节点的测试已在该轮通过。
+
+`tests-7` 在 JDK 17.0.4 上完成 **288 项全部通过，零失败、错误或跳过**，其中授权相关 246 项、选定原有功能回归 42 项。新增同一 prepared handle 再执行及 schema 变化回退测试也通过。37 份 XML、完整日志、源码和 10,396 个测试时产品 class 摘要见[本轮记录](/data/project/massdb-sql/.build-records/license-p3-20260925/tests-7-evidence/summary.json)。这些是 FE 单测及受控入口回归，不能单独据此将 P3 标为验收完成。
+
+候选 `package-1` 随后构建成功，未重复运行已通过且源码未变的测试。打包产物与测试时 10,396 个产品 class 的摘要比较，仅四个使用构建版本信息的类不同，其余包括许可准入类逐字一致；这四个类未另做指令级差异审计。[构建记录](/data/project/massdb-sql/.build-records/license-p3-20260925/package-1-evidence/summary.json)保留当时尚未开始真实运行的状态，后续运行记录见下文。
+
+`runtime-v1` 已实际运行 package-1 FE、未修改的原版 BE 和独立 PostgreSQL。root、ADMIN 和只读账号各完成有效/自然到期两组 45 项基本 SQL 用例；实际同一预编译 handle 跨期、多语句、过程 SELECT、HTTP Query、Flight 1024、新 `_query_plan`、普通本地 OUTFILE/EXPORT，以及到期后内部写入和续期数据核对均有通过记录。JDBC 外部表与远端 SQL TVF 的读取/外部写出被拒绝，外部 VALUES 和导入内部表继续成功，并由独立 PostgreSQL 快照及续期后的完整结果核对。记录不宣称服务端点查快速分支已被运行时观测，也不宣称零规划外部访问。原始失败、46 份证据摘要和剩余范围见[本轮审计](/data/project/massdb-sql/.build-records/license-p3-20260925/runtime-v1-audit.json)。
+
+真实额度测试发现超额 ADD 已拒绝，但 Nereids 包装将约定 6202 变成 1105。已在许可 SQL 异常桥接中保留专用额度/未就绪错误，普通 DDL 错误不转换。`tests-8` 执行 290 项，唯一失败是新增 FE 额度测试未把模拟管理器写入 Env 字段；修复夹具后，`package-2` 构建及两个相关测试类的 **9 项全部通过**。保留前一轮失败，不写成一次 290 项全绿；见[新包记录](/data/project/massdb-sql/.build-records/license-p3-20260925/package-2-evidence/summary.json)。与实际运行的 package-1 比较，10,396 个产品 class 仅许可异常桥接及四个构建信息使用类不同。
+
+`runtime-v2` 已用 package-2 在全新元数据下复验：批量超额 ADD 返回 6202 且无部分登记；两个真实并发连接争用一个名额时仅一个成功；离线 Observer/计算节点仍占额；DECOMMISSION 和失败 DROP 不释放，成功 DROP 后 ADD 可复用；实际停止/重启 BE 后原 BackendId 不变且不重复占额。三台运行 FE 已同步相同许可与 3 FE / 1 BE 成员计数，再加入离线 Observer 达到 4 FE 后继续受限。前五轮结果见[额度检查点](/data/project/massdb-sql/.build-records/license-p3-20260925/runtime-v2-quota-checkpoint.json)。首轮因 BE 尚未报告 Alive 的前提失败另行保留，没有算入产品拒绝通过。
+
+随后在 runtime-v2 自然到期后，额度内 ADD 成功、超额仍返回 6202；已命中的 PhysicalSqlCache 保留且新执行被拒绝，缓存命中由同连接 queryId 对应 Profile 和精确三行结果证明。字典函数在 BE 常量折叠开/关、可折叠参数和混合表达式下均拒绝；已刷新 MV 的直接读取及有实际选中 MV 计划的源表查询拒绝。到期期间完整 MV 刷新和异步统计任务成功，续期后字典/MV/源表精确数据再次核对通过。三 FE 原连接及重连均拒绝，当前这项仅证明直接接入，未宣称强制转发已验收。
+
+M12 实际导入未来 4 FE / 3 BE 证书：未生效前按旧 2 BE 基础额度拒绝第三节点；到 not_before 后两次观察到查询权益已为 3 BE、基础额度仍为 2 BE，并实际拒绝 ADD；基础额度提交后第三节点成功、第四节点拒绝。未注入 journal 暂停或故障；自然时间窗口与已有受控故障测试分开记录。自有假成员均已删除。以上 14 份记录绑定见[第二轮进展审计](/data/project/massdb-sql/.build-records/license-p3-20260925/runtime-v2-progress-audit.json)，该审计明确集群仍在运行、P3 尚未完整验收。
+
+第二次自然到期窗口补齐 S3 TVF 和带 `delete_existing_files=true` 的 S3 EXPORT：V 下实际导出完成并替换哨兵，E 下返回 6200/45000 且 SHOW EXPORT 完整任务信息、哨兵及对象字节摘要不变；自有前缀已清理。到期后普通 Stream Load、同步 Group Commit、带业务子查询的 UPDATE/DELETE、BEGIN/COMMIT 写入均成功，续期后完整行模型核对通过。补充 partitions 元数据 TVF、括号探测和 HAVING/JOIN/UNION/函数/窗口探测反例的 V/E 对照也通过。
+
+新增实际 `StmtExecutor` 两层重试循环和 `NereidsCoordinator` 首次派发边界的受控测试，规划、RPC 和时间仍用替身；覆盖首次派发前/后跨期、后续新执行、取消、超时、重试耗尽和 finally 清理。`tests-9` Maven 定向执行新旧两个执行测试类 **18 项全部通过**，不宣称真实网络故障或完整测试集重跑。第二次窗口的 14 份证据及两项夹具失败见[补充审计](/data/project/massdb-sql/.build-records/license-p3-20260925/runtime-v2-additional-progress-audit.json)：Stream Load 首次缺原有 Expect 头，在 BE 重定向前失败；Q18 首次因可选 BE 任务遥测为空而在目标排队请求前停止，保留 FAIL，SQL/FE 清理已证明，BE 遥测清理证明标为不可用。
+
+第三次自然到期窗口完成真实 Nereids 排队跨期：目标请求先处于 WAIT_IN_QUEUE，出队后返回 6200/45000，运行/等待槽归零，自有 workload group 删除；BE 任务遥测仍不可用，未据此宣称观测到 BE 任务全部终止。纯元数据、窄式探测和 LIMIT 0 查询各有有效/到期两态的实际 PhysicalSqlCache 命中及 Profile 证明。FE3 临时使用原版 `force_forward_all_queries` 配置，六次业务查询通过入口审计、转发日志、FE1 接收日志及 Profile 关联证明实际跨 FE；有效返回正确行，到期的新执行拒绝，配置已还原。接收侧新 context 由源码和接收 trace 推断，未做堆内探针。
+
+真实 hdfs/local/file/http TVF 的读取及伪探测在 V 成功、E 拒绝，连同先前 s3/query 已覆盖六类数据 TVF。S3-backed Broker Load 在 V/E 均 FINISHED，续期后六行完整数据核对通过。以上 12 份记录见[第三轮审计](/data/project/massdb-sql/.build-records/license-p3-20260925/runtime-v2-third-window-audit.json)。原 Q16 旧 handler 缓存直返在本分支不可达，已按源码纠正为不适用，不能作为运行通过；Nereids 缓存和缺分类/schema 失效仍须按原要求验证。
+
+第四次自然到期窗口已完成 root/只读/无 SELECT 权限账号的 HTTP Query 和 Flight 1024 对照，保留各协议原错误映射及原权限错误。Hive/Iceberg 的实际查询、内部/外部源向外部 INSERT、外部源 OVERWRITE、外部 CTAS 已有 V 成功和 E 拒绝，独立 PG/REST、manifest、Parquet 及对象摘要证明拒绝未改变目标；VALUES、导入内部表、内部 CTAS 继续允许。Q23 内部源 OVERWRITE/VALUES 及续期后完整数据核对还在补测，不能据此把 Q23 或 P3 整组记为通过。
+
+`tests-10` 在精确 JDK 17.0.4 上完成 EXPORT 两个测试类 **5 项全部通过**：新增真实 transient scheduler 排队跨期取消与资源清理验证；环境、存储删除和时钟仍受控。全部自有 worker 退出，受控测试不冒充真实远端故障。结果见[测试记录](/data/project/massdb-sql/.build-records/license-p3-20260925/tests-10-evidence/summary.json)。[P3 逐组验收记录](license-p3-acceptance-20260925.md)已建立，待收口项仍明确保留，不以分轮测试计数宣称统一全绿或性能通过。
+
+第五轮已补齐 Hive/Iceberg 内部源 OVERWRITE、外部 VALUES 及续期完整数据核对；prepared Group Commit 两模式跨期共八次写入、Routine Load 有效/到期共六行、系统 audit_log 的实际 V/E、队列超时/KILL 和内部写入对照均完成。旧包过程拒绝保留 6200/45000 与正确 reason，但附带结果收尾空指针；已限定为许可异常做最小修复。`package-3` 的新测试因 Java 8 API 编译目标不支持 String.lines 而失败；修正测试后，`package-4` 在 JDK 17.0.4 构建成功，过程/执行/重试三个类 **22 项全部通过**。
+
+前两轮自有 FE/BE、外部服务、账号、SQL 对象和输出目录均已清理，原基准 FE/BE 生命周期不变。自有 BE 在优雅停止超时后使用 SIGKILL，清理记录如实保留。第二轮 590 个日志/Profile 扫描条目没有证书/JWS/签发私钥命中；联合扫描仍为 FAIL，三个已删除测试账号的口令出现在 CREATE USER 审计及控制台副本。源码核查确认该替换缺口已存在于原基线，未运行原基线复现，也未扩大本次范围修复一般账号审计；不将证书脱敏通过写成所有敏感材料扫描全绿。详见[P3 验收记录](license-p3-acceptance-20260925.md)。
+
+最终 `runtime-v3-v2` 已在 package-4 上完成自然到期对照：显式 ADMIN/无 SELECT 账号的文本及实际 ServerPreparedStatement 查询符合许可和原权限规则；direct/INTO 过程均在 V 成功、E 返回干净的 6200/45000 与 LICENSE_EXPIRED。首次改用 JDBC 读取过程结果的协议解析失败保留，复验使用此前验证过的原协议客户端，不修改服务器协议。自有对象、账号、客户端及整个第三轮 FE/BE 环境已清理，原基准身份未变；最终证书材料扫描无命中，原 CREATE USER 测试口令命中仍单列 FAIL。见[最终证据汇总](/data/project/massdb-sql/.build-records/license-p3-20260925/p3-completion-audit.json)。
+
+**P0、P1、P2、P3 已完成约定阶段；证书页面（P2U）和完整性能验收（P4）仍未完成。** 本次五出口、额度功能验证不等于性能零回退或完整产品交付。当前不再将全部旧基线或平台矩阵完成作为开发的前置条件。以下按日期保留的旧契约、待办和基线状态只描述历史阶段，不覆盖本节当前结论。
 
 历史阶段状态见[逐项完成清单](/data/project/massdb-sql/.build-records/license-p0-p1-20260924/completion-audit-inventory.json)和
 [证据索引](/data/project/massdb-sql/.build-records/license-p0-p1-20260924/results.json)；后文按时间保留的“尚未执行”“正在运行”只描述当时状态。原版页面 actual-v4 已结束，以下终态回执优先于旧索引中的 RUNNING，不据此更新为新范围通过。

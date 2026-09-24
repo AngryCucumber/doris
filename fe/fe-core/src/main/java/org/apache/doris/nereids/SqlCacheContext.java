@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// MassDB modification: retain FE license query facts across planning and cache reuse.
+
 package org.apache.doris.nereids;
 
 import org.apache.doris.analysis.Expr;
@@ -27,6 +29,7 @@ import org.apache.doris.catalog.TableIf.TableType;
 import org.apache.doris.common.Pair;
 import org.apache.doris.datasource.CatalogIf;
 import org.apache.doris.datasource.hive.HMSExternalTable;
+import org.apache.doris.massdb.license.LicenseQueryGuard;
 import org.apache.doris.mysql.FieldInfo;
 import org.apache.doris.mysql.privilege.Auth;
 import org.apache.doris.mysql.privilege.DataMaskPolicy;
@@ -62,6 +65,8 @@ import java.util.Set;
 /** SqlCacheContext */
 public class SqlCacheContext {
     private static final Logger LOG = LogManager.getLogger(SqlCacheContext.class);
+
+    private volatile LicenseQueryGuard.Classification licenseQueryClassification;
 
     private final UserIdentity userIdentity;
     private volatile TUniqueId queryId;
@@ -119,6 +124,14 @@ public class SqlCacheContext {
             userIdentity = new UserIdentity(Auth.ROOT_USER, "%");
         }
         this.userIdentity = userIdentity;
+    }
+
+    public LicenseQueryGuard.Classification getLicenseQueryClassification() {
+        return licenseQueryClassification;
+    }
+
+    public void setLicenseQueryClassification(LicenseQueryGuard.Classification classification) {
+        licenseQueryClassification = classification;
     }
 
     public String getPhysicalPlan() {
@@ -208,7 +221,8 @@ public class SqlCacheContext {
                 new TableVersion(
                         tableIf.getId(),
                         version,
-                        tableIf.getType()
+                        tableIf.getType(),
+                        tableIf instanceof OlapTable ? ((OlapTable) tableIf).getBaseSchemaVersion() : -1
                 )
         );
     }
@@ -593,6 +607,11 @@ public class SqlCacheContext {
         public final long id;
         public final long version;
         public final TableType type;
+        public final int schemaVersion;
+
+        public TableVersion(long id, long version, TableType type) {
+            this(id, version, type, -1);
+        }
     }
 
     /** CacheKeyType */

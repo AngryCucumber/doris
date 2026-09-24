@@ -15,11 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// MassDB modification: retain FE license query facts across planning and cache reuse.
+
 package org.apache.doris.nereids.trees.plans.logical;
 
 import org.apache.doris.analysis.Expr;
 import org.apache.doris.analysis.StmtType;
 import org.apache.doris.common.util.DebugUtil;
+import org.apache.doris.massdb.license.LicenseQueryGuard;
 import org.apache.doris.mysql.FieldInfo;
 import org.apache.doris.nereids.memo.GroupExpression;
 import org.apache.doris.nereids.properties.LogicalProperties;
@@ -52,6 +55,7 @@ public class LogicalSqlCache extends LogicalLeaf implements SqlCache, TreeString
     private final List<InternalService.PCacheValue> cacheValues;
     private final String backendAddress;
     private final String planBody;
+    private LicenseQueryGuard.Classification licenseQueryClassification;
 
     /** LogicalSqlCache */
     public LogicalSqlCache(TUniqueId queryId,
@@ -67,6 +71,14 @@ public class LogicalSqlCache extends LogicalLeaf implements SqlCache, TreeString
         this.cacheValues = Objects.requireNonNull(cacheValues, "cacheValues can not be null");
         this.backendAddress = Objects.requireNonNull(backendAddress, "backendAddress can not be null");
         this.planBody = Objects.requireNonNull(planBody, "planBody can not be null");
+    }
+
+    public LicenseQueryGuard.Classification getLicenseQueryClassification() {
+        return licenseQueryClassification;
+    }
+
+    public void setLicenseQueryClassification(LicenseQueryGuard.Classification classification) {
+        licenseQueryClassification = classification;
     }
 
     public TUniqueId getQueryId() {

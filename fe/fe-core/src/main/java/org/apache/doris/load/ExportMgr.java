@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.load;
 
@@ -35,6 +36,7 @@ import org.apache.doris.common.util.ListComparator;
 import org.apache.doris.common.util.OrderByPair;
 import org.apache.doris.common.util.TimeUtils;
 import org.apache.doris.datasource.InternalCatalog;
+import org.apache.doris.massdb.license.LicenseQueryGuard;
 import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.expressions.Or;
@@ -106,6 +108,8 @@ public class ExportMgr {
                     throw new LabelAlreadyUsedException(job.getLabel());
                 }
             }
+            // A submitter may wait for the job lock across expiry; check before any durable or file side effect.
+            LicenseQueryGuard.checkProtectedRead();
             unprotectAddJob(job);
             Env.getCurrentEnv().getEditLog().logExportCreate(job);
         } finally {
@@ -554,4 +558,3 @@ public class ExportMgr {
         return size;
     }
 }
-

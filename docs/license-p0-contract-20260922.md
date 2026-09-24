@@ -96,6 +96,8 @@ Checkpoint使用独立Env的历史截面，不能读线上静态快照；不生�
 
 ### 查询用例 Q01–Q28
 
+2026-09-25 P3 实施勘误：原 Q16 要求“配置旧 SQL/partition cache 并证明 `handleCacheStmt` 实际命中”，与本分支既有实现不符。[CacheAnalyzer.java](/data/project/massdb-sql/fe/fe-core/src/main/java/org/apache/doris/qe/cache/CacheAnalyzer.java:133) 无条件关闭分区缓存入口，且 `getCacheData(false)` 在 fetch 前返回；[StmtExecutor.java](/data/project/massdb-sql/fe/fe-core/src/main/java/org/apache/doris/qe/StmtExecutor.java:1320) 的唯一旧 handler 调用明确传 false。该直接回送子项记为原版不适用，不记通过。Nereids 独立读取 BE cache 并构造 `LogicalSqlCache` 的路径仍真实存在，继续由 Q15 验收；Q16 的缺分类及 schema 变化负例保留。此勘误不改变当前业务拦截规则。
+
 | ID / 出口 | 输入、前提与顺序 | 期望与必要负例 | 观测及清理 | 源码锚点 / 阶段 |
 | --- | --- | --- | --- | --- |
 | Q01 / 1 协议共用入口 | V、E、每种 D 下执行 `SELECT k,v FROM t WHERE k=1`；MySQL 文本、JDBC 普通及非点查 prepared、HTTP Query、FE Flight 各一次；root/ADMIN 与有 SELECT 权限普通用户 | V 返回夹具行；E/D 各协议 R；root 不豁免；无 SELECT 权限仍保留原权限错误；禁止仅文本入口生效 | R、S；核实 FE 结果路径和分布式结果路径；C，Flight 关闭流与票据句柄 | A01、A02、A03、A04 / P3→P4 |
@@ -113,7 +115,7 @@ Checkpoint使用独立Env的历史截面，不能读线上静态快照；不生�
 | Q13 / 1 窄式探测反例 | 至少三行 t：`SELECT 1 FROM t LIMIT 1 OFFSET 1`、`LIMIT 2`、省略 LIMIT、加 WHERE/HAVING/JOIN/CTE/UNION/DISTINCT/ORDER BY/窗口/函数/OUTFILE；`SELECT CAST(1 AS INT) FROM t LIMIT 1`；视图与 TVF 见 Q05/Q08 | E 均不能借探测例外；若其他完整零行例外独立成立须另判，夹具保证此组不是空计划；WHERE/ORDER/CAST 被优化删去/折叠也不能扩大原始窄式形状 | 分类单测保留原始语义形状与绑定证据，原查询合法性先 V 验证；OUTFILE 无新文件；C | A02、A06、A11 / P3→P4 |
 | Q14 / 1 无扫描字典读取 | `SELECT dict_get('<db>.d','v',1)`、已有合法 `dict_get_many(...)`；BE 折叠开/关、可折叠字面量参数、混入普通表达式，各在 V/E 下 | E 时 R；折叠成字面量/无 scan 仍保留字典来源；普通纯函数常量保持放行；`SET @v=dict_get(...)` 不在本组覆盖，不宣称封堵 | 折叠前 marker 与最终分类断言；R 在返回字典值前；不扩展全函数登记；字典异步刷新/对象 C | A02、A13 / P3→P4 |
 | Q15 / 1 FE 结果及 PhysicalSqlCache | V 下填充能确定命中的 FE/SQL cache 业务查询，变 E 后重发同 SQL；另命中纯元数据/探测/零行缓存 | 业务命中仍 R；无 scan 不是放行依据；确有分类证明的允许类保持允许；V 恢复不要求全局清 cache | 记录 cache hit 与返回分支 spy；验证检查先于 sendResultSet/sendCachedValues；每会话变量 C，不用清全局 cache 掩盖路径 | A01 cache parse、A02、A07 / P3→P4 |
-| Q16 / 1 旧 SQL/PartitionCache 与缺分类 | 分别配置本分支旧 SQL cache、partition cache，V 预热→E；构造旧缓存缺失许可来源/空计划证明 | 命中业务均 R；未知分类在异常态重新规划或拒绝业务读取；不因未知变“无需许可”；无需到期全局删 cache | 证明走 handleCacheStmt 与实际命中；mock 缺字段+schema 失效两负例；C | A02 `handleCacheStmt`、A07 / P3→P4 |
+| Q16 / 1 旧缓存入口可达性与缺分类 | 先核对本分支旧入口；构造缓存缺失许可来源/空计划证明，以及 schema 变化 | 当前旧 `handleCacheStmt` 直接回送 SQL/PartitionCache 命中不适用：分区入口已禁用，旧 handler 明确禁止 fetch，仍执行普通结果路径；真正 Nereids SQL 缓存命中按 Q15 验收。未知分类在异常态重新规划或拒绝业务读取，schema 变化失效 | 保留原不可达要求的勘误及源码证据，不把 N/A 写成运行通过；缺字段+schema 失效两负例仍必须测试；不在本版恢复旧缓存入口；C | A02 `handleCacheStmt`、A07 / P3→P4 |
 | Q17 / 2 prepared 点查 | V 下 PREPARE `SELECT v FROM t WHERE k=?` 并至少执行一次建立 shortCircuit context；E 后同 handle EXECUTE；schema 版本变化重规划；prepared INSERT/Group Commit 对照 | 每个新 EXECUTE 点查和回退普通路径均 R；PREPARE 不提供永久许可；内部写 prepared 仍允许 | 记录 ExecuteCommand 真实短路分支与 PointQueryExecutor 调用次数；拒绝前不 executeAndSendResult；DEALLOCATE/C | A14、A02 / P3→P4 |
 | Q18 / 1 实际出队跨期 | workload group 1 个运行槽，用受控阻塞占满；V 提交业务查询并证明 queued，切 E 后释放占槽；Coordinator 与 NereidsCoordinator 两种实际可达配置/单元分别覆盖 | 入队早检成功不代表首次执行已开始；出队时 R、无首次 BE 派发；纯写/元数据不得因为共用 coordinator 误拦；排队超时/取消沿原语义 | 队列 token 获得→拒绝→releaseAndNotify 顺序及运行/等待槽恢复原值；释放阻塞者、还原 workload 配置 C | A15、A02 / P3→P4 |
 | Q19 / 1 同次重试与新执行 | V 下证明首次查询实际执行已开始；在可重试错误点暂停并切 E，继续该次内部 retry；再新执行相同 SQL（同连接及新连接）；另首次派发前的重试 | 同次已开始查询沿已有准入事实继续并受原超时/取消；后续新执行 R；首次派发前的 retry 不可凭“进入 retry”获得已开始标志；新 queryId 不等于新用户执行 | 记录 executor/context 生命周期、首次派发和每次 retry；完成/失败/取消后事实清理，不存 session 永久状态；C | A16、A02、A15 / P3→P4 |

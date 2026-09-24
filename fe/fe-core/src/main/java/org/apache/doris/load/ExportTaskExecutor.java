@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.load;
 
@@ -27,6 +28,8 @@ import org.apache.doris.catalog.TabletMeta;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.Status;
 import org.apache.doris.load.ExportFailMsg.CancelType;
+import org.apache.doris.massdb.license.LicenseQueryGuard;
+import org.apache.doris.massdb.license.LicenseSqlException;
 import org.apache.doris.nereids.analyzer.UnboundRelation;
 import org.apache.doris.nereids.glue.LogicalPlanAdapter;
 import org.apache.doris.nereids.trees.plans.logical.LogicalPlan;
@@ -86,6 +89,14 @@ public class ExportTaskExecutor implements TransientTaskExecutor {
         if (isCanceled.get()) {
             LOG.debug("[Export Task] taskId: {} was already canceled before execution", taskId);
             throw new JobException("Export executor has been canceled, task id: {}", taskId);
+        }
+        try {
+            // Submission approval does not authorize a task that has not started before expiry.
+            LicenseQueryGuard.checkProtectedRead();
+        } catch (LicenseSqlException e) {
+            exportJob.updateExportJobState(ExportJobState.CANCELLED, taskId, null,
+                    ExportFailMsg.CancelType.RUN_FAIL, e.getMessage());
+            throw new JobException(e);
         }
         LOG.debug("[Export Task] taskId: {} updating state to EXPORTING", taskId);
         exportJob.updateExportJobState(ExportJobState.EXPORTING, taskId, null, null, null);

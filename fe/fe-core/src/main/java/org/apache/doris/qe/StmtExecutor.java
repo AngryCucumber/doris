@@ -17,6 +17,7 @@
 
 // Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
 // Add FE license management SQL and protect certificate material in diagnostics.
+// Enforce license admission per execution before results and first data dispatch.
 
 package org.apache.doris.qe;
 
@@ -65,6 +66,7 @@ import org.apache.doris.common.util.TimeUtils;
 import org.apache.doris.common.util.Util;
 import org.apache.doris.datasource.FileScanNode;
 import org.apache.doris.datasource.tvf.source.TVFScanNode;
+import org.apache.doris.massdb.license.LicenseQueryGuard;
 import org.apache.doris.massdb.license.LicenseSqlException;
 import org.apache.doris.metric.MetricRepo;
 import org.apache.doris.mysql.FieldInfo;
@@ -208,6 +210,15 @@ public class StmtExecutor {
     // Set to true if there are more stmt need to execute.
     // Mainly for forward to master, so that master can set the mysql server status correctly.
     private boolean moreStmtExists = false;
+
+    // These facts belong to this execution, never to a session or a prepared handle.
+    private Planner licenseQueryPlan;
+    private StatementContext licenseQueryStatement;
+    private Plan licenseQueryFinalPlan;
+    private boolean licenseReadOutput;
+    private boolean licenseExternalWrite;
+    private boolean licensePreparedPointQuery;
+    private boolean licenseQueryStarted;
 
     // The result schema if "dry_run_query" is true.
     // Only one column to indicate the real return row numbers.
@@ -356,6 +367,66 @@ public class StmtExecutor {
         this.planner = planner;
     }
 
+    /** External writes share query admission, but never the table-existence probe exemption. */
+    public void checkLicenseExternalWrite(Planner sourcePlan) throws LicenseSqlException {
+        licenseQueryPlan = sourcePlan;
+        licenseQueryStatement = null;
+        licenseQueryFinalPlan = null;
+        licenseReadOutput = true;
+        licenseExternalWrite = true;
+        checkLicenseBeforeDispatch();
+    }
+
+    public void checkLicenseExternalWrite(StatementContext sourceContext, Plan finalPlan) throws LicenseSqlException {
+        licenseQueryStatement = sourceContext;
+        licenseQueryFinalPlan = finalPlan;
+        licenseReadOutput = true;
+        licenseExternalWrite = true;
+        checkLicenseBeforeDispatch();
+    }
+
+    /** The reused point-query plan reads a real table for every new EXECUTE. */
+    public void checkLicensePreparedPointQuery() throws LicenseSqlException {
+        licenseReadOutput = true;
+        licensePreparedPointQuery = true;
+        checkLicenseBeforeDispatch();
+    }
+
+    public void checkLicenseBeforeDispatch() throws LicenseSqlException {
+        if (!licenseReadOutput || licenseQueryStarted) {
+            return;
+        }
+        if (licensePreparedPointQuery) {
+            LicenseQueryGuard.checkProtectedRead();
+        } else if (licenseExternalWrite) {
+            if (licenseQueryStatement != null) {
+                LicenseQueryGuard.checkExternalWrite(licenseQueryStatement, licenseQueryFinalPlan);
+            } else {
+                LicenseQueryGuard.checkExternalWrite(licenseQueryPlan);
+            }
+        } else {
+            LicenseQueryGuard.check(licenseQueryPlan);
+        }
+    }
+
+    /** Call only immediately before the first result or execution dispatch, after queue admission. */
+    public void markLicenseQueryStarted() throws LicenseSqlException {
+        if (licenseReadOutput && !licenseQueryStarted) {
+            checkLicenseBeforeDispatch();
+            licenseQueryStarted = true;
+        }
+    }
+
+    private void resetLicenseExecution() {
+        licenseQueryPlan = null;
+        licenseQueryStatement = null;
+        licenseQueryFinalPlan = null;
+        licenseReadOutput = false;
+        licenseExternalWrite = false;
+        licensePreparedPointQuery = false;
+        licenseQueryStarted = false;
+    }
+
     public boolean isForwardToMaster() {
         if (isForwardedToMaster == null) {
             isForwardedToMaster = shouldForwardToMaster();
@@ -492,6 +563,15 @@ public class StmtExecutor {
     }
 
     public void queryRetry(TUniqueId queryId) throws Exception {
+        resetLicenseExecution();
+        try {
+            executeWithReplanRetry(queryId);
+        } finally {
+            resetLicenseExecution();
+        }
+    }
+
+    private void executeWithReplanRetry(TUniqueId queryId) throws Exception {
         TUniqueId firstQueryId = queryId;
         UUID uuid;
         int retryTime = Config.max_query_retry_time;
@@ -503,7 +583,7 @@ public class StmtExecutor {
         }
         for (int i = 1; i <= retryTime; i++) {
             try {
-                execute(queryId);
+                executeAttempt(queryId);
                 return;
             } catch (UserException e) {
                 if (!SystemInfoService.needRetryWithReplan(e.getMessage()) || i == retryTime) {
@@ -537,6 +617,15 @@ public class StmtExecutor {
     }
 
     public void execute(TUniqueId queryId) throws Exception {
+        resetLicenseExecution();
+        try {
+            executeAttempt(queryId);
+        } finally {
+            resetLicenseExecution();
+        }
+    }
+
+    private void executeAttempt(TUniqueId queryId) throws Exception {
         SessionVariable sessionVariable = context.getSessionVariable();
         if (context.getConnectType() == ConnectType.ARROW_FLIGHT_SQL) {
             context.setReturnResultFromLocal(true);
@@ -550,6 +639,9 @@ public class StmtExecutor {
                 if (licenseFailure != null) {
                     context.getState().setError(licenseFailure.getMysqlErrorCode(), licenseFailure.getMessage());
                     context.getState().setErrType(QueryState.ErrType.ANALYSIS_ERR);
+                    if (context.isRunProcedure()) {
+                        throw licenseFailure;
+                    }
                     return;
                 }
                 if (context.getMinidump() != null && context.getMinidump().toString(4) != null) {
@@ -565,6 +657,15 @@ public class StmtExecutor {
                 context.getState().setError(e.getMessage());
                 return;
             } catch (Exception e) {
+                LicenseSqlException licenseFailure = LicenseSqlException.find(e);
+                if (licenseFailure != null) {
+                    context.getState().setError(licenseFailure.getMysqlErrorCode(), licenseFailure.getMessage());
+                    context.getState().setErrType(QueryState.ErrType.ANALYSIS_ERR);
+                    if (context.isRunProcedure()) {
+                        throw licenseFailure;
+                    }
+                    return;
+                }
                 LOG.warn("Nereids execute failed. {}", context.getQueryIdentifier(), e);
                 context.getState().setError(e.getMessage());
                 throw e;
@@ -942,6 +1043,9 @@ public class StmtExecutor {
                 LOG.info("Query {} finished", DebugUtil.printId(context.queryId));
                 break;
             } catch (RpcException | UserException e) {
+                if (e instanceof LicenseSqlException) {
+                    throw e;
+                }
                 if (Config.isCloudMode() && SystemInfoService.needRetryWithReplan(e.getMessage())) {
                     // For errors in SystemInfoService.NEED_REPLAN_ERRORS,
                     // throw exception directly to trigger a replan retry outside(in StmtExecutor.queryRetry())
@@ -1242,6 +1346,10 @@ public class StmtExecutor {
             return;
         }
 
+        licenseReadOutput = true;
+        licenseQueryPlan = planner;
+        checkLicenseBeforeDispatch();
+
         if (parsedStmt instanceof LogicalPlanAdapter) {
             LogicalPlanAdapter logicalPlanAdapter = (LogicalPlanAdapter) parsedStmt;
             LogicalPlan logicalPlan = logicalPlanAdapter.getLogicalPlan();
@@ -1255,6 +1363,7 @@ public class StmtExecutor {
         if (context.supportHandleByFe()) {
             Optional<ResultSet> resultSet = planner.handleQueryInFe(parsedStmt);
             if (resultSet.isPresent()) {
+                markLicenseQueryStarted();
                 sendResultSet(resultSet.get(), ((Queriable) parsedStmt).getFieldInfos());
                 isHandleQueryInFe = true;
                 if (context.getSessionVariable().enableProfile()) {
@@ -1277,6 +1386,7 @@ public class StmtExecutor {
             if (logicalPlan instanceof org.apache.doris.nereids.trees.plans.algebra.SqlCache) {
                 NereidsPlanner nereidsPlanner = (NereidsPlanner) planner;
                 PhysicalSqlCache physicalSqlCache = (PhysicalSqlCache) nereidsPlanner.getPhysicalPlan();
+                markLicenseQueryStarted();
                 sendCachedValues(channel, physicalSqlCache.getCacheValues(), logicalPlanAdapter, false, true);
                 return;
             }
@@ -1335,6 +1445,11 @@ public class StmtExecutor {
         }
 
         coordBase.setIsProfileSafeStmt(this.isProfileSafeStmt());
+        if (coordBase instanceof Coordinator) {
+            ((Coordinator) coordBase).setLicenseQueryExecutor(this);
+        } else if (coordBase instanceof PointQueryExecutor) {
+            ((PointQueryExecutor) coordBase).setLicenseQueryExecutor(this);
+        }
 
         try {
             coordBase.exec();
@@ -1436,6 +1551,9 @@ public class StmtExecutor {
             statisticsForAuditLog = batch.getQueryStatistics() == null ? null : batch.getQueryStatistics().toBuilder();
             context.getState().setEof();
             profile.getSummaryProfile().setQueryFetchResultFinishTime(TimeUtils.getStartTimeMs());
+        } catch (LicenseSqlException e) {
+            // No data dispatch occurred; the existing finally still releases queue and scan resources.
+            throw e;
         } catch (QueryTimeoutException e) {
             // notify all be cancel running fragment
             // in some case may block all fragment handle threads

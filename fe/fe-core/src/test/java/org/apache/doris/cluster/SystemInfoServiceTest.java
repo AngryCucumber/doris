@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.cluster;
 
@@ -29,11 +30,13 @@ import org.apache.doris.common.FeConstants;
 import org.apache.doris.common.UserException;
 import org.apache.doris.common.io.CountingDataOutputStream;
 import org.apache.doris.datasource.InternalCatalog;
+import org.apache.doris.massdb.license.LicenseManager;
 import org.apache.doris.persist.EditLog;
 import org.apache.doris.system.Backend;
 import org.apache.doris.system.SystemInfoService;
 
 import com.google.common.collect.Lists;
+import mockit.Delegate;
 import mockit.Expectations;
 import mockit.Mocked;
 import org.junit.Assert;
@@ -54,6 +57,8 @@ public class SystemInfoServiceTest {
     @Mocked
     private Env env;
     @Mocked
+    private LicenseManager licenseManager;
+    @Mocked
     private InternalCatalog catalog;
     private SystemInfoService systemInfoService;
     private TabletInvertedIndex invertedIndex;
@@ -68,7 +73,7 @@ public class SystemInfoServiceTest {
     private long backendId = 10000L;
 
     @Before
-    public void setUp() throws IOException {
+    public void setUp() throws IOException, DdlException {
         new Expectations() {
             {
                 editLog.logAddBackend((Backend) any);
@@ -93,6 +98,21 @@ public class SystemInfoServiceTest {
                 env.getEditLog();
                 minTimes = 0;
                 result = editLog;
+
+                env.getLicenseManager();
+                minTimes = 0;
+                result = licenseManager;
+
+                // Admit membership changes explicitly in this legacy metadata fixture.
+                // The real member and journal paths remain under test; quota tests use the real manager.
+                licenseManager.runMembershipMutation(anyInt, anyInt, (LicenseManager.MembershipMutation) any);
+                minTimes = 0;
+                result = new Delegate() {
+                    public void runMembershipMutation(int additionalFe, int additionalBe,
+                            LicenseManager.MembershipMutation mutation) throws DdlException {
+                        mutation.run();
+                    }
+                };
 
                 env.getInternalCatalog();
                 minTimes = 0;

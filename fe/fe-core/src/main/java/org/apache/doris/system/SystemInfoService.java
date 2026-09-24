@@ -93,6 +93,9 @@ public class SystemInfoService {
     protected volatile ImmutableMap<Long, Backend> idToBackendRef = ImmutableMap.of();
     protected volatile ImmutableMap<Long, AtomicLong> idToReportVersionRef = ImmutableMap.of();
 
+    // Bound by the owning Env, so checkpoint/recovery never updates the serving Env by accident.
+    private Runnable licenseMembershipListener = () -> { };
+
     private volatile ImmutableMap<Long, DiskInfo> pathHashToDiskInfoRef = ImmutableMap.of();
 
     // guards all copy-modify-publish updates of pathHashToDiskInfoRef (see updatePathInfo)
@@ -177,6 +180,10 @@ public class SystemInfoService {
         }
     };
 
+    public void setLicenseMembershipListener(Runnable listener) {
+        licenseMembershipListener = Objects.requireNonNull(listener);
+    }
+
     // for deploy manager
     public void addBackends(List<HostInfo> hostInfos, boolean isFree)
             throws UserException {
@@ -188,11 +195,17 @@ public class SystemInfoService {
      * @throws DdlException
      */
     public void addBackends(List<HostInfo> hostInfos, Map<String, String> tagMap) throws UserException {
+        Env.getCurrentEnv().getLicenseManager().runMembershipMutation(0, hostInfos.size(),
+                () -> addBackendsWithJournal(hostInfos, tagMap));
+    }
+
+    private void addBackendsWithJournal(List<HostInfo> hostInfos, Map<String, String> tagMap) throws DdlException {
+        Set<String> requested = Sets.newHashSet();
         for (HostInfo hostInfo : hostInfos) {
             // check is already exist
-            if (getBackendWithHeartbeatPort(hostInfo.getHost(), hostInfo.getPort()) != null) {
-                String backendIdentifier = hostInfo.getHost() + ":"
-                        + hostInfo.getPort();
+            String backendIdentifier = NetUtils.getHostPortInAccessibleFormat(hostInfo.getHost(), hostInfo.getPort());
+            if (!requested.add(backendIdentifier)
+                    || getBackendWithHeartbeatPort(hostInfo.getHost(), hostInfo.getPort()) != null) {
                 throw new DdlException("Same backend already exists[" + backendIdentifier + "]");
             }
         }
@@ -261,6 +274,18 @@ public class SystemInfoService {
 
     // for decommission
     public void dropBackend(long backendId) throws DdlException {
+        if (Config.isNotCloudMode()) {
+            Env.getCurrentEnv().getLicenseManager().runMembershipMutation(0, 0, () -> {
+                Backend backend = getBackend(backendId);
+                if (backend == null) {
+                    throw new DdlException("Backend[" + backendId + "] does not exist");
+                }
+                // Resolve the identity after admission to the commit queue: the same address can have a new ID.
+                dropBackendWithJournal(backend.getHost(), backend.getHeartbeatPort());
+            });
+            return;
+        }
+        // Cloud retains its original address-based virtual dispatch to the meta-service implementation.
         Backend backend = getBackend(backendId);
         if (backend == null) {
             throw new DdlException("Backend[" + backendId + "] does not exist");
@@ -270,11 +295,19 @@ public class SystemInfoService {
 
     // final entry of dropping backend
     public void dropBackend(String host, int heartbeatPort) throws DdlException {
+        Env.getCurrentEnv().getLicenseManager().runMembershipMutation(0, 0,
+                () -> dropBackendWithJournal(host, heartbeatPort));
+    }
+
+    private void dropBackendWithJournal(String host, int heartbeatPort) throws DdlException {
         Backend droppedBackend = getBackendWithHeartbeatPort(host, heartbeatPort);
         if (droppedBackend == null) {
             throw new DdlException("backend does not exists[" + NetUtils
                     .getHostPortInAccessibleFormat(host, heartbeatPort) + "]");
         }
+        // Do not release a registered slot before the original durable deletion acknowledgement.
+        // An acknowledgement failure retains the member until the existing replay path confirms the DROP.
+        Env.getCurrentEnv().getEditLog().logDropBackend(droppedBackend);
         // update idToBackend
         Map<Long, Backend> copiedBackends = Maps.newHashMap(getAllClusterBackendsNoException());
         copiedBackends.remove(droppedBackend.getId());
@@ -287,8 +320,6 @@ public class SystemInfoService {
         ImmutableMap<Long, AtomicLong> newIdToReportVersion = ImmutableMap.copyOf(copiedReportVersions);
         idToReportVersionRef = newIdToReportVersion;
 
-        // log
-        Env.getCurrentEnv().getEditLog().logDropBackend(droppedBackend);
         LOG.info("finished to drop {}", droppedBackend);
 
         // backends is changed, regenerated tablet number metrics
@@ -814,6 +845,7 @@ public class SystemInfoService {
         copiedReportVersions.put(newBackend.getId(), new AtomicLong(0L));
         ImmutableMap<Long, AtomicLong> newIdToReportVersion = ImmutableMap.copyOf(copiedReportVersions);
         idToReportVersionRef = newIdToReportVersion;
+        licenseMembershipListener.run();
     }
 
     public void replayDropBackend(Backend backend) {
@@ -831,6 +863,7 @@ public class SystemInfoService {
         copiedReportVersions.remove(backend.getId());
         ImmutableMap<Long, AtomicLong> newIdToReportVersion = ImmutableMap.copyOf(copiedReportVersions);
         idToReportVersionRef = newIdToReportVersion;
+        licenseMembershipListener.run();
 
     }
 

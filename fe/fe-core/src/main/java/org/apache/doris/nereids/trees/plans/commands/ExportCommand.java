@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.nereids.trees.plans.commands;
 
@@ -39,6 +40,7 @@ import org.apache.doris.common.util.PropertyAnalyzer;
 import org.apache.doris.datasource.CatalogIf;
 import org.apache.doris.datasource.InternalCatalog;
 import org.apache.doris.load.ExportJob;
+import org.apache.doris.massdb.license.LicenseQueryGuard;
 import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.nereids.exceptions.AnalysisException;
 import org.apache.doris.nereids.trees.expressions.Expression;
@@ -148,6 +150,7 @@ public class ExportCommand extends Command implements NeedAuditEncryption, Forwa
         // check phases
         checkAllParameters(ctx, tblName, fileProperties);
 
+        LicenseQueryGuard.checkProtectedRead();
         ExportJob exportJob = generateExportJob(ctx, fileProperties, tblName);
         // register job
         ctx.getEnv().getExportMgr().addExportJobAndRegisterTask(exportJob);
@@ -428,4 +431,3 @@ public class ExportCommand extends Command implements NeedAuditEncryption, Forwa
         return sb.toString();
     }
 }
-

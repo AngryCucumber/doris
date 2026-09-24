@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.httpv2.rest;
 
@@ -33,6 +34,8 @@ import org.apache.doris.datasource.CatalogIf;
 import org.apache.doris.datasource.InternalCatalog;
 import org.apache.doris.httpv2.entity.ResponseEntityBuilder;
 import org.apache.doris.httpv2.rest.manager.HttpUtils;
+import org.apache.doris.massdb.license.LicenseQueryGuard;
+import org.apache.doris.massdb.license.LicenseSqlException;
 import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.nereids.NereidsPlanner;
 import org.apache.doris.nereids.analyzer.UnboundRelation;
@@ -83,6 +86,7 @@ import org.apache.thrift.TException;
 import org.apache.thrift.TSerializer;
 import org.json.simple.JSONObject;
 import org.json.simple.JSONValue;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
@@ -161,6 +165,9 @@ public class TableQueryPlanAction extends RestBaseController {
             } finally {
                 table.readUnlock();
             }
+        } catch (LicenseSqlException e) {
+            // The connector must observe the transport status, not a successful response containing an error code.
+            return ResponseEntity.status(HttpResponseStatus.FORBIDDEN.code()).body(JSONValue.parse(e.getMessage()));
         } catch (DorisHttpException e) {
             // status code  should conforms to HTTP semantic
             resultMap.put("status", e.getCode().code());
@@ -183,7 +190,7 @@ public class TableQueryPlanAction extends RestBaseController {
      * @throws DorisHttpException
      */
     private void handleQuery(ConnectContext context, String requestDb, String requestTable, String sql,
-            Map<String, Object> result) throws DorisHttpException {
+            Map<String, Object> result) throws DorisHttpException, LicenseSqlException {
         List<StatementBase> stmts = null;
         SessionVariable sessionVariable = context.getSessionVariable();
         boolean needSetParallelResultSinkToFalse = false;
@@ -270,6 +277,7 @@ public class TableQueryPlanAction extends RestBaseController {
                 throw new DorisHttpException(HttpResponseStatus.BAD_REQUEST,
                         "only support single table filter-prune-scan, but found [ " + sql + "]");
             }
+            LicenseQueryGuard.check(planner);
 
             // acquire ScanNode to obtain pruned tablet
             // in this way, just retrieve only one scannode
@@ -325,6 +333,8 @@ public class TableQueryPlanAction extends RestBaseController {
                 throw new DorisHttpException(HttpResponseStatus.INTERNAL_SERVER_ERROR,
                         "TSerializer failed to serialize PlanFragment, reason [ " + e.getMessage() + " ]");
             }
+            // Plan serialization may cross expiry. No executable plan or tablet routing is exposed before this check.
+            LicenseQueryGuard.check(planner);
             result.put("partitions", tabletRoutings);
             result.put("opaqued_query_plan", opaquedQueryPlan);
             result.put("status", 200);

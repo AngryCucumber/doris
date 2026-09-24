@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// MassDB modification: retain FE license query facts across planning and cache reuse.
+
 package org.apache.doris.nereids.rules.analysis;
 
 import org.apache.doris.catalog.Env;
@@ -1569,6 +1571,7 @@ public class BindExpression implements AnalysisRuleFactory {
         if (!(bindResult.first instanceof TableValuedFunction)) {
             throw new AnalysisException(bindResult.first.toSql() + " is not a TableValuedFunction");
         }
+        statementContext.getLicenseQueryFacts().tableFunction((TableValuedFunction) bindResult.first);
         Optional<SqlCacheContext> sqlCacheContext = statementContext.getSqlCacheContext();
         if (sqlCacheContext.isPresent()) {
             sqlCacheContext.get().setCannotProcessExpression(true);

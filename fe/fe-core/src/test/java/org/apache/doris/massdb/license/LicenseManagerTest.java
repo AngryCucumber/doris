@@ -7,6 +7,8 @@
 
 package org.apache.doris.massdb.license;
 
+import org.apache.doris.common.DdlException;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.AfterEach;
@@ -40,6 +42,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 class LicenseManagerTest {
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -69,6 +72,165 @@ class LicenseManagerTest {
     @AfterEach
     void close() {
         manager.close();
+    }
+
+    @Test
+    void memberAdmissionRequiresCommittedCapacityAndOnlyProvenBootstrapHasOneFe() throws Exception {
+        AtomicBoolean changed = new AtomicBoolean();
+        Assertions.assertEquals(LicenseQueryStatus.LICENSE_NOT_READY, manager.queryStatus());
+        Assertions.assertThrows(DdlException.class,
+                () -> manager.runMembershipMutation(0, 1, () -> changed.set(true)));
+        start();
+        Assertions.assertEquals("LICENSE_FE_LIMIT_EXCEEDED", Assertions.assertThrows(DdlException.class,
+                () -> manager.runMembershipMutation(1, 0, () -> changed.set(true))).getDetailMessage());
+        Assertions.assertEquals("LICENSE_BE_LIMIT_EXCEEDED", Assertions.assertThrows(DdlException.class,
+                () -> manager.runMembershipMutation(0, 1, () -> changed.set(true))).getDetailMessage());
+        Assertions.assertFalse(changed.get());
+        manager.markRecoveryIncomplete();
+        Assertions.assertEquals("LICENSE_NOT_READY", Assertions.assertThrows(DdlException.class,
+                () -> manager.runMembershipMutation(1, 0, () -> changed.set(true))).getDetailMessage());
+        // Recovery uncertainty must not prevent an operator from reducing existing membership safely.
+        manager.runMembershipMutation(0, 0, () -> changed.set(true));
+        Assertions.assertTrue(changed.get());
+    }
+
+    @Test
+    void expiredCertificateKeepsCommittedCapacityAndUpdatesSnapshotsAtMembershipCommit() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 1100));
+        time.advance(100_000);
+        Assertions.assertEquals(LicenseQueryStatus.EXPIRED, manager.queryStatus());
+        manager.runMembershipMutation(2, 5, () -> host.changeMembers(3, 5));
+        Assertions.assertEquals(3, manager.getSnapshot().getRegisteredFe());
+        Assertions.assertEquals(5, manager.getSnapshot().getRegisteredBe());
+        AtomicBoolean changed = new AtomicBoolean();
+        Assertions.assertEquals("LICENSE_FE_LIMIT_EXCEEDED", Assertions.assertThrows(DdlException.class,
+                () -> manager.runMembershipMutation(1, 0, () -> changed.set(true))).getDetailMessage());
+        Assertions.assertEquals("LICENSE_BE_LIMIT_EXCEEDED", Assertions.assertThrows(DdlException.class,
+                () -> manager.runMembershipMutation(0, 1, () -> changed.set(true))).getDetailMessage());
+        Assertions.assertFalse(changed.get());
+        Assertions.assertEquals(LicenseQueryStatus.EXPIRED, manager.queryStatus());
+        Assertions.assertEquals(3, manager.getSnapshot().getBaseMaxFeNodes());
+    }
+
+    @Test
+    void batchAdmissionRejectsBeforeAnyMemberSideEffectAndConcurrentAddsShareOneSlot() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 2000));
+        host.changeMembers(2, 4);
+        AtomicInteger mutations = new AtomicInteger();
+        Assertions.assertThrows(DdlException.class,
+                () -> manager.runMembershipMutation(0, 2, mutations::incrementAndGet));
+        Assertions.assertEquals(0, mutations.get());
+        ExecutorService clients = Executors.newFixedThreadPool(2);
+        CountDownLatch go = new CountDownLatch(1);
+        try {
+            List<Future<Boolean>> results = new ArrayList<>();
+            for (int i = 0; i < 2; i++) {
+                results.add(clients.submit(() -> {
+                    go.await();
+                    try {
+                        manager.runMembershipMutation(0, 1, () -> {
+                            host.changeMembers(host.feNodes, host.beNodes + 1);
+                            mutations.incrementAndGet();
+                        });
+                        return true;
+                    } catch (DdlException e) {
+                        Assertions.assertEquals("LICENSE_BE_LIMIT_EXCEEDED", e.getDetailMessage());
+                        return false;
+                    }
+                }));
+            }
+            go.countDown();
+            int successes = 0;
+            for (Future<Boolean> result : results) {
+                successes += result.get(5, TimeUnit.SECONDS) ? 1 : 0;
+            }
+            Assertions.assertEquals(1, successes);
+            Assertions.assertEquals(1, mutations.get());
+            Assertions.assertEquals(5, manager.getSnapshot().getRegisteredBe());
+        } finally {
+            go.countDown();
+            clients.shutdownNow();
+        }
+    }
+
+    @Test
+    void failedMemberJournalKeepsActualRegisteredUsageAndFailedDropReleasesNothing() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 2000));
+        host.changeMembers(1, 3);
+        Assertions.assertThrows(IllegalStateException.class,
+                () -> manager.runMembershipMutation(0, 2, () -> {
+                    host.changeMembers(1, 4);
+                    throw new IllegalStateException("Existing journal failed after registering the first member");
+                }));
+        Assertions.assertEquals(4, manager.getSnapshot().getRegisteredBe());
+        manager.runMembershipMutation(0, 1, () -> host.changeMembers(1, 5));
+        Assertions.assertThrows(IllegalStateException.class,
+                () -> manager.runMembershipMutation(0, 0, () -> {
+                    throw new IllegalStateException("Drop not acknowledged; do not remove the member");
+                }));
+        Assertions.assertEquals(5, manager.getSnapshot().getRegisteredBe());
+        Assertions.assertThrows(DdlException.class, () -> manager.runMembershipMutation(0, 1, () -> {
+            throw new AssertionError("Admission must reject before running the callback");
+        }));
+        manager.runMembershipMutation(0, 0, () -> host.changeMembers(1, 4));
+        Assertions.assertEquals(4, manager.getSnapshot().getRegisteredBe());
+        manager.runMembershipMutation(0, 1, () -> host.changeMembers(1, 5));
+        Assertions.assertEquals(5, manager.getSnapshot().getRegisteredBe());
+    }
+
+    @Test
+    void futurePendingCapacityCannotAdmitMembersUntilBaseRecordIsApplied() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 1200));
+        String deployment = run(LicenseManager.Action.DEPLOYMENT, null).getBody().get("deployment_id").toString();
+        ObjectNode future = claims(deployment, 2, 1300, 2000);
+        ((ObjectNode) future.get("limits")).put("max_fe_nodes", 6).put("max_be_nodes", 9);
+        run(LicenseManager.Action.IMPORT, sign(future, "issuer", "massdb-license+jws", issuer));
+        host.changeMembers(3, 5);
+        time.advance(301_000);
+        Assertions.assertEquals(LicenseQueryStatus.EXPIRING, manager.queryStatus());
+        Assertions.assertThrows(DdlException.class, () -> manager.runMembershipMutation(1, 1, () -> {
+            throw new AssertionError("A pending query entitlement cannot grant uncommitted capacity");
+        }));
+        host.throwAfterWrite = true;
+        manager.maintenance();
+        Assertions.assertThrows(DdlException.class, () -> manager.runMembershipMutation(1, 1, () -> {
+            throw new AssertionError("An uncertain capacity commit cannot admit a member");
+        }));
+        host.throwAfterWrite = false;
+        LicensePersistRecord base = host.records.get(host.records.size() - 1);
+        Assertions.assertEquals(LicensePersistRecord.BASE, base.getOperation());
+        manager.replay(base);
+        manager.replay(base);
+        manager.runMembershipMutation(3, 4, () -> host.changeMembers(6, 9));
+        Assertions.assertEquals(6, manager.getSnapshot().getRegisteredFe());
+        Assertions.assertEquals(9, manager.getSnapshot().getRegisteredBe());
+    }
+
+    @Test
+    void acceptedMemberChangeInvalidatesAnImportPreparedBeforeItsCommit() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 2000));
+        String renewal = certificate(2, 900, 2500);
+        host.frontendVersion++;
+        host.probeEntered = new CountDownLatch(1);
+        host.probeRelease = new CountDownLatch(1);
+        ExecutorService client = Executors.newSingleThreadExecutor();
+        try {
+            Future<Integer> imported = client.submit(() -> importStatus(renewal, "membership-race"));
+            Assertions.assertTrue(host.probeEntered.await(5, TimeUnit.SECONDS));
+            manager.runMembershipMutation(0, 1, () -> host.changeMembers(1, 1));
+            host.probeRelease.countDown();
+            Assertions.assertEquals(409, imported.get(5, TimeUnit.SECONDS));
+            Assertions.assertEquals(1L, run(LicenseManager.Action.STATUS, null).getBody().get("highest_sequence"));
+            Assertions.assertEquals(1, manager.getSnapshot().getRegisteredBe());
+        } finally {
+            host.probeRelease.countDown();
+            client.shutdownNow();
+        }
     }
 
     @Test
@@ -960,6 +1122,9 @@ class LicenseManagerTest {
         private boolean failPublicationAfterCommit;
         private final AtomicBoolean publicationFailure = new AtomicBoolean();
         private long frontendVersion = 1;
+        private volatile int feNodes = 1;
+        private volatile int beNodes;
+        private volatile long membershipVersion = 1;
         private volatile CountDownLatch probeEntered;
         private volatile CountDownLatch probeRelease;
 
@@ -977,7 +1142,13 @@ class LicenseManagerTest {
             if (publicationFailure.compareAndSet(true, false)) {
                 throw new IllegalStateException("Injected snapshot publication failure after durable commit");
             }
-            return new LicenseManager.Membership(1, 0, 1);
+            return new LicenseManager.Membership(feNodes, beNodes, membershipVersion);
+        }
+
+        void changeMembers(int frontends, int backends) {
+            feNodes = frontends;
+            beNodes = backends;
+            membershipVersion++;
         }
 
         @Override

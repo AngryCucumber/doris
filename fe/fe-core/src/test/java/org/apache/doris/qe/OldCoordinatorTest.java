@@ -15,8 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// MassDB modification: give the existing fragment-assignment test an explicit valid license fixture.
+
 package org.apache.doris.qe;
 
+import org.apache.doris.massdb.license.LicenseManager;
+import org.apache.doris.massdb.license.LicenseQueryStatus;
 import org.apache.doris.nereids.rules.RuleType;
 import org.apache.doris.planner.OlapScanNode;
 import org.apache.doris.planner.PlanFragment;
@@ -24,6 +28,8 @@ import org.apache.doris.planner.PlanFragmentId;
 import org.apache.doris.planner.PlanNode;
 import org.apache.doris.utframe.TestWithFeService;
 
+import mockit.Mock;
+import mockit.MockUp;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -42,6 +48,12 @@ public class OldCoordinatorTest extends TestWithFeService {
 
     @Test
     public void test() throws Exception {
+        new MockUp<LicenseManager>() {
+            @Mock
+            public LicenseQueryStatus queryStatus() {
+                return LicenseQueryStatus.VALID;
+            }
+        };
         connectContext.getSessionVariable().setDisableNereidsRules(RuleType.PRUNE_EMPTY_PARTITION.name());
         connectContext.getSessionVariable().setDisableJoinReorder(true);
         connectContext.getSessionVariable().parallelPipelineTaskNum = 2;

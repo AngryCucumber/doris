@@ -175,6 +175,26 @@ import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 public class Coordinator implements CoordInterface {
+    // Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+    // Recheck FE license admission after queueing and before the first data dispatch.
+    private StmtExecutor licenseQueryExecutor;
+
+    public void setLicenseQueryExecutor(StmtExecutor executor) {
+        licenseQueryExecutor = executor;
+    }
+
+    protected void checkLicenseBeforeDispatch() throws UserException {
+        if (licenseQueryExecutor != null) {
+            licenseQueryExecutor.checkLicenseBeforeDispatch();
+        }
+    }
+
+    protected void markLicenseQueryStarted() throws UserException {
+        if (licenseQueryExecutor != null) {
+            licenseQueryExecutor.markLicenseQueryStarted();
+        }
+    }
+
     private static final Logger LOG = LogManager.getLogger(Coordinator.class);
 
     public static final String localIP = FrontendOptions.getLocalHostAddress();
@@ -334,6 +354,7 @@ public class Coordinator implements CoordInterface {
     // Used for query/insert/test
     public Coordinator(ConnectContext context, Planner planner) {
         this.context = context;
+        this.licenseQueryExecutor = context.getExecutor();
         this.queryId = context.queryId();
         this.fragments = planner.getFragments();
         this.scanNodes = planner.getScanNodes();
@@ -708,6 +729,7 @@ public class Coordinator implements CoordInterface {
                 context.setWorkloadGroupName("");
             }
         }
+        checkLicenseBeforeDispatch();
         execInternal();
     }
 
@@ -946,6 +968,7 @@ public class Coordinator implements CoordInterface {
             List<Pair<Long, Triple<PipelineExecContexts, BackendServiceProxy,
                     Future<InternalService.PExecPlanFragmentResult>>>> futures = Lists.newArrayList();
             BackendServiceProxy proxy = BackendServiceProxy.getInstance();
+            markLicenseQueryStarted();
             for (PipelineExecContexts ctxs : beToPipelineExecCtxs.values()) {
                 if (LOG.isDebugEnabled()) {
                     LOG.debug(ctxs.debugInfo());
@@ -3517,4 +3540,3 @@ public class Coordinator implements CoordInterface {
         this.queryOptions.setEnableProfile(isSafe && queryOptions.isEnableProfile());
     }
 }
-

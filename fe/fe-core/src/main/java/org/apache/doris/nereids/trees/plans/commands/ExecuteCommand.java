@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+// Recheck licensing for every prepared point-query execution.
+
 package org.apache.doris.nereids.trees.plans.commands;
 
 import org.apache.doris.analysis.Queriable;
@@ -95,6 +98,7 @@ public class ExecuteCommand extends Command {
                 && preparedStmtCtx.shortCircuitQueryContext.get().tbl.getBaseSchemaVersion()
                 == preparedStmtCtx.shortCircuitQueryContext.get().schemaVersion && !executor.getContext()
                 .getStatementContext().hasNondeterministic()) {
+            executor.checkLicensePreparedPointQuery();
             PointQueryExecutor.directExecuteShortCircuitQuery(executor, preparedStmtCtx, statementContext);
             return;
         }

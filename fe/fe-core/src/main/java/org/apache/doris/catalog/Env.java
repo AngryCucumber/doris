@@ -891,6 +891,9 @@ public class Env {
                 return LicenseFeCompatibility.localCapability(Env.this, trustDigest);
             }
         }, isCheckpointCatalog);
+        if (Config.isNotCloudMode()) {
+            this.systemInfo.setLicenseMembershipListener(licenseManager::onMembershipChanged);
+        }
         this.keyManagerStore = new KeyManagerStore();
         this.keyManager = KeyManagerFactory.getKeyManager();
         if (Config.agent_task_health_check_intervals_ms > 0) {
@@ -3272,6 +3275,16 @@ public class Env {
 
     public void addFrontend(FrontendNodeType role, String host, int editLogPort, String nodeName, String cloudUniqueId)
             throws DdlException {
+        if (Config.isNotCloudMode()) {
+            licenseManager.runMembershipMutation(1, 0,
+                    () -> addFrontendWithJournal(role, host, editLogPort, nodeName, cloudUniqueId));
+        } else {
+            addFrontendWithJournal(role, host, editLogPort, nodeName, cloudUniqueId);
+        }
+    }
+
+    private void addFrontendWithJournal(FrontendNodeType role, String host, int editLogPort, String nodeName,
+            String cloudUniqueId) throws DdlException {
         if (!tryLock(false)) {
             throw new DdlException("Failed to acquire env lock. Try again");
         }
@@ -3353,6 +3366,14 @@ public class Env {
     }
 
     public void dropFrontendFromBDBJE(FrontendNodeType role, String host, int port) throws DdlException {
+        if (Config.isNotCloudMode()) {
+            licenseManager.runMembershipMutation(0, 0, () -> dropFrontendWithJournal(role, host, port));
+        } else {
+            dropFrontendWithJournal(role, host, port);
+        }
+    }
+
+    private void dropFrontendWithJournal(FrontendNodeType role, String host, int port) throws DdlException {
         if (port == selfNode.getPort() && feType == FrontendNodeType.MASTER
                 && selfNode.getHost().equals(host)) {
             throw new DdlException("can not drop current master node.");
@@ -4961,6 +4982,7 @@ public class Env {
             }
             LOG.info("replay add frontend: {}", fe);
             frontends.put(fe.getNodeName(), fe);
+            licenseManager.onMembershipChanged();
             if (fe.getRole() == FrontendNodeType.FOLLOWER || fe.getRole() == FrontendNodeType.REPLICA) {
                 // DO NOT add helper sockets here, cause BDBHA is not instantiated yet.
                 // helper sockets will be added after start BDBHA
@@ -5003,6 +5025,7 @@ public class Env {
             }
 
             removedFrontends.add(removedFe.getNodeName());
+            licenseManager.onMembershipChanged();
 
         } finally {
             unlock();
@@ -7557,4 +7580,3 @@ public class Env {
 
     protected void cloneClusterSnapshot() throws Exception {}
 }
-

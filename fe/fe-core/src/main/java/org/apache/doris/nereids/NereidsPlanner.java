@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// MassDB modification: retain FE license query facts across planning and cache reuse.
+
 package org.apache.doris.nereids;
 
 import org.apache.doris.analysis.DescriptorTable;
@@ -33,6 +35,7 @@ import org.apache.doris.common.profile.SummaryProfile;
 import org.apache.doris.common.util.DebugUtil;
 import org.apache.doris.common.util.TimeUtils;
 import org.apache.doris.common.util.Util;
+import org.apache.doris.massdb.license.LicenseQueryGuard;
 import org.apache.doris.mysql.FieldInfo;
 import org.apache.doris.nereids.exceptions.AnalysisException;
 import org.apache.doris.nereids.glue.LogicalPlanAdapter;
@@ -220,6 +223,7 @@ public class NereidsPlanner extends Planner {
             if (plan instanceof LogicalSqlCache) {
                 rewrittenPlan = analyzedPlan = plan;
                 LogicalSqlCache logicalSqlCache = (LogicalSqlCache) plan;
+                statementContext.setLicenseQueryClassification(logicalSqlCache.getLicenseQueryClassification());
                 optimizedPlan = physicalPlan = new PhysicalSqlCache(
                         logicalSqlCache.getQueryId(),
                         logicalSqlCache.getColumnLabels(), logicalSqlCache.getFieldInfos(),
@@ -253,6 +257,7 @@ public class NereidsPlanner extends Planner {
                 }
             }
 
+            statementContext.getLicenseQueryFacts().begin(plan);
             // pre-process logical plan out of memo, e.g. process SET_VAR hint
             plan = preprocess(plan);
 
@@ -261,6 +266,11 @@ public class NereidsPlanner extends Planner {
             collectAndLockTable(showAnalyzeProcess(explainLevel, showPlanProcess));
             // after table collector, we should use a new context.
             Plan resultPlan = planWithoutLock(plan, requireProperties, explainLevel, showPlanProcess);
+            LicenseQueryGuard.Classification classification
+                    = statementContext.getLicenseQueryFacts().finish(resultPlan);
+            statementContext.setLicenseQueryClassification(classification);
+            statementContext.getSqlCacheContext()
+                    .ifPresent(cache -> cache.setLicenseQueryClassification(classification));
             lockCallback.accept(resultPlan);
             if (statementContext.getConnectContext().getExecutor() != null) {
                 statementContext.getConnectContext().getExecutor().getSummaryProfile()
@@ -286,6 +296,7 @@ public class NereidsPlanner extends Planner {
         }
         // analyze this query, resolve column, table and function
         analyze(showAnalyzeProcess(explainLevel, showPlanProcess));
+        statementContext.getLicenseQueryFacts().analyzed();
         if (explainLevel == ExplainLevel.ANALYZED_PLAN || explainLevel == ExplainLevel.ALL_PLAN) {
             analyzedPlan = cascadesContext.getRewritePlan();
             if (explainLevel == ExplainLevel.ANALYZED_PLAN) {

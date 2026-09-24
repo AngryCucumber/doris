@@ -4,6 +4,43 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License P3 admission integration (2026-09-25)
+
+- Add controlled tests of the actual statement RPC and replan retry loops with
+  the real coordinator dispatch boundary. Verify expiry before and after first
+  dispatch, new executions, cancellation, timeout, retry exhaustion and cleanup;
+  parsing, planning and remote execution remain test doubles.
+- Exercise queued EXPORT expiry through the real transient scheduler and export
+  state machine, including cancellation, task removal and worker termination;
+  the environment, storage deletion and license clock remain controlled fixtures.
+
+- Add one FE read guard and retain small source/probe/empty-result facts through
+  existing analysis and SQL cache dependencies. Cover ordinary results, reused
+  prepared point queries, protected reads into external tables, EXPORT and new
+  connector plans without changing BE code or transport protocols.
+- Recheck admission after query queueing and before first execution dispatch.
+  Scope an admitted execution to its existing retries; new statements and
+  prepared executions must obtain fresh admission. Preserve internal writes,
+  metadata and existing server maintenance entry points.
+- Serialize FE/BE membership mutations with certificate commits, check an ADD
+  batch against committed base quotas before mutation and release capacity only
+  after successful DROP. Retain original membership and decommission checks.
+- Preserve reserved license errors from membership DDL through SQL planner
+  wrappers, including structured reasons and uncertain-commit retry limits.
+- Keep procedure license denials as one typed error. Skip result finalization
+  when that denial produced no query processor, avoiding an extra null-pointer
+  error while retaining the original handling of other procedure failures.
+- Add focused classification, execution, side-effect and membership tests.
+  Give existing coordinator and cluster member tests explicit license fixtures
+  while preserving their original fragment, membership and journal assertions.
+  Complete the agreed P3 functional acceptance with layered unit, controlled
+  execution and real protocol evidence. Preserve artifact identities, original
+  failures and owned-fixture cleanup. The final JDK 17.0.4 FE package passes 22
+  targeted tests and a real expiry regression for procedures and SQL permissions.
+  Retain the original CREATE USER audit-password finding separately from clean
+  certificate-material scans. The UI and full performance acceptance remain
+  later work; this change does not claim zero performance regression.
+
 ## License P2 management integration (2026-09-25)
 
 - Add FE-owned bounded certificate metadata, journal/image recovery, deployment

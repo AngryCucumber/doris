@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// MassDB modification: retain FE license query facts across planning and cache reuse.
+
 package org.apache.doris.nereids.rules.analysis;
 
 import org.apache.doris.analysis.TableSnapshot;
@@ -394,6 +396,8 @@ public class BindRelation extends OneAnalysisRuleFactory {
         // qualifiedTableName should be like "ctl.db.tbl$partitions"
         Optional<LogicalPlan> logicalPlan = handleMetaTable(table, unboundRelation, qualifiedTableName);
         if (logicalPlan.isPresent()) {
+            cascadesContext.getStatementContext().getLicenseQueryFacts()
+                    .tableFunction(((LogicalTVFRelation) logicalPlan.get()).getFunction());
             return logicalPlan.get();
         }
 
@@ -543,6 +547,7 @@ public class BindRelation extends OneAnalysisRuleFactory {
                     throw new AnalysisException("Unsupported tableType " + table.getType());
             }
         } finally {
+            cascadesContext.getStatementContext().getLicenseQueryFacts().table(table, isView);
             if (!isView) {
                 Optional<SqlCacheContext> sqlCacheContextOpt
                         = cascadesContext.getStatementContext().getSqlCacheContext();

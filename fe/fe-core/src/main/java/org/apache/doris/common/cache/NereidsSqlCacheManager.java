@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// MassDB modification: retain FE license query facts across planning and cache reuse.
+
 package org.apache.doris.common.cache;
 
 import org.apache.doris.analysis.UserIdentity;
@@ -390,6 +392,7 @@ public class NereidsSqlCacheManager {
                         sqlCacheContext.getResultExprs(), resultSetInFe, ImmutableList.of(),
                         "none", cachedPlan
                 );
+                logicalSqlCache.setLicenseQueryClassification(sqlCacheContext.getLicenseQueryClassification());
                 return Optional.of(logicalSqlCache);
             }
 
@@ -420,6 +423,7 @@ public class NereidsSqlCacheManager {
                         sqlCacheContext.getResultExprs(), Optional.empty(),
                         cacheValues, backendAddress, cachedPlan
                 );
+                logicalSqlCache.setLicenseQueryClassification(sqlCacheContext.getLicenseQueryClassification());
                 return Optional.of(logicalSqlCache);
             }
             return Optional.empty();
@@ -452,6 +456,10 @@ public class NereidsSqlCacheManager {
             }
             if (tableIf instanceof OlapTable) {
                 OlapTable olapTable = (OlapTable) tableIf;
+                if (sqlCacheContext.getLicenseQueryClassification() != null
+                        && tableVersion.schemaVersion != olapTable.getBaseSchemaVersion()) {
+                    return IsChanged.CHANGED_AND_INVALIDATE_CACHE;
+                }
                 long currentTableVersion = 0L;
                 try {
                     currentTableVersion = olapTable.getVisibleVersion();

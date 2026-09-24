@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// MassDB modification: retain FE license query facts across planning and cache reuse.
+
 package org.apache.doris.nereids.rules.analysis;
 
 import org.apache.doris.analysis.ArithmeticExpr.Operator;
@@ -534,6 +536,9 @@ public class ExpressionAnalyzer extends SubExprAnalyzer<ExpressionRewriteContext
         }
 
         Pair<? extends Expression, ? extends BoundFunction> buildResult = builder.build(functionName, arguments);
+        if (context != null) {
+            context.cascadesContext.getStatementContext().getLicenseQueryFacts().function(buildResult.second);
+        }
         buildResult.second.checkOrderExprIsValid();
         Optional<SqlCacheContext> sqlCacheContext = Optional.empty();
 
@@ -574,6 +579,9 @@ public class ExpressionAnalyzer extends SubExprAnalyzer<ExpressionRewriteContext
     @Override
     public Expression visitBoundFunction(BoundFunction boundFunction, ExpressionRewriteContext context) {
         boundFunction = (BoundFunction) super.visitBoundFunction(boundFunction, context);
+        if (context != null) {
+            context.cascadesContext.getStatementContext().getLicenseQueryFacts().function(boundFunction);
+        }
         return TypeCoercionUtils.processBoundFunction(boundFunction);
     }
 

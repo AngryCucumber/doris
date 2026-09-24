@@ -7,6 +7,7 @@
 
 package org.apache.doris.massdb.license;
 
+import org.apache.doris.common.DdlException;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.NereidsException;
 import org.apache.doris.common.UserException;
@@ -14,6 +15,7 @@ import org.apache.doris.persist.gson.GsonUtils;
 
 import com.google.gson.Gson;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /** Typed SQL transport adapter: preserve the structured reason through planner wrappers. */
@@ -60,6 +62,20 @@ public final class LicenseSqlException extends UserException {
         for (int depth = 0; error != null && depth < 16; depth++) {
             if (error instanceof LicenseSqlException) {
                 return (LicenseSqlException) error;
+            }
+            if (error instanceof DdlException) {
+                DdlException ddl = (DdlException) error;
+                ErrorCode code = ddl.getMysqlErrorCode();
+                if (code == ErrorCode.ERR_LICENSE_CONFLICT || code == ErrorCode.ERR_LICENSE_NOT_READY) {
+                    // Member APIs retain DdlException signatures; planner wrappers must preserve their license code.
+                    String reason = ddl.getDetailMessage();
+                    Map<String, Object> body = new LinkedHashMap<>();
+                    body.put("reason", reason);
+                    body.put("message", reason);
+                    body.put("retryable", "LICENSE_NOT_READY".equals(reason)
+                            || "LICENSE_MANAGEMENT_BUSY".equals(reason) || "LICENSE_NOT_LEADER".equals(reason));
+                    return new LicenseSqlException(code.getCode(), body);
+                }
             }
             error = error instanceof NereidsException ? ((NereidsException) error).getException() : error.getCause();
         }

@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.nereids.trees.plans.commands.insert;
 
@@ -256,7 +257,7 @@ public class InsertIntoTableCommand extends Command implements NeedAuditEncrypti
             BuildInsertExecutorResult buildResult;
             try {
                 // use originLogicalQuery to build logicalQuery again.
-                buildResult = initPlanOnce(ctx, stmtExecutor, targetTableIf);
+                buildResult = initPlanOnce(ctx, stmtExecutor, targetTableIf, needBeginTransaction);
             } catch (Throwable e) {
                 Throwables.throwIfInstanceOf(e, RuntimeException.class);
                 throw new IllegalStateException(e.getMessage(), e);
@@ -266,6 +267,7 @@ public class InsertIntoTableCommand extends Command implements NeedAuditEncrypti
             if (!needBeginTransaction) {
                 return insertExecutor;
             }
+            insertExecutor.getCoordinator().setLicenseQueryExecutor(stmtExecutor);
 
             // lock after plan and check does table's schema changed to ensure we lock table order by id.
             TableIf newestTargetTableIf = getTargetTableIf(ctx, qualifiedTargetTableName);
@@ -287,6 +289,9 @@ public class InsertIntoTableCommand extends Command implements NeedAuditEncrypti
                     continue;
                 }
                 if (!insertExecutor.isEmptyInsert()) {
+                    if (isExternalSink(buildResult.physicalSink)) {
+                        stmtExecutor.checkLicenseExternalWrite(buildResult.planner);
+                    }
                     insertExecutor.beginTransaction();
                     insertExecutor.finalizeSink(
                             buildResult.planner.getFragments().get(0), buildResult.dataSink,
@@ -325,7 +330,7 @@ public class InsertIntoTableCommand extends Command implements NeedAuditEncrypti
     }
 
     private BuildInsertExecutorResult initPlanOnce(ConnectContext ctx,
-            StmtExecutor stmtExecutor, TableIf targetTableIf) throws Throwable {
+            StmtExecutor stmtExecutor, TableIf targetTableIf, boolean needBeginTransaction) throws Throwable {
         targetTableIf.readLock();
         try {
             Optional<CascadesContext> analyzeContext = Optional.of(
@@ -348,7 +353,7 @@ public class InsertIntoTableCommand extends Command implements NeedAuditEncrypti
 
             LogicalPlanAdapter logicalPlanAdapter
                     = new LogicalPlanAdapter(logicalQuery.get(), ctx.getStatementContext());
-            return planInsertExecutor(ctx, stmtExecutor, logicalPlanAdapter, targetTableIf);
+            return planInsertExecutor(ctx, stmtExecutor, logicalPlanAdapter, targetTableIf, needBeginTransaction);
         } finally {
             targetTableIf.readUnlock();
         }
@@ -507,7 +512,8 @@ public class InsertIntoTableCommand extends Command implements NeedAuditEncrypti
 
     private BuildInsertExecutorResult planInsertExecutor(
             ConnectContext ctx, StmtExecutor stmtExecutor,
-            LogicalPlanAdapter logicalPlanAdapter, TableIf targetTableIf) throws Throwable {
+            LogicalPlanAdapter logicalPlanAdapter, TableIf targetTableIf, boolean needBeginTransaction)
+            throws Throwable {
         LogicalPlan logicalPlan = logicalPlanAdapter.getLogicalPlan();
 
         boolean supportFastInsertIntoValues = InsertUtils.supportFastInsertIntoValues(logicalPlan, targetTableIf, ctx);
@@ -544,12 +550,22 @@ public class InsertIntoTableCommand extends Command implements NeedAuditEncrypti
                     planner.getPhysicalPlan().treeString());
         }
 
+        ExecutorFactory executorFactory = executorFactoryRef.get();
+        if (needBeginTransaction && isExternalSink(executorFactory.physicalSink)) {
+            // Executor construction can register a load job; refuse before that and before any transaction.
+            stmtExecutor.checkLicenseExternalWrite(planner);
+        }
         // step 4
-        BuildInsertExecutorResult build = executorFactoryRef.get().build();
+        BuildInsertExecutorResult build = executorFactory.build();
 
         // apply insert plan Statistic
         applyInsertPlanStatistic(planner);
         return build;
+    }
+
+    private static boolean isExternalSink(PhysicalSink<?> sink) {
+        return sink instanceof PhysicalHiveTableSink || sink instanceof PhysicalIcebergTableSink
+                || sink instanceof PhysicalJdbcTableSink;
     }
 
     private void applyInsertPlanStatistic(FastInsertIntoValuesPlanner planner) {

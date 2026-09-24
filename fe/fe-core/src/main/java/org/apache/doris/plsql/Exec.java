@@ -18,9 +18,12 @@
 // https://github.com/apache/hive/blob/master/hplsql/src/main/java/org/apache/hive/hplsql/Exec.java
 // and modified by Doris
 
+// MassDB modification: preserve typed license errors from procedure subqueries.
+
 package org.apache.doris.plsql;
 
 import org.apache.doris.common.ErrorCode;
+import org.apache.doris.massdb.license.LicenseSqlException;
 import org.apache.doris.nereids.PLLexer;
 import org.apache.doris.nereids.PLParser;
 import org.apache.doris.nereids.PLParser.Allocate_cursor_stmtContext;
@@ -1093,7 +1096,10 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
     public void printExceptions() {
         while (!signals.empty()) {
             Signal sig = signals.pop();
-            if (sig.type == Signal.Type.VALIDATION) {
+            LicenseSqlException licenseFailure = LicenseSqlException.find(sig.exception);
+            if (licenseFailure != null) {
+                console.printError(licenseFailure.getMysqlErrorCode(), licenseFailure.getMessage());
+            } else if (sig.type == Signal.Type.VALIDATION) {
                 error(((PlValidationException) sig.exception).getCtx(), sig.exception.getMessage());
             } else if (sig.type == Signal.Type.SQLEXCEPTION) {
                 LOG.warn(ExceptionUtils.getStackTrace(sig.exception));
@@ -1171,6 +1177,11 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
     @Override
     public Integer visitDoris_statement(Doris_statementContext ctx) {
         Integer rc = exec.stmt.statement(ctx);
+        if (rc != 0 && !exec.signals.empty()
+                && LicenseSqlException.find(exec.signals.peek().exception) != null) {
+            // A denied query has no result processor; preserve its typed error without finalizing a result.
+            return rc;
+        }
         // Sometimes the query results are not returned to the mysql client,
         // such as `declare result; select … into result;`, not need finalize.
         resultListener.onFinalize();

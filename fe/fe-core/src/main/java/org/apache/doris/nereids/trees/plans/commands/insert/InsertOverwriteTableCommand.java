@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.nereids.trees.plans.commands.insert;
 
@@ -203,6 +204,9 @@ public class InsertOverwriteTableCommand extends Command implements NeedAuditEnc
                     "Only support insert overwrite into iceberg table's branch");
         }
 
+        if (!(physicalTableSink instanceof PhysicalOlapTableSink)) {
+            executor.checkLicenseExternalWrite(planner);
+        }
         InsertOverwriteManager insertOverwriteManager = Env.getCurrentEnv().getInsertOverwriteManager();
         insertOverwriteManager.recordRunningTableOrException(targetTable.getDatabase(), targetTable);
         isRunning.set(true);

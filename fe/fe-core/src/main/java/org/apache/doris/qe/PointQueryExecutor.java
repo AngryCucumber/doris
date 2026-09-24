@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// MassDB modification: recheck licensing immediately before the first point-query dispatch.
+
 package org.apache.doris.qe;
 
 import org.apache.doris.analysis.BinaryPredicate;
@@ -81,11 +83,16 @@ public class PointQueryExecutor implements CoordInterface {
     private List<Long> snapshotVisibleVersions;
 
     private final ShortCircuitQueryContext shortCircuitQueryContext;
+    private StmtExecutor licenseQueryExecutor;
 
     public PointQueryExecutor(ShortCircuitQueryContext ctx, int maxMessageSize) {
         ctx.sanitize();
         this.shortCircuitQueryContext = ctx;
         this.maxMsgSizeOfResultReceiver = maxMessageSize;
+    }
+
+    public void setLicenseQueryExecutor(StmtExecutor executor) {
+        licenseQueryExecutor = executor;
     }
 
     private void updateCloudPartitionVersions() throws RpcException {
@@ -217,9 +224,15 @@ public class PointQueryExecutor implements CoordInterface {
 
     @Override
     public RowBatch getNext() throws Exception {
+        if (licenseQueryExecutor != null) {
+            licenseQueryExecutor.checkLicenseBeforeDispatch();
+        }
         setScanRangeLocations();
         // No partition/tablet found return emtpy row batch
         if (candidateBackends == null || candidateBackends.isEmpty()) {
+            if (licenseQueryExecutor != null) {
+                licenseQueryExecutor.markLicenseQueryStarted();
+            }
             return new RowBatch();
         }
         Iterator<Backend> backendIter = candidateBackends.iterator();
@@ -264,7 +277,7 @@ public class PointQueryExecutor implements CoordInterface {
         // only handles in getNext()
     }
 
-    private RowBatch getNextInternal(Status status, Backend backend) throws TException {
+    private RowBatch getNextInternal(Status status, Backend backend) throws TException, UserException {
         long timeoutTs = System.currentTimeMillis() + timeoutMs;
         RowBatch rowBatch = new RowBatch();
         InternalService.PTabletKeyLookupResponse pResult = null;
@@ -299,6 +312,9 @@ public class PointQueryExecutor implements CoordInterface {
             addKeyTuples(requestBuilder);
 
             InternalService.PTabletKeyLookupRequest request = requestBuilder.build();
+            if (licenseQueryExecutor != null) {
+                licenseQueryExecutor.markLicenseQueryStarted();
+            }
             Future<InternalService.PTabletKeyLookupResponse> futureResponse =
                     BackendServiceProxy.getInstance().fetchTabletDataAsync(backend.getBrpcAddress(), request);
             long currentTs = System.currentTimeMillis();

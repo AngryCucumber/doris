@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.nereids.trees.plans.commands;
 
@@ -92,7 +93,11 @@ public class CreateTableCommand extends Command implements NeedAuditEncryption, 
         }
 
         LogicalPlan query = ctasQuery.get();
-        validateCreateTableAsSelect(ctx, query);
+        Plan ctasPlan = validateCreateTableAsSelect(ctx, query);
+        if (createTableInfo.isExternal()) {
+            // Validation resolves the actual engine/catalog and preserves the bound source plan.
+            executor.checkLicenseExternalWrite(ctx.getStatementContext(), ctasPlan);
+        }
 
         if (LOG.isDebugEnabled()) {
             LOG.debug("Nereids start to execute the ctas command, query id: {}, tableName: {}",
@@ -125,7 +130,7 @@ public class CreateTableCommand extends Command implements NeedAuditEncryption, 
     /**
      * validateCreateTableAsSelect
      */
-    public void validateCreateTableAsSelect(ConnectContext ctx, LogicalPlan query) {
+    public Plan validateCreateTableAsSelect(ConnectContext ctx, LogicalPlan query) {
         List<String> ctasCols = createTableInfo.getCtasColumns();
         NereidsPlanner planner = new NereidsPlanner(ctx.getStatementContext());
         // must disable constant folding by be, because be constant folding may return wrong type
@@ -199,6 +204,7 @@ public class CreateTableCommand extends Command implements NeedAuditEncryption, 
         }
         List<String> qualifierTableName = RelationUtil.getQualifierName(ctx, createTableInfo.getTableNameParts());
         createTableInfo.validateCreateTableAsSelect(qualifierTableName, columnsOfQuery.build(), ctx);
+        return plan;
     }
 
     void handleFallbackFailedCtas(ConnectContext ctx) {
@@ -261,4 +267,3 @@ public class CreateTableCommand extends Command implements NeedAuditEncryption, 
         return !CreateTableInfo.ENGINE_OLAP.equalsIgnoreCase(createTableInfo.getEngineName());
     }
 }
-

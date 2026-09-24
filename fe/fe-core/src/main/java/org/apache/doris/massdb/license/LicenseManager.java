@@ -7,6 +7,9 @@
 
 package org.apache.doris.massdb.license;
 
+import org.apache.doris.common.DdlException;
+import org.apache.doris.common.ErrorCode;
+
 import java.io.ByteArrayOutputStream;
 import java.io.DataInput;
 import java.io.DataOutput;
@@ -74,6 +77,11 @@ public final class LicenseManager implements AutoCloseable {
             this.beNodes = beNodes;
             this.version = version;
         }
+    }
+
+    @FunctionalInterface
+    public interface MembershipMutation {
+        void run() throws DdlException;
     }
 
     private static final UUID UNINITIALIZED = new UUID(0, 0);
@@ -563,6 +571,94 @@ public final class LicenseManager implements AutoCloseable {
         return await(submit(mutations, work), fingerprint);
     }
 
+    /**
+     * Serialize member admission, its existing journal acknowledgement and publication with imports/base activation.
+     * The caller must enter before acquiring Env/member locks; journal callbacks never acquire this queue.
+     * Removal is permitted even when license recovery or time is unavailable, retaining existing safety checks.
+     */
+    public void runMembershipMutation(int additionalFe, int additionalBe, MembershipMutation work)
+            throws DdlException {
+        if (additionalFe < 0 || additionalBe < 0) {
+            throw new IllegalArgumentException("Negative license member admission");
+        }
+        if (closed || checkpoint) {
+            throw new DdlException("LICENSE_NOT_READY", ErrorCode.ERR_LICENSE_NOT_READY);
+        }
+        final Future<?> future;
+        try {
+            future = mutations.submit(() -> {
+                if (!leader || !host.isMaster()) {
+                    throw new DdlException("LICENSE_NOT_LEADER", ErrorCode.ERR_LICENSE_NOT_READY);
+                }
+                if (additionalFe != 0 || additionalBe != 0) {
+                    requireCapacity(additionalFe, additionalBe);
+                }
+                try {
+                    work.run();
+                } finally {
+                    // Existing ADD may have registered an earlier batch member before a later journal failure.
+                    // Count that authoritative state even on failure; never invent a rollback/free reservation.
+                    publish();
+                }
+                return null;
+            });
+        } catch (RejectedExecutionException e) {
+            throw new DdlException("LICENSE_MANAGEMENT_BUSY", ErrorCode.ERR_LICENSE_NOT_READY);
+        }
+        try {
+            future.get();
+        } catch (InterruptedException e) {
+            future.cancel(false);
+            if (future instanceof Runnable) {
+                mutations.remove((Runnable) future);
+            }
+            Thread.currentThread().interrupt();
+            throw new DdlException("LICENSE_MEMBERSHIP_COMMIT_UNCERTAIN", ErrorCode.ERR_LICENSE_NOT_READY);
+        } catch (ExecutionException e) {
+            if (e.getCause() instanceof DdlException) {
+                throw (DdlException) e.getCause();
+            }
+            if (e.getCause() instanceof RuntimeException) {
+                throw (RuntimeException) e.getCause();
+            }
+            if (e.getCause() instanceof Error) {
+                throw (Error) e.getCause();
+            }
+            throw new DdlException("LICENSE_MEMBERSHIP_COMMIT_UNCERTAIN", ErrorCode.ERR_LICENSE_NOT_READY);
+        }
+    }
+
+    private void requireCapacity(int additionalFe, int additionalBe) throws DdlException {
+        if (!ready()) {
+            throw new DdlException("LICENSE_NOT_READY", ErrorCode.ERR_LICENSE_NOT_READY);
+        }
+        Membership members = host.membership();
+        LicenseSnapshot current = snapshot(imports, members, true, invalidSlots);
+        int maxFe;
+        int maxBe;
+        if (current.hasTrustedBaseCapacity()) {
+            maxFe = current.getBaseMaxFeNodes();
+            maxBe = current.getBaseMaxBeNodes();
+        } else if (committed.isBootstrap() && !committed.isActivated() && imports.getHighestSequence() == 0) {
+            // The real initial FE is installed by Env bootstrap, never inferred from missing/corrupt slots.
+            maxFe = 1;
+            maxBe = 0;
+        } else {
+            throw new DdlException("LICENSE_BASE_CAPACITY_UNAVAILABLE", ErrorCode.ERR_LICENSE_NOT_READY);
+        }
+        if ((long) members.feNodes + additionalFe > maxFe) {
+            throw new DdlException("LICENSE_FE_LIMIT_EXCEEDED", ErrorCode.ERR_LICENSE_CONFLICT);
+        }
+        if ((long) members.beNodes + additionalBe > maxBe) {
+            throw new DdlException("LICENSE_BE_LIMIT_EXCEEDED", ErrorCode.ERR_LICENSE_CONFLICT);
+        }
+    }
+
+    /** Replay and image load only refresh the immutable view; they do not perform new member admission. */
+    public void onMembershipChanged() {
+        publish();
+    }
+
     private LicenseManagementResult await(Future<LicenseManagementResult> future, String fingerprint)
             throws LicenseManagementException {
         try {
@@ -902,6 +998,12 @@ public final class LicenseManager implements AutoCloseable {
 
     public LicenseSnapshot getSnapshot() {
         return snapshot;
+    }
+
+    /** The query hot path reads only the published view and allocation-free trusted clock. */
+    public LicenseQueryStatus queryStatus() {
+        LicenseClock currentClock = clock;
+        return currentClock == null ? LicenseQueryStatus.LICENSE_NOT_READY : snapshot.queryStatus(currentClock);
     }
 
     public Map<String, Object> capability() {
