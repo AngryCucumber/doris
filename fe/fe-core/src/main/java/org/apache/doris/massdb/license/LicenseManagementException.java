@@ -41,7 +41,8 @@ public final class LicenseManagementException extends Exception {
         Map<String, Object> values = new LinkedHashMap<>();
         values.put("reason", reason);
         values.put("message", reason);
-        values.put("retryable", httpStatus == 409 || httpStatus == 429 || httpStatus == 503);
+        values.put("retryable", httpStatus == 409 || httpStatus == 429 || httpStatus == 503
+                || (httpStatus == 202 && "COMMITTED".equals(submissionStatus)));
         values.put("submission_status", submissionStatus);
         values.put("fingerprint", fingerprint);
         if (repairId != null) {

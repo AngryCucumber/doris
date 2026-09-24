@@ -219,6 +219,11 @@ public final class LicenseManager implements AutoCloseable {
         final LicenseImportPolicy.Prepared prepared;
         try {
             fingerprint = LicenseVerifier.fingerprint(payload);
+            LicensePersistRecord pending = committedPendingApply;
+            if (action == Action.IMPORT && pending != null
+                    && pending.submissionVersion(fingerprint) > getAppliedVersion()) {
+                return importReceipt(fingerprint);
+            }
             prepared = policy.prepare(payload, imports, context(), verifier);
         } catch (LicenseException e) {
             throw importFailure(e, null);
@@ -240,12 +245,16 @@ public final class LicenseManager implements AutoCloseable {
             throw failure("LICENSE_FE_UPGRADE_REQUIRED", 503, "NOT_SUBMITTED", fingerprint);
         }
         return mutate(() -> {
-            requireWritable();
             try {
+                LicensePersistRecord pending = committedPendingApply;
+                if (pending != null && pending.submissionVersion(fingerprint) > getAppliedVersion()) {
+                    return importReceipt(fingerprint);
+                }
                 LicenseImportState.Receipt previous = imports.findReceipt(fingerprint);
                 if (previous != null) {
                     return importReceipt(fingerprint);
                 }
+                requireWritable();
                 LicenseImportPolicy.Prepared checked = policy.recheckForCommit(prepared, imports, context(), verifier);
                 if (frontendVersion != host.frontendVersion()) {
                     throw failure("LICENSE_STALE_IMPORT_DECISION", 409, "NOT_SUBMITTED", fingerprint);
@@ -270,8 +279,17 @@ public final class LicenseManager implements AutoCloseable {
             throw repairFailure(e);
         }
         return mutate(() -> {
-            requireWritable();
             try {
+                LicensePersistRecord pending = committedPendingApply;
+                if (pending != null) {
+                    LicenseClockRepair.Receipt waiting = pending.clockState().getReceipts().get(ticket.getRepairId());
+                    if (waiting != null && pending.submissionVersion(waiting.getFingerprint()) > getAppliedVersion()) {
+                        if (!waiting.getFingerprint().equals(ticket.getFingerprint())) {
+                            throw failure("LICENSE_REPAIR_CONFLICT", 409, "NOT_SUBMITTED", ticket.getFingerprint());
+                        }
+                        return knownCommit(pending, ticket.getFingerprint(), ticket.getRepairId().toString());
+                    }
+                }
                 LicenseClockRepair.Receipt previous = committed.clockState().getReceipts().get(ticket.getRepairId());
                 if (previous != null) {
                     if (!previous.getFingerprint().equals(ticket.getFingerprint())) {
@@ -279,6 +297,7 @@ public final class LicenseManager implements AutoCloseable {
                     }
                     return repairReceipt(ticket.getRepairId().toString());
                 }
+                requireWritable();
                 repair.commitRepair(repair.prepareRepair(payload));
                 return repairReceipt(ticket.getRepairId().toString());
             } catch (LicenseRepairException e) {
@@ -295,9 +314,13 @@ public final class LicenseManager implements AutoCloseable {
         }, ticket.getFingerprint());
     }
 
-    private LicenseManagementResult importReceipt(String fingerprint) throws LicenseManagementException {
+    private synchronized LicenseManagementResult importReceipt(String fingerprint) throws LicenseManagementException {
         if (fingerprint == null || !fingerprint.matches("[0-9a-f]{64}")) {
             throw failure("LICENSE_INVALID_FINGERPRINT", 400, "NOT_SUBMITTED", null);
+        }
+        LicensePersistRecord pending = committedPendingApply;
+        if (pending != null && pending.submissionVersion(fingerprint) > getAppliedVersion()) {
+            return knownCommit(pending, fingerprint, null);
         }
         LicenseImportState.Receipt receipt = imports.findReceipt(fingerprint);
         if (receipt == null) {
@@ -314,11 +337,18 @@ public final class LicenseManager implements AutoCloseable {
         return new LicenseManagementResult(200, body);
     }
 
-    private LicenseManagementResult repairReceipt(String id) throws LicenseManagementException {
+    private synchronized LicenseManagementResult repairReceipt(String id) throws LicenseManagementException {
         try {
             UUID parsed = UUID.fromString(id);
             if (!parsed.toString().equals(id)) {
                 throw new IllegalArgumentException();
+            }
+            LicensePersistRecord pending = committedPendingApply;
+            if (pending != null) {
+                LicenseClockRepair.Receipt waiting = pending.clockState().getReceipts().get(parsed);
+                if (waiting != null && pending.submissionVersion(waiting.getFingerprint()) > getAppliedVersion()) {
+                    return knownCommit(pending, waiting.getFingerprint(), id);
+                }
             }
             LicenseClockRepair.Receipt receipt = committed.clockState().getReceipts().get(parsed);
             if (receipt == null) {
@@ -406,7 +436,7 @@ public final class LicenseManager implements AutoCloseable {
     }
 
     private boolean ready() {
-        return recoveryComplete && !recoveryIncomplete && uncertainCommit == null
+        return recoveryComplete && !recoveryIncomplete && uncertainCommit == null && committedPendingApply == null
                 && committed != null && trustDigest != null;
     }
 
@@ -423,6 +453,9 @@ public final class LicenseManager implements AutoCloseable {
         }
         if (uncertainCommit != null) {
             throw failure("LICENSE_COMMIT_UNCERTAIN", 503, "UNKNOWN", null);
+        }
+        if (committedPendingApply != null) {
+            throw failure("LICENSE_NOT_READY", 503, "NOT_SUBMITTED", null);
         }
     }
 
@@ -564,7 +597,7 @@ public final class LicenseManager implements AutoCloseable {
             host.commit(next.getOperation(), next);
         } catch (IOException | RuntimeException e) {
             uncertainCommit = next;
-            publish();
+            publishUnavailable();
             throw failure("LICENSE_COMMIT_UNCERTAIN", 503, "UNKNOWN", fingerprint);
         }
         try {
@@ -574,16 +607,22 @@ public final class LicenseManager implements AutoCloseable {
                 throw new IOException("License record was not applied");
             }
             committedPendingApply = null;
-        } catch (IOException e) {
-            markRecoveryIncomplete();
+        } catch (IOException | RuntimeException e) {
+            // A local application failure cannot undo the acknowledged journal commit.
+            // Keep its receipt confirmable and retry this exact record before any later mutation.
+            publishUnavailable();
             throw new LicenseManagementException("LICENSE_COMMITTED_PENDING_APPLY", 202, "COMMITTED",
                     fingerprint, next.getVersion(), getAppliedVersion());
         }
     }
 
     private LicenseManagementResult knownCommit(String fingerprint, String repairId) {
+        return knownCommit(committedPendingApply, fingerprint, repairId);
+    }
+
+    private LicenseManagementResult knownCommit(LicensePersistRecord record, String fingerprint, String repairId) {
         Map<String, Object> body = response("LICENSE_COMMITTED_PENDING_APPLY", "COMMITTED", fingerprint,
-                committedPendingApply.getVersion());
+                record.getVersion());
         body.put("retryable", true);
         if (repairId != null) {
             body.put("repair_id", repairId);
@@ -605,40 +644,50 @@ public final class LicenseManager implements AutoCloseable {
             return;
         }
         apply(record);
-        if (record.sameAs(uncertainCommit)) {
-            uncertainCommit = null;
-            publish();
-        }
     }
 
     private void apply(LicensePersistRecord record) throws IOException {
         LicensePersistRecord.Restored restored = record.restore(verifier);
         LicenseClockRepair.State clockState = record.clockState();
-        if (clock == null) {
-            clock = new LicenseClock(clockState.getFacts(), time);
-        } else {
+        // Prepare all fallible metadata/snapshot work before replacing any published facts.
+        Membership members = host.membership();
+        boolean complete = recoveryComplete && !recoveryIncomplete && record.isComplete() && trustDigest != null
+                && (uncertainCommit == null || record.sameAs(uncertainCommit))
+                && (committedPendingApply == null || record.sameAs(committedPendingApply));
+        LicenseSnapshot replacement = snapshot(restored.imports, members, complete, restored.invalidSlots);
+        LicenseClock nextClock = clock == null ? new LicenseClock(clockState.getFacts(), time) : clock;
+        LicenseClockRepair nextRepair = repair;
+        if (!checkpoint && nextRepair == null) {
+            nextRepair = new LicenseClockRepair(record.getDeploymentId(), nextClock, repairVerifier, new ClockStore());
+            if (leader && host.isMaster()) {
+                nextRepair.beginLeadership();
+            }
+        }
+        if (clock != null) {
             try {
-                clock.applyCommitted(clockState.getFacts());
+                nextClock.applyCommitted(clockState.getFacts());
             } catch (IllegalArgumentException e) {
                 throw new IOException("Inconsistent committed license clock");
             }
         }
         if (record.isClockSuspect()) {
-            clock.restoreSuspect();
+            nextClock.restoreSuspect();
         }
+        clock = nextClock;
+        repair = nextRepair;
         imports = restored.imports;
         invalidSlots = restored.invalidSlots;
         committed = record;
         if (!record.isComplete()) {
             recoveryIncomplete = true;
         }
-        if (!checkpoint && repair == null) {
-            repair = new LicenseClockRepair(record.getDeploymentId(), clock, repairVerifier, new ClockStore());
-            if (leader && host.isMaster()) {
-                repair.beginLeadership();
-            }
+        if (record.sameAs(uncertainCommit)) {
+            uncertainCommit = null;
         }
-        publish();
+        if (record.sameAs(committedPendingApply)) {
+            committedPendingApply = null;
+        }
+        snapshot = replacement;
         appliedVersion = record.getVersion();
     }
 
@@ -714,13 +763,22 @@ public final class LicenseManager implements AutoCloseable {
     }
 
     private synchronized void publish() {
-        Membership members = host.membership();
-        LicenseImportState state = imports;
-        snapshot = new LicenseSnapshot(state == null ? UNINITIALIZED : state.getDeploymentId(),
+        snapshot = snapshot(imports, host.membership(), ready(), invalidSlots);
+    }
+
+    private synchronized void publishUnavailable() {
+        LicenseSnapshot previous = snapshot;
+        snapshot = snapshot(imports, new Membership(previous.getRegisteredFe(), previous.getRegisteredBe(),
+                previous.getMembershipVersion()), false, invalidSlots);
+    }
+
+    private static LicenseSnapshot snapshot(LicenseImportState state, Membership members,
+            boolean ready, boolean invalidSlots) {
+        return new LicenseSnapshot(state == null ? UNINITIALIZED : state.getDeploymentId(),
                 state == null || state.getActive() == null ? null : state.getActive().getDocument(),
                 state == null || state.getPending() == null ? null : state.getPending().getDocument(),
                 state == null || state.getEffectiveBase() == null ? null : state.getEffectiveBase().getDocument(),
-                members.feNodes, members.beNodes, ready(), false, invalidSlots,
+                members.feNodes, members.beNodes, ready, false, invalidSlots,
                 state == null ? 0 : state.getLicenseVersion(), members.version);
     }
 
@@ -801,6 +859,12 @@ public final class LicenseManager implements AutoCloseable {
             publish();
             if (!leader || !host.isMaster() || recoveryIncomplete || uncertainCommit != null) {
                 return;
+            }
+            if (committedPendingApply != null) {
+                replay(committedPendingApply);
+                if (committedPendingApply != null) {
+                    return;
+                }
             }
             if (committed == null) {
                 if (!host.activationReady()) {

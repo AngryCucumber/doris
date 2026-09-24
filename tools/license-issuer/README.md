@@ -11,7 +11,7 @@ Upstream and third-party components retain their respective licenses.
 
 这是签发方使用的独立工具，不接入 FE/BE 打包，不附带任何生产或测试密钥，也不会自动创建生产信任根。
 它使用 Python 3 标准库和本机 OpenSSL 3，无 Python 第三方包、联网请求或远程公钥发现。
-数据库的可信公钥安装、SQL/API 导入、集群序号、节点额度和运行时限制由数据库实现负责。P2 管理接入已通过构建和针对性测试，真实集群验收仍待完成；本工具本身不能启用查询和节点额度拦截。
+数据库的可信公钥安装、SQL/API 导入、集群序号、节点额度和运行时限制由数据库实现负责。P2 管理与持久化已完成，构建、针对性测试及实际多 FE 验证范围见[P2 验收记录](../../docs/license-p2-acceptance-20260925.md)；本工具本身不能启用查询和节点额度拦截。
 
 配套 `license_sql_import.py` 将本地证书文件转换为文本 SQL，默认生成 `ADMIN IMPORT LICENSE`；`--operation validate` 或 `--operation clock-repair` 分别生成验证或时间修复语句。输出交给 MySQL 客户端标准输入执行，证书不是 FE 服务器路径，管理语句不支持服务端 PREPARE。例如：
 
@@ -92,7 +92,7 @@ python3 tools/license-issuer/license_issuer.py --openssl /usr/bin/openssl keygen
 
 注册数为 `[0, 2147483647]` 的整数，包括当前已注册但离线的节点；工具要求拟签发额度至少为 `1` 且不少于申请中的注册数。
 申请是不含秘密的人工离线传递 DTO，本身没有签名；签发方仍须核实客户与申请来源，数据库导入阶段会重查实时注册数和部署标识。
-工具不生成或替换部署 UUID，也不把 FE 业务 API 中尚未落地的申请导出误报为已实现。
+工具不生成或替换部署 UUID。管理员通过 P2 的 `GET /api/license/deployment` 取得上述申请 JSON；`SHOW LICENSE DEPLOYMENT` 提供同一信息的 Key/Value 行。公钥安装与实际调用见[FE 管理说明](../../docs/license-management-p2.md)。
 
 ```bash
 python3 tools/license-issuer/license_issuer.py prepare-claims \

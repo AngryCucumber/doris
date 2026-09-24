@@ -89,10 +89,17 @@ class LicenseControllerTest {
         Assertions.assertThrows(LicenseController.BadLicenseRequest.class, () -> LicenseController.readBounded(
                 new ByteArrayInputStream(new byte[exact.length + 1]), exact.length));
         Assertions.assertEquals(65536, payload("{\"certificate\":\"" + repeat('a', 65536) + "\"}").length());
-        Assertions.assertThrows(LicenseController.BadLicenseRequest.class,
-                () -> payload("{\"certificate\":\"" + repeat('a', 65537) + "\"}"));
-        Assertions.assertThrows(LicenseController.BadLicenseRequest.class,
-                () -> payload("{\"certificate\":\"" + repeat('中', 22000) + "\"}"));
+        Assertions.assertEquals("LICENSE_INPUT_TOO_LARGE", Assertions.assertThrows(
+                LicenseController.BadLicenseRequest.class,
+                () -> payload("{\"certificate\":\"" + repeat('a', 65537) + "\"}")).reason);
+        Assertions.assertEquals("LICENSE_INPUT_TOO_LARGE", Assertions.assertThrows(
+                LicenseController.BadLicenseRequest.class,
+                () -> payload("{\"certificate\":\"" + repeat('中', 22000) + "\"}")).reason);
+        Assertions.assertEquals(16384, LicenseController.parsePayload(Action.CLOCK_REPAIR,
+                bytes("{\"repair_certificate\":\"" + repeat('a', 16384) + "\"}")).length());
+        Assertions.assertEquals("LICENSE_INPUT_TOO_LARGE", Assertions.assertThrows(
+                LicenseController.BadLicenseRequest.class, () -> LicenseController.parsePayload(Action.CLOCK_REPAIR,
+                        bytes("{\"repair_certificate\":\"" + repeat('a', 16385) + "\"}"))).reason);
 
         StubController controller = new StubController();
         HttpServletRequest declared = request("POST", new byte[0]);
@@ -103,6 +110,11 @@ class LicenseControllerTest {
         HttpServletRequest chunked = request("POST", new byte[exact.length + 1]);
         Mockito.when(chunked.getContentLengthLong()).thenReturn(-1L);
         Assertions.assertEquals(400, controller.importCertificate(chunked, servletResponse).getStatusCode().value());
+        Assertions.assertEquals(0, controller.executions);
+        ResponseEntity<?> fieldTooLarge = controller.importCertificate(request("POST",
+                bytes("{\"certificate\":\"" + repeat('a', 65537) + "\"}")), servletResponse);
+        Assertions.assertEquals(400, fieldTooLarge.getStatusCode().value());
+        Assertions.assertEquals("LICENSE_INPUT_TOO_LARGE", body(fieldTooLarge).get("reason"));
         Assertions.assertEquals(0, controller.executions);
     }
 

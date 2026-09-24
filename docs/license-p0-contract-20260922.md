@@ -11,7 +11,7 @@ Upstream and third-party components retain their respective licenses.
 
 当前范围冻结：2026-09-25（保留原文件名）；源码基线：`23e39e63295fd730523da8d916c898c28b903216`。本文落实[执行计划](/data/project/massdb-sql/docs/license-certificate-execution-plan-20260922.md)，以五类出口、用户允许的窄式表非空探测及自用部署为准。
 
-**P0 交付的是源码挂点、接口/状态协议、具体正反用例及性能适用范围；运行测试仍由 P2/P3/P2U/P4 执行。** 下述查询/管理/页面用例均为 `specified_not_executed`。P1 已实现证书核心及离线工具，已有核心测试不代表新增 SQL/API、到期拦截、节点额度或页面已经在数据库生效。
+**P0 交付的是源码挂点、接口/状态协议、具体正反用例及性能适用范围；运行测试由 P2/P3/P2U/P4 执行。** 下文 `specified_not_executed` 保留 P0 冻结当时的状态；后续 P2 的 M01–M08、M12–M14 管理部分结果逐项记录在[P2 验收记录](license-p2-acceptance-20260925.md)，分别注明单测、受控故障和真实 FE 范围。查询、ADD/DROP 额度和页面不因管理测试通过而视为已生效。
 
 旧 [P0 JSON](/data/project/massdb-sql/docs/license-p0-contract-20260922.json)、[性能 JSON](/data/project/massdb-sql/docs/license-performance-cases-20260922.json)、[全量覆盖 JSON](/data/project/massdb-sql/docs/license-code-coverage-20260922.json)保留原字节，属于历史扩展范围与 fixture 资料；其 H/C/LC、`release_gate`、平台矩阵和旧检查程序均不定义当前开工/发布门槛。本文是当前适用映射，不重新建立 1,423 项入口或全函数能力审计框架。旧 P0 正文见[本次修改前的归档清单](/data/project/massdb-sql/.build-records/license-p0-p1-current-scope-20260924/before-manifest.json)。
 

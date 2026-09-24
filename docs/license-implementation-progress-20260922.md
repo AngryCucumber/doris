@@ -15,15 +15,15 @@ Upstream and third-party components retain their respective licenses.
 
 **最新使用范围：用户明确本版本先供自己使用，麒麟/openEuler 及目标架构矩阵暂不列为目标、剩余工作或验收前置条件。P1 证书核心按已完成记录；后续聚焦 P2 管理持久化、P3 五出口与额度、P2U 页面和 P4 实际自用环境的集成/性能验证。** JDK 17.0.4 兼容、实际公钥信任配置及原性能要求保留。下文历史“目标平台待验证”“发行矩阵未完成”不再作为当前任务阻塞项；原始测试和失败证据不改变。
 
-当前 P0 已重冻为五出口契约，补齐 Q01–Q28、M01–M14、U01–U04 共 **46 组具体输入/预期/清理/挂点**，并把旧 LP001–026 明确映射到七组当前性能负载；全部运行用例仍为 `specified_not_executed`。补足两种 coordinator 出队复核，限定原始窄式探测形状，并使续期空档规则与已实现核心一致。详见[当前 P0 契约](/data/project/massdb-sql/docs/license-p0-contract-20260922.md)。
+当前 P0 已重冻为五出口契约，补齐 Q01–Q28、M01–M14、U01–U04 共 **46 组具体输入/预期/清理/挂点**，并把旧 LP001–026 明确映射到七组当前性能负载；`specified_not_executed` 是 P0 冻结时的状态，后续 P2 管理结果见下文及[P2 验收记录](license-p2-acceptance-20260925.md)。补足两种 coordinator 出队复核，限定原始窄式探测形状，并使续期空档规则与已实现核心一致。详见[当前 P0 契约](/data/project/massdb-sql/docs/license-p0-contract-20260922.md)。
 
 P1 提交前的[独立核验](/data/project/massdb-sql/.build-records/license-p0-p1-current-scope-20260924/p1-audit/review.md)完成：当时 14 个源码在隔离断网环境编译得到的 **39 个 class 与实际 FE JAR 逐字一致**；8 个测试类重新编译并在该 JAR、Temurin 17.0.4+8 上执行 **104/104 通过**，零失败/跳过。签发工具 25 项与实际 JDK 互通 42 项的历史源码、日志、依赖及产物绑定仍一致。29 项审计检查不能与测试数量相加。该记录保留其原有源码和产物范围，P2 修改后的源码以本次重新构建和测试为准。
 
-**2026-09-25 P2 阶段提交：管理与持久化代码已接入，真实集群验收仍未完成。** 已实现 Env/journal/image、部署标识、导入与时间修复回执、已注册 FE 兼容检查、SQL/HTTP 管理、权限与脱敏、有界队列及限流。精确 JDK 17.0.4 上执行 `mvn -o -pl fe-core -am package -Dtest=License*Test -DfailIfNoTests=false`，FE 构建与 173 项授权测试全部通过，无失败或跳过，见[构建及测试日志](/data/project/massdb-sql/.build-records/license-p2-20260925/package-2.log)。173 项包含原有 104 项核心测试；新增 SQL 文本导入工具另有 4 项测试通过，不能合并成数据库集成通过数量。
+**2026-09-25 P2 完成：管理、持久化及对应集群验证已交付。** 已实现 Env/journal/image、部署标识、导入与时间修复回执、已注册 FE 兼容检查、SQL/HTTP 管理、权限与脱敏、有界队列及限流。精确 JDK 17.0.4 上执行 `mvn -o -pl fe-core -am package -Dtest=License*Test -DfailIfNoTests=false`，最终 FE 构建与 **183 项**授权测试全部通过，无失败、错误或跳过，见[构建及源码绑定](/data/project/massdb-sql/.build-records/license-p2-20260925/package-6-evidence/summary.json)。183 项包含原有 104 项核心测试；SQL 文本导入工具另有 4 项测试通过。初次 P2 提交 `328f88166232d4dd931b992a44e6e76c61e0a6d5` 的 173 项和未完成集成状态保留为历史记录。
 
-尚待真实单/多 FE 导入、过期续期、失败保旧、重启恢复、切主、旧 FE 拒绝、JDBC/HTTP 错误传播及日志/Profile 脱敏验收；本次提交不将 P2 标为完成。历史构建和测试失败日志保留在同一证据目录，临时夹具、测试密钥与构建产物不提交。
+实际多 FE 已验证 SQL/HTTP 导入与失败保旧、自然到期/续期、重启恢复、Master 故障切换、旧 FE 拒绝、新 Observer 加入、权限撤销与原主体重验、响应丢失和 202→200 原提交确认。最终日志/Profile 扫描及临时集群清理通过，原 FE/BE 未改。每个 M 用例的真实范围、单测注入范围、包/源码绑定与失败保留见[P2 验收记录](license-p2-acceptance-20260925.md)；操作步骤见[管理说明](license-management-p2.md)。不把 1,024 条历史、坏元数据、队列饱和等受控测试写成真实集群压测。临时夹具、测试密钥与构建产物不提交。
 
-**当前交付不等于数据库授权功能完成：五出口准入、成员 ADD/DROP 额度拦截、页面和完整性能验收仍待后续阶段。** 旧范围完整性能基线仍未通过，新范围集成和性能也尚无通过记录；当前不再将全部旧基线或平台矩阵完成作为开发的前置条件。以下按日期保留的旧契约、待办和基线状态只描述历史阶段，不覆盖本节当前结论。
+**当前交付不等于数据库授权功能完成：五出口准入、成员 ADD/DROP 额度拦截、页面和完整性能验收仍待后续阶段。** 旧范围完整性能基线仍未通过，新范围业务拦截集成和性能也尚无通过记录；P2 管理验证不替代这些结果。当前不再将全部旧基线或平台矩阵完成作为开发的前置条件。以下按日期保留的旧契约、待办和基线状态只描述历史阶段，不覆盖本节当前结论。
 
 历史阶段状态见[逐项完成清单](/data/project/massdb-sql/.build-records/license-p0-p1-20260924/completion-audit-inventory.json)和
 [证据索引](/data/project/massdb-sql/.build-records/license-p0-p1-20260924/results.json)；后文按时间保留的“尚未执行”“正在运行”只描述当时状态。原版页面 actual-v4 已结束，以下终态回执优先于旧索引中的 RUNNING，不据此更新为新范围通过。
@@ -90,7 +90,7 @@ LP011的[完整scanner验证](/data/project/massdb-sql/.build-records/license-p0
 | `LicenseClockRepairVerifier` / `LicenseClockRepair` | 独立用途签名，部署/进程任期/nonce/epoch/修复权限版本绑定、24h 单调挑战、提交前复核、防重放及未知提交确认；Store 是 P2 适配接口，内存测试不冒充真实 journal/切主 |
 | [离线发行工具](/data/project/massdb-sql/tools/license-issuer/README.md) | 部署申请 DTO 到 claims、显式时区、keygen/sign/verify、续期预检、公开信任清单导出、修复票据签发与验证；Python 标准库和 OpenSSL 3，不随数据库安装私钥或默认测试信任根 |
 
-固定默认值：5 秒回拨容差、300 秒显著前跳阈值、24 小时修复挑战；容差不延长证书到期时间。P2 的 60 秒水位保存任务尚未接入。普通已准入查询冻结原会话执行超时，后续内部重试不能延长，不新增独立产品执行硬上限。
+固定默认值：5 秒回拨容差、300 秒显著前跳阈值、24 小时修复挑战；容差不延长证书到期时间。P2 已接入 60 秒水位保存任务并验证实际持久恢复。普通已准入查询冻结原会话执行超时，后续内部重试不能延长，不新增独立产品执行硬上限。
 
 恢复/导入与时间接口细节见[导入核心](/data/project/massdb-sql/docs/license-import-core-20260922.md)和[时间核心](/data/project/massdb-sql/docs/license-clock-core-20260922.md)。生产公钥由签发方显式提供；测试只证明配置/密码能力，未替用户生成或安装生产信任集。
 

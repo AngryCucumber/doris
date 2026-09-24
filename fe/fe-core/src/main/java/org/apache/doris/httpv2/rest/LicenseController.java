@@ -12,6 +12,7 @@ import org.apache.doris.catalog.Env;
 import org.apache.doris.cluster.ClusterNamespace;
 import org.apache.doris.common.Config;
 import org.apache.doris.httpv2.exception.UnauthorizedException;
+import org.apache.doris.massdb.license.LicenseClockRepairVerifier;
 import org.apache.doris.massdb.license.LicenseConfirmationIds;
 import org.apache.doris.massdb.license.LicenseFeCompatibility;
 import org.apache.doris.massdb.license.LicenseManagementException;
@@ -353,12 +354,15 @@ public class LicenseController extends RestBaseController {
                         || certificate.textValue().isEmpty()) {
                     throw new BadLicenseRequest("LICENSE_INVALID_REQUEST");
                 }
-                if (certificate.textValue().getBytes(StandardCharsets.UTF_8).length
-                        > LicenseVerifier.MAX_COMPACT_LENGTH) {
-                    throw new BadLicenseRequest("LICENSE_CERTIFICATE_TOO_LARGE");
+                int maximum = action == Action.CLOCK_REPAIR ? LicenseClockRepairVerifier.MAX_COMPACT_LENGTH
+                        : LicenseVerifier.MAX_COMPACT_LENGTH;
+                if (certificate.textValue().getBytes(StandardCharsets.UTF_8).length > maximum) {
+                    throw new BadLicenseRequest("LICENSE_INPUT_TOO_LARGE");
                 }
                 return certificate.textValue();
             }
+        } catch (BadLicenseRequest e) {
+            throw e;
         } catch (IOException e) {
             throw new BadLicenseRequest("LICENSE_INVALID_REQUEST");
         }

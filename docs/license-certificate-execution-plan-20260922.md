@@ -9,11 +9,11 @@ Upstream and third-party components retain their respective licenses.
 
 # MassDB SQL 授权证书执行计划
 
-初稿：2026-09-22；范围收敛：2026-09-24；当前 P0/P1 核对：2026-09-25。源码基线：`2.0.5-license` / `23e39e63295`。
+初稿：2026-09-22；范围收敛：2026-09-24；当前 P0/P1/P2 核对：2026-09-25。源码基线：`2.0.5-license` / `23e39e63295`。
 
 **当前方案：只改 FE、FE 管理页面和独立签发工具，围绕五类出口限制新的业务读取。保留入库、更新、元数据、节点额度、证书导入及详情页面；不改 BE，不改内部通信协议，不要求启用 SSL 或 mTLS。** 用户最新确认：另允许窄式 `SELECT 1 FROM t LIMIT 1` 探测。
 
-这是收敛后的实施计划，不是整个授权功能已完成声明。当前 P0 的具体用例/挂点与性能适用映射已补齐，P1 核心已交付；P2 的 Env/journal/image、SQL/HTTP 管理接入代码已构建并通过 173 项授权相关测试，真实集群验收仍未完成。五出口与节点额度拦截、页面和完整性能验收仍待后续阶段。实现状态见[实施记录](/data/project/massdb-sql/docs/license-implementation-progress-20260922.md)。
+这是收敛后的实施计划，不是整个授权功能已完成声明。P0 的具体用例/挂点与性能适用映射已补齐，P1 核心已交付；P2 的 Env/journal/image、SQL/HTTP 管理闭环已完成，183 项授权相关测试通过，并完成真实多 FE 导入、续期、恢复、切主、转发、旧版拒绝和新 FE 加入验证。各变体的单测/受控故障/真实 FE 范围见[P2 验收记录](license-p2-acceptance-20260925.md)。五出口与节点额度拦截、页面和完整性能验收仍待后续阶段。实现状态见[实施记录](/data/project/massdb-sql/docs/license-implementation-progress-20260922.md)。
 
 本文替代旧版的全面 FE 出口治理要求。[当前 P0 契约](/data/project/massdb-sql/docs/license-p0-contract-20260922.md)定义 46 组具体运行用例、源码挂点及旧 LP001–026 到七组当前负载的适用映射。旧[协议说明](/data/project/massdb-sql/docs/license-protocol-v1-20260922.md)、[源码清单](/data/project/massdb-sql/docs/license-code-coverage-20260922.md)及旧 P0/性能/覆盖 JSON 保留为历史扩展范围参考；其中 H/C/LC 全量覆盖、全函数审计、规划零外部访问、全部 26 项基线前置要求和旧机器门槛不再定义当前任务。历史 FAIL、未执行和精度不足记录不能因此改为通过。证书核心契约及本文保留的性能数值继续有效。
 
@@ -156,7 +156,7 @@ LicenseManager 挂到 Env，复用 journal/image。持久化部署身份、原�
 
 ### 5.2 SQL、HTTP 与页面
 
-保留拟定命令：`ADMIN IMPORT LICENSE '<compact>'`、`ADMIN VALIDATE LICENSE '<compact>'`、`SHOW LICENSE`、`SHOW LICENSE DEPLOYMENT`、`SHOW LICENSE IMPORT '<fingerprint>'`，以及 `ADMIN LICENSE CLOCK CHALLENGE`、`ADMIN REPAIR LICENSE CLOCK '<repair>'`、`SHOW LICENSE CLOCK REPAIR '<repair_id>'`。仍需实际 parser/驱动测试；不能声称目前已支持。
+P2 已实现命令：`ADMIN IMPORT LICENSE '<compact>'`、`ADMIN VALIDATE LICENSE '<compact>'`、`SHOW LICENSE`、`SHOW LICENSE DEPLOYMENT`、`SHOW LICENSE IMPORT '<fingerprint>'`，以及 `ADMIN LICENSE CLOCK CHALLENGE`、`ADMIN REPAIR LICENSE CLOCK '<repair>'`、`SHOW LICENSE CLOCK REPAIR '<repair_id>'`。parser、实际 SQL 导入和错误传播已有验证；管理语句明确拒绝服务端 PREPARE，可使用文本 SQL 或文件导入辅助工具。具体步骤及驱动边界见[管理说明](license-management-p2.md)和[P2 验收记录](license-p2-acceptance-20260925.md)。
 
 | HTTP API | 用途 |
 | --- | --- |
@@ -207,12 +207,12 @@ A/B 使用同一原版 BE、硬件、数据和既有连接配置；A 为 FE 接�
 | --- | --- | --- |
 | P0 收敛 | 已冻结五出口、探测/空计划、接口及持久化输入；46 组运行用例和七组当前性能负载映射见 P0 契约 | 设计输入与实际挂点对应；用例运行仍待 P2/P3/P2U/P4，不把文档核对算成运行通过 |
 | P1 证书核心 | 已完成的验签、快照、导入策略、时钟及签发工具直接复用；移出跨平台发行矩阵 | 核心 104 项、签发工具 25 项及实际 JDK 互通记录保留；当前核心按已完成记录，运行接入另验 |
-| P2 管理闭环 | Env/journal/image、SQL/HTTP、权限/脱敏、回执、恢复/混合 FE 升级 | 真实导入、过期/续期、失败保旧、重启/切主与错误传播记录 |
+| P2 管理闭环 | 已完成 Env/journal/image、SQL/HTTP、权限/脱敏、回执、恢复/混合 FE 升级 | 183 项测试及实际导入、到期/续期、失败保旧、重启/切主、旧 FE 拒绝、新 FE 加入、错误传播记录；验证层级和保留失败见 P2 验收记录 |
 | P3 五出口/额度 | 一个守卫、必要旁路/出队检查、小范围分类、ADD/DROP 配额 | 上表正反例；副作用开始前的拒绝不创建事务/删除目录，跨期拒绝保留既有清理语义，无队列泄漏；写入/元数据兼容 |
 | P2U 页面 | 顶部 Tab、详情、导入、权限、路由及有限轮询 | UI 构建、现有 notices/legal 检查、证书页浏览器用例及真实 FE 联调 |
 | P4 性能/交付 | 按实际保留路径做 A/A、A/B 和状态切换；在实际自用环境验证部署 | 原始请求/配置/版本/统计记录；精度及结果满足门槛，失败与范围外明确列示；不要求麒麟/openEuler或多架构矩阵 |
 
-不以开发前的全部长测代替功能实现，也不以单元测试或文档静态检查代替最终集成与性能验收。实际改动后按需要运行 Java Checkstyle、针对性 FE 测试、源码头检查及 UI 检查；不为本次文档修改重新构建 FE/BE 或启动基准。
+不以开发前的全部长测代替功能实现，也不以单元测试或文档静态检查代替最终集成与性能验收。实际改动后按需要运行 Java Checkstyle、针对性 FE 测试、源码头检查及 UI 检查；纯文档修改不要求重新构建 FE/BE 或启动基准。
 
 ## 8. 控制交付体积
 

@@ -42,6 +42,7 @@ public final class LicenseManagementResult {
         local.put("applied_version", version);
         local.put("submission_status", applied ? "APPLIED" : "COMMITTED");
         local.put("reason", applied ? "LICENSE_APPLIED" : "LICENSE_COMMITTED_PENDING_APPLY");
+        local.put("message", local.get("reason"));
         local.put("retryable", !applied);
         return new LicenseManagementResult(applied ? 200 : 202, local);
     }

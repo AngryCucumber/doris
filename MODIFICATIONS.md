@@ -4,7 +4,7 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
-## License P2 management integration (2026-09-25, in progress)
+## License P2 management integration (2026-09-25)
 
 - Add FE-owned bounded certificate metadata, journal/image recovery, deployment
   initialization, import and repair receipts, dedicated management queues and
@@ -13,10 +13,20 @@ This inventory describes distribution changes, not a claim that all changes are 
 - Add SQL and HTTP license management with ADMIN checks, bounded request parsing,
   original-user forwarding, exact HTTP status and local application receipts.
   Redact license literals before parser failures, audit and profile output.
-- Add focused management, persistence, parser, transport and clock-repair tests.
-  The FE Maven package build passes on JDK 17.0.4 with all 173 license tests;
-  the text-SQL import helper passes four tests. Actual single/multi-FE recovery,
-  forwarding and failover acceptance remains pending. P2 is not yet complete.
+- Preserve a known durable commit when local publication fails: keep a
+  confirmable 202 receipt, retry the exact record before further mutations and
+  make concurrent retries idempotent. Prepare fallible restoration before
+  publishing facts, keep receipt reason/message/retryable consistent and reject
+  oversized certificate/repair fields with the precise input-limit reason.
+- Complete P2 management acceptance with 183 passing license tests on JDK
+  17.0.4, four text-SQL helper tests, Checkstyle and source-header checks.
+  Exercise real multi-FE imports, natural expiry/renewal, image/journal restart,
+  Master failover, original-user forwarding, response loss, delayed application,
+  old-FE rejection and fresh Observer recovery. Record test-double fault cases
+  separately from live FE evidence and retain historical failures.
+- Add operator and acceptance documentation, scan real logs/decoded Profiles
+  for certificate disclosure and verify owned fixture cleanup without changing
+  the original FE/BE services. Keep test credentials and raw evidence untracked.
 - Keep BE protocols and query/node admission enforcement outside this change;
   those guards remain P3, and the UI remains P2U.
 
