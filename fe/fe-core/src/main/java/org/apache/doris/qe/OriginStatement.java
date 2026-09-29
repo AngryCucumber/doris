@@ -37,13 +37,21 @@ public class OriginStatement {
     @SerializedName(value = "idx")
     public final int idx;
 
+    // The original String is immutable. Never persist or accept a supplied diagnostic cache.
+    private transient volatile String safeSql;
+
     public OriginStatement(String originStmt, int idx) {
         this.originStmt = originStmt;
         this.idx = idx;
     }
 
     public String getSafeSql() {
-        return LicenseSqlRedactor.redact(originStmt);
+        String cached = safeSql;
+        if (cached == null && originStmt != null) {
+            cached = LicenseSqlRedactor.redact(originStmt);
+            safeSql = cached;
+        }
+        return cached;
     }
 
     @Override

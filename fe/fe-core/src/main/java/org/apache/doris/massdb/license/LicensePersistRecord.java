@@ -304,6 +304,11 @@ public final class LicensePersistRecord implements Writable {
 
     /** Signature/business damage is isolated per slot; envelope corruption remains an IOException. */
     Restored restore(LicenseVerifier verifier) throws IOException {
+        return restore(verifier, null);
+    }
+
+    /** Reuse only exact slots verified by the same immutable verifier in the preceding state. */
+    Restored restore(LicenseVerifier verifier, Restored previous) throws IOException {
         boolean invalidSlot = false;
         LicenseImportState.Slot[] slots = new LicenseImportState.Slot[3];
         String[] names = {"active", "pending", "base"};
@@ -311,8 +316,15 @@ public final class LicensePersistRecord implements Writable {
             JsonNode value = data.get(names[i]);
             if (!value.isNull()) {
                 try {
-                    LicenseImportState.Slot slot = LicenseImportState.Slot.verify(value.get("compact").textValue(),
-                            value.get("committed_version").longValue(), verifier);
+                    String compact = value.get("compact").textValue();
+                    long version = value.get("committed_version").longValue();
+                    LicenseImportState.Slot slot = matchingSlot(slots, compact, version);
+                    if (slot == null && previous != null && previous.verifier == verifier) {
+                        slot = matchingSlot(previous.verifiedSlots, compact, version);
+                    }
+                    if (slot == null) {
+                        slot = LicenseImportState.Slot.verify(compact, version, verifier);
+                    }
                     if (!getDeploymentId().equals(slot.getDocument().getDeploymentId())
                             || slot.getDocument().getSequence() > data.get("highest_sequence").longValue()
                             || slot.getCommittedVersion() > data.get("license_version").longValue()) {
@@ -328,19 +340,34 @@ public final class LicensePersistRecord implements Writable {
         try {
             return new Restored(LicenseImportState.restore(getDeploymentId(), slots[0], slots[1], slots[2],
                     data.get("highest_sequence").longValue(), data.get("license_version").longValue(),
-                    importReceipts()), invalidSlot);
+                    importReceipts()), invalidSlot, verifier);
         } catch (IllegalArgumentException e) {
             throw invalid();
         }
     }
 
+    private static LicenseImportState.Slot matchingSlot(LicenseImportState.Slot[] slots,
+            String compact, long committedVersion) {
+        for (LicenseImportState.Slot slot : slots) {
+            if (slot != null && slot.getCommittedVersion() == committedVersion && slot.getCompact().equals(compact)) {
+                return slot;
+            }
+        }
+        return null;
+    }
+
     static final class Restored {
         final LicenseImportState imports;
         final boolean invalidSlots;
+        private final LicenseVerifier verifier;
+        private final LicenseImportState.Slot[] verifiedSlots;
 
-        Restored(LicenseImportState imports, boolean invalidSlots) {
+        private Restored(LicenseImportState imports, boolean invalidSlots, LicenseVerifier verifier) {
             this.imports = imports;
             this.invalidSlots = invalidSlots;
+            this.verifier = verifier;
+            this.verifiedSlots = new LicenseImportState.Slot[] {
+                    imports.getActive(), imports.getPending(), imports.getEffectiveBase()};
         }
     }
 

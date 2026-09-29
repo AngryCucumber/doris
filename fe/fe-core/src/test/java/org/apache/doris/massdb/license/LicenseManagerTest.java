@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -534,6 +535,182 @@ class LicenseManagerTest {
         try (LicenseManager restored = new LicenseManager(host, false, time)) {
             Assertions.assertThrows(IOException.class, () -> restored.loadImage(input(rewriteImage(unknown))));
         }
+    }
+
+    @Test
+    void unchangedWatermarksReuseVerifiedSlotsWhileColdRecoveryAndOtherFactsRemainChecked() throws Exception {
+        start();
+        String active = certificate(1, 900, 2000);
+        String pending = certificate(2, 1800, 3000);
+        run(LicenseManager.Action.IMPORT, active);
+        run(LicenseManager.Action.IMPORT, pending);
+        byte[] saved = image(manager);
+        LicensePersistRecord record = host.records.get(host.records.size() - 1);
+        LicenseVerifier counted = Mockito.spy(new LicenseVerifier(
+                Collections.singletonMap("issuer", issuer.getPublic())));
+        try (LicenseManager restored = new LicenseManager(host, false, time)) {
+            restored.onReplayComplete();
+            installVerifier(restored, counted);
+            restored.loadImage(input(saved));
+            // Active and base are identical; the first cold recovery verifies each distinct slot once.
+            Mockito.verify(counted).verify(active);
+            Mockito.verify(counted).verify(pending);
+            Mockito.verifyNoMoreInteractions(counted);
+            Mockito.clearInvocations(counted);
+            for (int i = 0; i < 3; i++) {
+                time.advance(60_000);
+                record = watermark(record);
+                restored.replay(record);
+                Assertions.assertEquals(record.getVersion(), restored.getAppliedVersion());
+            }
+            Assertions.assertTrue(restored.queryStatus().permitsNewQuery());
+            host.changeMembers(4, 6);
+            time.advance(60_000);
+            record = watermark(record);
+            restored.replay(record);
+            Assertions.assertEquals(4, restored.getSnapshot().getRegisteredFe());
+            Assertions.assertEquals(6, restored.getSnapshot().getRegisteredBe());
+            Assertions.assertEquals(LicenseQueryStatus.LIMIT_EXCEEDED, restored.queryStatus());
+            restored.replay(record.withClockSuspect());
+            Assertions.assertEquals(LicenseQueryStatus.CLOCK_SUSPECT, restored.queryStatus());
+            Mockito.verifyNoInteractions(counted);
+        }
+        try (LicenseManager cold = new LicenseManager(host, false, time)) {
+            cold.onReplayComplete();
+            installVerifier(cold, counted);
+            cold.loadImage(input(saved));
+            // A verifier reused by another manager must not imply a shared, process-wide slot cache.
+            Mockito.verify(counted).verify(active);
+            Mockito.verify(counted).verify(pending);
+            Mockito.verifyNoMoreInteractions(counted);
+        }
+    }
+
+    @Test
+    void verifiedSlotReuseRequiresExactBytesAndDoesNotRememberInvalidSlots() throws Exception {
+        start();
+        String original = certificate(1, 900, 2000);
+        run(LicenseManager.Action.IMPORT, original);
+        LicensePersistRecord record = host.records.get(host.records.size() - 1);
+        LicenseVerifier counted = Mockito.spy(new LicenseVerifier(
+                Collections.singletonMap("issuer", issuer.getPublic())));
+        LicensePersistRecord.Restored previous = record.restore(counted);
+        Mockito.verify(counted).verify(original);
+        Mockito.clearInvocations(counted);
+        String[] parts = original.split("\\.");
+        ObjectNode claims = (ObjectNode) JSON.readTree(Base64.getUrlDecoder().decode(parts[1]));
+        claims.put("expires_at", 2100);
+        String tampered = parts[0] + "." + Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(JSON.writeValueAsBytes(claims)) + "." + parts[2];
+        ObjectNode envelope = imageJson(image(manager));
+        ((ObjectNode) envelope.get("active")).put("compact", tampered);
+        ((ObjectNode) envelope.get("base")).put("compact", tampered);
+        LicensePersistRecord damaged = recordFromEnvelope(envelope);
+        LicensePersistRecord.Restored invalid = damaged.restore(counted, previous);
+        Assertions.assertTrue(invalid.invalidSlots);
+        Assertions.assertNull(invalid.imports.getActive());
+        Assertions.assertNull(invalid.imports.getEffectiveBase());
+        Mockito.verify(counted, Mockito.times(2)).verify(tampered);
+        Mockito.clearInvocations(counted);
+        damaged.restore(counted, invalid);
+        Mockito.verify(counted, Mockito.times(2)).verify(tampered);
+        Mockito.clearInvocations(counted);
+        record.restore(counted, invalid);
+        Mockito.verify(counted).verify(original);
+        // A different valid signature with the same identity must also be rechecked against receipts.
+        String resigned = sign(claims, "issuer", "massdb-license+jws", issuer);
+        ((ObjectNode) envelope.get("active")).put("compact", resigned);
+        ((ObjectNode) envelope.get("base")).put("compact", resigned);
+        Mockito.clearInvocations(counted);
+        Assertions.assertThrows(IOException.class, () -> recordFromEnvelope(envelope).restore(counted, previous));
+        Mockito.verify(counted).verify(resigned);
+        Mockito.verifyNoMoreInteractions(counted);
+    }
+
+    @Test
+    void verifiedSlotReuseRechecksChangedCommitVersionsAndVerifierTrust() throws Exception {
+        start();
+        String compact = certificate(1, 900, 2000);
+        run(LicenseManager.Action.IMPORT, compact);
+        LicensePersistRecord record = host.records.get(host.records.size() - 1);
+        LicenseVerifier counted = Mockito.spy(new LicenseVerifier(
+                Collections.singletonMap("issuer", issuer.getPublic())));
+        LicensePersistRecord.Restored previous = record.restore(counted);
+        Mockito.clearInvocations(counted);
+        ObjectNode changedVersion = imageJson(image(manager));
+        ((ObjectNode) changedVersion.get("active")).put("committed_version", 2);
+        ((ObjectNode) changedVersion.get("base")).put("committed_version", 2);
+        ((ObjectNode) changedVersion.get("receipts").get(0)).put("committed_version", 2);
+        changedVersion.put("license_version", 2);
+        LicensePersistRecord.Restored changed = recordFromEnvelope(changedVersion).restore(counted, previous);
+        Assertions.assertEquals(2, changed.imports.getActive().getCommittedVersion());
+        Assertions.assertEquals(2, changed.imports.getEffectiveBase().getCommittedVersion());
+        Mockito.verify(counted).verify(compact);
+        Mockito.verifyNoMoreInteractions(counted);
+        LicenseVerifier sameKeysNewIdentity = Mockito.spy(new LicenseVerifier(
+                Collections.singletonMap("issuer", issuer.getPublic())));
+        Assertions.assertFalse(record.restore(sameKeysNewIdentity, previous).invalidSlots);
+        Mockito.verify(sameKeysNewIdentity).verify(compact);
+        for (LicenseVerifier changedTrust : new LicenseVerifier[] {
+                new LicenseVerifier(Collections.emptyMap()),
+                new LicenseVerifier(Collections.singletonMap("issuer", repairKey.getPublic()))}) {
+            LicenseVerifier spy = Mockito.spy(changedTrust);
+            LicensePersistRecord.Restored invalid = record.restore(spy, previous);
+            Assertions.assertTrue(invalid.invalidSlots);
+            Assertions.assertNull(invalid.imports.getActive());
+            Assertions.assertNull(invalid.imports.getEffectiveBase());
+            Mockito.verify(spy, Mockito.times(2)).verify(compact);
+        }
+    }
+
+    @Test
+    void verifiedSlotReuseNeverSkipsEnvelopeAndCrossSlotConsistencyChecks() throws Exception {
+        start();
+        String compact = certificate(1, 900, 2000);
+        run(LicenseManager.Action.IMPORT, compact);
+        LicensePersistRecord record = host.records.get(host.records.size() - 1);
+        LicenseVerifier counted = Mockito.spy(new LicenseVerifier(
+                Collections.singletonMap("issuer", issuer.getPublic())));
+        LicensePersistRecord.Restored previous = record.restore(counted);
+        Mockito.clearInvocations(counted);
+        ObjectNode original = imageJson(image(manager));
+        ObjectNode wrongReceipt = original.deepCopy();
+        ((ObjectNode) wrongReceipt.get("receipts").get(0)).put("license_id", "conflicting-license");
+        ObjectNode wrongSequence = original.deepCopy().put("highest_sequence", 0);
+        ObjectNode wrongLicenseVersion = original.deepCopy().put("license_version", 0);
+        ObjectNode wrongPendingOrder = original.deepCopy();
+        wrongPendingOrder.set("pending", original.get("active").deepCopy());
+        for (ObjectNode damaged : new ObjectNode[] {
+                wrongReceipt, wrongSequence, wrongLicenseVersion, wrongPendingOrder}) {
+            Assertions.assertThrows(IOException.class, () -> recordFromEnvelope(damaged).restore(counted, previous));
+        }
+        Assertions.assertThrows(IOException.class,
+                () -> recordFromEnvelope(original.deepCopy().put("format_version", 2)).restore(counted, previous));
+        Assertions.assertFalse(watermark(record).restore(counted, previous).invalidSlots);
+        Mockito.verifyNoInteractions(counted);
+    }
+
+    @Test
+    void failedPublicationDoesNotPublishItsNewlyVerifiedSlotsIntoTheReuseState() throws Exception {
+        start();
+        LicenseVerifier counted = Mockito.spy(new LicenseVerifier(
+                Collections.singletonMap("issuer", issuer.getPublic())));
+        installVerifier(manager, counted);
+        String compact = certificate(1, 900, 2000);
+        host.failPublicationAfterCommit = true;
+        Assertions.assertEquals(202, run(LicenseManager.Action.IMPORT, compact).getHttpStatus());
+        Assertions.assertEquals(1, manager.getAppliedVersion());
+        Mockito.clearInvocations(counted);
+        manager.maintenance();
+        Assertions.assertEquals(2, manager.getAppliedVersion());
+        Assertions.assertTrue(manager.queryStatus().permitsNewQuery());
+        Mockito.verify(counted).verify(compact);
+        Mockito.verifyNoMoreInteractions(counted);
+        Mockito.clearInvocations(counted);
+        time.advance(60_000);
+        manager.maintenance();
+        Assertions.assertEquals(3, manager.getAppliedVersion());
+        Mockito.verifyNoInteractions(counted);
     }
 
     @Test
@@ -1215,6 +1392,29 @@ class LicenseManagerTest {
         byte[] json = new byte[input.readInt()];
         input.readFully(json);
         return (ObjectNode) JSON.readTree(json);
+    }
+
+    private static LicensePersistRecord recordFromEnvelope(ObjectNode envelope) throws Exception {
+        try (DataInputStream bytes = input(rewriteImage(envelope))) {
+            bytes.readBoolean();
+            bytes.readBoolean();
+            return LicensePersistRecord.read(bytes);
+        }
+    }
+
+    private static LicensePersistRecord watermark(LicensePersistRecord record) throws Exception {
+        LicenseClockRepair.State before = record.clockState();
+        LicenseClock.Facts old = before.getFacts();
+        LicenseClock.Facts next = new LicenseClock.Facts(old.getVersion() + 1, old.getClockEpoch(),
+                old.getHighWaterMillis() + 60_000, old.getRepairAuthorizationVersion());
+        return record.withClock(LicensePersistRecord.WATERMARK,
+                new LicenseClockRepair.State(record.getDeploymentId(), next, before.getReceipts()));
+    }
+
+    private static void installVerifier(LicenseManager target, LicenseVerifier verifier) throws Exception {
+        java.lang.reflect.Field field = LicenseManager.class.getDeclaredField("verifier");
+        field.setAccessible(true);
+        field.set(target, verifier);
     }
 
     private static byte[] rewriteImage(ObjectNode value) throws Exception {

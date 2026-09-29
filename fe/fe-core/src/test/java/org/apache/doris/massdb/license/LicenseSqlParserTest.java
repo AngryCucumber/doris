@@ -11,6 +11,8 @@ import org.apache.doris.analysis.StatementBase;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.common.Pair;
 import org.apache.doris.massdb.license.LicenseManager.Action;
+import org.apache.doris.nereids.DorisLexer;
+import org.apache.doris.nereids.DorisParser;
 import org.apache.doris.nereids.exceptions.SyntaxParseException;
 import org.apache.doris.nereids.parser.Dialect;
 import org.apache.doris.nereids.parser.NereidsParser;
@@ -21,6 +23,9 @@ import org.apache.doris.plugin.DialectConverterPlugin;
 import org.apache.doris.plugin.PluginMgr;
 import org.apache.doris.qe.SessionVariable;
 
+import org.antlr.v4.runtime.CommonTokenStream;
+import org.antlr.v4.runtime.ConsoleErrorListener;
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.core.LogEvent;
@@ -136,6 +141,44 @@ class LicenseSqlParserTest {
     }
 
     @Test
+    void hintSensitivityIsCheckedOnceAndOnlyWhenHintsExist() {
+        String noHint = "SELECT 1 /* ordinary comment */";
+        try (MockedStatic<LicenseSqlRedactor> redactor = Mockito.mockStatic(
+                LicenseSqlRedactor.class, Mockito.CALLS_REAL_METHODS)) {
+            Assertions.assertTrue(NereidsParser.getHintMap(noHint, tokens(noHint), DorisParser::selectHint).isEmpty());
+            redactor.verifyNoInteractions();
+        }
+        String hints = "SELECT /*+ SET_VAR(query_timeout=10) */ 1 UNION ALL "
+                + "SELECT /*+ SET_VAR(query_timeout=20) */ 2";
+        for (boolean sensitive : new boolean[] {false, true}) {
+            String sql = hints + (sensitive ? "; ADMIN IMPORT LICENSE 'private.payload.signature'" : "");
+            try (MockedStatic<LicenseSqlRedactor> redactor = Mockito.mockStatic(
+                    LicenseSqlRedactor.class, Mockito.CALLS_REAL_METHODS)) {
+                Map<Integer, ParserRuleContext> parsed = NereidsParser.getHintMap(sql, tokens(sql), parser -> {
+                    if (sensitive) {
+                        Assertions.assertTrue(parser.getErrorListeners().stream()
+                                .noneMatch(ConsoleErrorListener.class::isInstance));
+                        DorisLexer lexer = (DorisLexer) parser.getInputStream().getTokenSource();
+                        Assertions.assertTrue(lexer.getErrorListeners().stream()
+                                .noneMatch(ConsoleErrorListener.class::isInstance));
+                    }
+                    return parser.selectHint();
+                });
+                Assertions.assertEquals(2, parsed.size());
+                Assertions.assertTrue(parsed.containsKey(sql.indexOf("/*+")));
+                Assertions.assertTrue(parsed.containsKey(sql.lastIndexOf("/*+")));
+                redactor.verify(() -> LicenseSqlRedactor.isSensitive(sql), Mockito.times(1));
+            }
+        }
+    }
+
+    private static CommonTokenStream tokens(String sql) {
+        CommonTokenStream stream = new CommonTokenStream(NereidsParser.scan(sql));
+        stream.fill();
+        return stream;
+    }
+
+    @Test
     void removedPlannerFlagsCannotRouteManagementIntoLegacyParsing() throws Exception {
         SessionVariable session = new SessionVariable();
         Field oldPlanner = SessionVariable.class.getDeclaredField("enableNereidsPlanner");
@@ -157,6 +200,8 @@ class LicenseSqlParserTest {
                 "ADMIN VALIDATE LICENSE 'private.payload.signature",
                 "ADMIN REPAIR LICENSE CLOCK private.payload.signature",
                 "SELECT 1; ADMIN IMPORT LICENSE 'private.payload.signature' invalid",
+                "SELECT /*+ SET_VAR(query_timeout=10) */ 1; "
+                        + "ADMIN /*+ SET_VAR(secret='private.payload.signature' */ IMPORT LICENSE 'a.b.c'",
                 "PREPARE x FROM 'ADMIN IMPORT LICENSE private.payload.signature'",
                 "ADMIN IMPORT LICENSE ?"}) {
             SyntaxParseException error = Assertions.assertThrows(SyntaxParseException.class,

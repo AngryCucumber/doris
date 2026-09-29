@@ -9,6 +9,8 @@ Upstream and third-party components retain their respective licenses.
 
 # 授权证书 P0/P1/P2/P3/P2U/P4 实施记录
 
+> **2026-09-30 性能辅助路径优化。** 减少不可变 SQL 诊断文本、Profile 和 hint 的重复扫描；水位恢复仅复用同一验签器、同一原文及提交版本下已经成功应用的可信证书槽。查询范围、时钟防回拨和额度规则不变。当前构建、回归及优化前后真实对照的状态与边界见[本轮记录](license-performance-optimization-20260930.md)，不把下面历史 P4 数据改写为零退化证明。
+
 > **2026-09-30 到期后缩容续期已实现，并完成本轮分层验证。** 用户要求旧证到期后可以先安全缩容 FE/BE，再导入较低额度续期证书；不再将已经过期的历史基础额度作为续期永久下限。未过期 active/pending/base 额度承诺及完整已注册+预留用量仍保护，离线不释放，成功 DROP 才释放，原安全约束不改。用量仍超限时保持 SQL 6201/45000、HTTP 400 和 `LICENSE_NODE_LIMIT_TOO_SMALL`，拒绝候选并保留旧事实。立即生效导入同步更新 base；未来 pending 等待期 ADD 分别取 base/pending 较小上限，到点复核用量后持久切换，较高 pending 不提前扩额。保留原格式及严格 FE 包摘要门禁，降额前全部注册 FE 须同新包；恢复仅放宽不重叠 active/base→pending，不放宽 base→active。
 >
 > Temurin 17.0.4+8 的 31 个 FE 测试套件共 279 项全部通过，零失败/错误/跳过，FE Maven 构建和 Checkstyle 通过，验证期间源码无变化；Python 签发工具 28 项通过。真实单 FE 用最终 JAR 经 JDBC/HTTP 验证有效旧证拒绝降额、自然到期但未缩容仍拒绝、删除自建离线 Observer/BE 身份后成功导入低额度、SQL/API 当前及基础额度一致、FE/BE 超额 ADD 拒绝、旧证原回执幂等与重启恢复。最终续跑 `runtime-v4-followup3` 真实退出码 0，测试 FE 及其进程组已停止。额外身份没有 FE/BE 进程、业务表或 tablet，不宣称线上 BE 迁移、真实多 FE 切主或新性能通过；pending/混包等按受控层级记录。早期 mkdir、原版 DROP 安全拒绝、限流、全局 applied_version 误断与紧邻重启 bind 探测失败均保留。详细包/源码绑定和分段证据见[本轮验收记录](license-expired-renewal-20260930.md)，不重写旧 P1/P2/P3/P4 或 HTTP 补充结论。

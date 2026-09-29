@@ -13,6 +13,8 @@ Upstream and third-party components retain their respective licenses.
 
 **当前方案：只改 FE、FE 管理页面和独立签发工具，围绕原五类出口，并补充 ES search 和 file_review 两个独立 FE HTTP 入口，限制新的业务读取。保留入库、更新、元数据、节点额度、证书导入及详情页面；不改 BE，不改内部通信协议，不新增连接安全配置要求。** 用户最新确认：另允许窄式 `SELECT 1 FROM t LIMIT 1` 探测。
 
+**2026-09-30 性能评审后补充：** 用户授权减少 SQL 诊断重复脱敏、hint 重复扫描及水位回放重复验签。实现限于五个 FE 类，不改变读取例外、到期/时钟阈值、节点额度或持久化格式；验签复用仍检查原文、提交版本及验签器身份，并保留每次恢复的结构校验。本轮构建与实际优化前后对照结果见[优化验收记录](license-performance-optimization-20260930.md)，原 P4 性能结论和失败记录不回写。
+
 **2026-09-30 到期后缩容续期已实现，并完成本轮分层验证：** 旧授权覆盖已经结束后，允许按正常安全流程缩容 FE/BE，再导入较低节点额度的新证书续期。新额度必须覆盖当时完整的已注册+预留用量；离线未 DROP 的节点仍计数，未过期的 active、pending、base 额度承诺仍受保护。过期基础额度不再是续期的永久下限；立即生效的新证在导入提交时更新基础额度。较低额度未来 pending 在等待期即约束 ADD，到点复核用量后才持久切换；较高额度 pending 不提前扩额。全部注册 FE 须先升级到相同新包，沿用既有严格包摘要门禁及元数据格式。JDK 17.0.4 上 279 项 FE 测试、Checkstyle/构建及 28 项 Python 签发测试通过；真实单 FE 经 JDBC/HTTP 完成注册身份缩容、降额续期、超额 ADD 拒绝、旧回执幂等与重启。未来 pending/混包门禁等按受控测试层级记录，未验证线上 BE 数据迁移、真实多 FE 切主或新性能；原始夹具失败保留，详见[本轮验收记录](license-expired-renewal-20260930.md)。
 
 **2026-09-29 补充已实现，定向测试及 FE 构建通过：** 用户已授权给 `POST /rest/v2/api/es_catalog/search` 和 `POST /rest/v2/api/import/file_review` 增加许可限制。复用现有守卫，在原认证/重定向处理后、外部初始化或文件读取前判断；拒绝返回真实 HTTP 403 及 `reason/message/retryable`，与 `enable_all_http_auth` 开关独立。合法索引选择器的 `get_mapping` 元数据和导入写入保留；`get_mapping` 另补最小参数校验，阻止 URL 路径/查询/片段改变元数据目标。原 P4 验收包及其证据不包含这两个新挂点，本轮在 Temurin 17.0.4+8 上通过 42 项定向测试（新增控制器 12 项、原守卫/快照/取计划 30 项），零失败/错误/跳过，FE Maven 构建及 Checkstyle 通过，见[本轮补充记录](/data/project/massdb-sql/docs/license-http-read-admission-20260929.md)。这些是控制器/模拟 HTTP 测试及 FE 构建，不是实际 ES/broker 集成或新性能验收，不追认旧包已包含该修改。

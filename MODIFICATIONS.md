@@ -4,6 +4,32 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License diagnostic and recovery cost reduction (2026-09-30)
+
+- Cache the safe diagnostic representation of an immutable `OriginStatement`
+  lazily without serializing or accepting the cache through Gson. Preserve
+  the original SQL for execution and full-packet certificate redaction.
+- Let the existing Profile builder redact raw SQL once, and determine SQL
+  sensitivity once when the parser encounters its first hint. Queries without
+  hints do not gain another sensitivity scan; all hint error listeners retain
+  their existing redaction behavior.
+- Reuse at most three successfully restored certificate slots from the most
+  recently applied state, only for the same immutable verifier, exact compact
+  bytes and original committed version. Deduplicate identical valid slots
+  within a record. Cold recovery and changed certificates or trust still
+  verify signatures; malformed slots are not cached. Recheck envelope,
+  deployment, sequence, receipt and cross-slot invariants on every application,
+  and publish reuse state only after the entire application succeeds.
+- Keep clock thresholds, query admission, member accounting, journal/image
+  formats, BE code and transport protocols unchanged. Record focused tests,
+  actual before/after measurements and their limitations in
+  `docs/license-performance-optimization-20260930.md`; historical P4 results
+  remain bound to their original artifacts.
+- Validate with 287 passing FE license tests, Checkstyle, source-header checks
+  and JDK 17.0.4 packaging. Record eight short ABBA windows with 36,720 correct
+  measured requests, mixed CPU/latency differences, unmet P99 sample floors,
+  and no claim of fine-precision equivalence. Retain preparation failures.
+
 ## License renewal after quota reduction (2026-09-30)
 
 - Revise the execution plan, P0 contract, management instructions, current

@@ -412,17 +412,23 @@ public class NereidsParser {
 
         Iterator<Token> tokenIterator = hintTokenStream.getTokens().iterator();
         Token hintToken = tokenIterator.hasNext() ? tokenIterator.next() : null;
+        boolean sensitivityChecked = false;
+        boolean sensitiveSql = false;
         while (hintToken != null && hintToken.getType() != DorisLexer.EOF) {
             if (hintToken.getChannel() == 2 && sql.charAt(hintToken.getStartIndex() + 2) == '+') {
+                if (!sensitivityChecked) {
+                    sensitiveSql = LicenseSqlRedactor.isSensitive(sql);
+                    sensitivityChecked = true;
+                }
                 String hintSql = sql.substring(hintToken.getStartIndex() + 3, hintToken.getStopIndex() + 1);
                 DorisLexer newHintLexer = new DorisLexer(new CaseInsensitiveStream(CharStreams.fromString(hintSql)));
-                if (LicenseSqlRedactor.isSensitive(sql)) {
+                if (sensitiveSql) {
                     newHintLexer.removeErrorListeners();
                     newHintLexer.addErrorListener(PARSE_ERROR_LISTENER);
                 }
                 CommonTokenStream newHintTokenStream = new CommonTokenStream(newHintLexer);
                 DorisParser hintParser = new DorisParser(newHintTokenStream);
-                if (LicenseSqlRedactor.isSensitive(sql)) {
+                if (sensitiveSql) {
                     hintParser.removeErrorListeners();
                     hintParser.addErrorListener(PARSE_ERROR_LISTENER);
                 }

@@ -95,6 +95,8 @@ public final class LicenseManager implements AutoCloseable {
     private final Map<String, Bucket> rates = new LinkedHashMap<>();
     private final AtomicBoolean maintenancePending = new AtomicBoolean();
     private volatile LicensePersistRecord committed;
+    // Only the latest successfully applied state is retained; no historical or cross-trust cache.
+    private LicensePersistRecord.Restored verifiedState;
     private volatile long appliedVersion;
     private volatile LicenseImportState imports;
     private volatile LicenseClock clock;
@@ -751,7 +753,7 @@ public final class LicenseManager implements AutoCloseable {
     }
 
     private void apply(LicensePersistRecord record) throws IOException {
-        LicensePersistRecord.Restored restored = record.restore(verifier);
+        LicensePersistRecord.Restored restored = record.restore(verifier, verifiedState);
         LicenseClockRepair.State clockState = record.clockState();
         // Prepare all fallible metadata/snapshot work before replacing any published facts.
         Membership members = host.membership();
@@ -793,6 +795,7 @@ public final class LicenseManager implements AutoCloseable {
         }
         snapshot = replacement;
         appliedVersion = record.getVersion();
+        verifiedState = restored;
     }
 
     private final class ClockStore implements LicenseClockRepair.Store {

@@ -8,10 +8,15 @@
 package org.apache.doris.massdb.license;
 
 import org.apache.doris.common.profile.SummaryProfile;
+import org.apache.doris.persist.gson.GsonUtils;
 import org.apache.doris.qe.OriginStatement;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
 
 class LicenseSqlRedactorTest {
     @Test
@@ -68,5 +73,48 @@ class LicenseSqlRedactorTest {
         Assertions.assertFalse(origin.toString().contains("private.payload.signature"));
         Assertions.assertEquals(LicenseSqlRedactor.REDACTED,
                 new SummaryProfile.SummaryBuilder().sqlStatement(sql).build().get(SummaryProfile.SQL_STATEMENT));
+    }
+
+    @Test
+    void originDisplayIsLazyAndReusesSafeTextWithoutCopyingOrdinarySql() {
+        for (String sql : new String[] {"SELECT 1", "ADMIN IMPORT LICENSE 'private.payload.signature'"}) {
+            try (MockedStatic<LicenseSqlRedactor> redactor = Mockito.mockStatic(
+                    LicenseSqlRedactor.class, Mockito.CALLS_REAL_METHODS)) {
+                OriginStatement origin = new OriginStatement(sql, 0);
+                redactor.verifyNoInteractions();
+                String safe = origin.getSafeSql();
+                Assertions.assertSame(safe, origin.getSafeSql());
+                Assertions.assertSame(safe, origin.getSafeSql());
+                Assertions.assertSame(sql, origin.originStmt);
+                Assertions.assertSame(sql.startsWith("SELECT") ? sql : LicenseSqlRedactor.REDACTED, safe);
+                redactor.verify(() -> LicenseSqlRedactor.redact(sql), Mockito.times(1));
+                redactor.verify(() -> LicenseSqlRedactor.isSensitive(sql), Mockito.times(1));
+            }
+        }
+        OriginStatement empty = new OriginStatement(null, 0);
+        Assertions.assertNull(empty.getSafeSql());
+        Assertions.assertNull(empty.getSafeSql());
+    }
+
+    @Test
+    void restoredOriginsRecomputeDisplayAndIgnoreInjectedDiagnosticCache() {
+        for (Gson gson : new Gson[] {GsonUtils.GSON, new Gson()}) {
+            for (String sql : new String[] {null, "SELECT 1", "ADMIN IMPORT LICENSE 'private.payload.signature'"}) {
+                OriginStatement original = new OriginStatement(sql, 3);
+                String expected = original.getSafeSql();
+                JsonObject stored = gson.toJsonTree(original).getAsJsonObject();
+                Assertions.assertFalse(stored.has("safeSql"));
+                stored.addProperty("safeSql", "private.payload.signature");
+                OriginStatement restored = gson.fromJson(stored, OriginStatement.class);
+                Assertions.assertEquals(sql, restored.originStmt);
+                Assertions.assertEquals(3, restored.idx);
+                Assertions.assertEquals(expected, restored.getSafeSql());
+                Assertions.assertEquals(expected, restored.getSafeSql());
+                Assertions.assertFalse(restored.toString().contains("private.payload.signature"));
+                if ("SELECT 1".equals(sql)) {
+                    Assertions.assertSame(restored.originStmt, restored.getSafeSql());
+                }
+            }
+        }
     }
 }
