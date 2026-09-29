@@ -49,9 +49,12 @@ def write_json(path, value):
 
 
 def freeze_bindings(args, workload):
+    contract, _, selection = baseline.contract_inputs(workload, CONTRACT)
     paths = {"template": args.workload, "runner": RUNNER,
-             "jdbc_helper": HERE / "LicenseJdbcBaseline.java", "contract": CONTRACT, "controller": Path(__file__),
+             "jdbc_helper": HERE / "LicenseJdbcBaseline.java", "contract": contract, "controller": Path(__file__),
              "jdbc_jar": args.jdbc_jar, "java": args.java_home / "bin/java", "javac": args.java_home / "bin/javac"}
+    if selection["mode"] == "current_retained_scope":
+        paths["current_plan"] = baseline.CURRENT_PLAN
     paths.update({name: Path(workload["build_identity"][name]) for name in ("fe_artifact", "be_artifact")})
     return {name: {"path": str(path.resolve()), "sha256": digest(path)} for name, path in paths.items()}
 
@@ -67,8 +70,37 @@ def check_bindings(bindings):
     return differences
 
 
+def baseline_identity(workload, bindings, required=False):
+    value = workload.get("p4_baseline_identity")
+    if value is None and not required:
+        return None
+    fields = {"source_commit", "fe_sha256", "be_sha256", "environment_sha256", "configuration_sha256",
+              "fixture_sha256", "client_sha256"}
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ValueError("Current confirmation requires complete p4_baseline_identity")
+    for key, item in value.items():
+        length = 40 if key == "source_commit" else 64
+        if type(item) is not str or len(item) != length or any(char not in "0123456789abcdef" for char in item):
+            raise ValueError("Invalid baseline identity digest: " + key)
+    if value["source_commit"] != workload["build_identity"]["baseline_source_commit"] \
+            or value["fe_sha256"] != bindings["fe_artifact"]["sha256"] \
+            or value["be_sha256"] != bindings["be_artifact"]["sha256"]:
+        raise ValueError("Baseline identity differs from actual frozen executable artifacts")
+    return value
+
+
 def read_json(path):
     return json.loads(path.read_text())
+
+
+def raw_artifact_bindings(directory):
+    bindings = []
+    for path in sorted(directory.rglob("*")):
+        if path.is_symlink():
+            raise ValueError("Trial artifact must not be a symlink")
+        if path.is_file():
+            bindings.append({"path": str(path.resolve()), "sha256": digest(path)})
+    return bindings
 
 
 def verify_vector(directory, name, width, maximum, expected_count=None):
@@ -127,6 +159,14 @@ def verify_window(directory, reported, workload, expected_start_ticks):
         key_hashes = [key_hash, warmup_key_hash]
     elif reported.get("query_workload_kind") != "static_query_vector":
         raise ValueError("Unexpected query generator")
+    expected_oracles = [{"query_index": index,
+                         "sha256": hashlib.sha256(baseline.encode_result_oracle(query)).hexdigest(),
+                         "columns": len(query["expected_result"]["columns"]), "rows": query["expected_rows"],
+                         "ordered": query["expected_result"].get("ordered", True),
+                         "comparison_inside_request_timing": True}
+                        for index, query in enumerate(workload.get("queries", [])) if "expected_result" in query]
+    if expected_oracles and reported.get("static_result_oracles") != expected_oracles:
+        raise ValueError("Static full-result oracle differs from frozen input")
     if reported.get("connection_mode") != workload.get("connection_mode", "reuse"):
         raise ValueError("Connection mode mismatch")
     start = read_json(directory / "measurement-start.json")
@@ -190,14 +230,65 @@ def verify_window(directory, reported, workload, expected_start_ticks):
                 raise ValueError("Reported " + key + " differs from raw requests")
         elif reported.get(key) != value:
             raise ValueError("Reported " + key + " differs from raw requests")
+    for name in ("fe", "be"):
+        expected_cpu = (end["cpu"][name]["cpu_seconds"] - start["cpu"][name]["cpu_seconds"]) / count
+        observed_cpu = reported.get(name + "_cpu_seconds_per_success")
+        if type(observed_cpu) not in (int, float) or not math.isfinite(observed_cpu) \
+                or not math.isclose(expected_cpu, observed_cpu, rel_tol=1e-12, abs_tol=1e-12):
+            raise ValueError("Reported CPU per success differs from raw counters")
+        derived[name + "_cpu_seconds_per_success"] = expected_cpu
+    if workload.get("contract_group"):
+        verify_driver_evidence(directory, reported, workload, count, len(warmup) // 8)
     derived.update(arrival_sha256=arrival_hash, warmup_arrival_sha256=warmup_hash, key_hashes=key_hashes,
                    cpu_boundary_verified=True)
     return derived
 
 
+def verify_driver_evidence(directory, reported, workload, measured_count, warmup_count):
+    """Bind actual statement instances/classes and execute counts; never infer FE fast-branch reachability."""
+    records = [read_json(directory / ("driver-worker-%d.json" % worker))
+               for worker in range(workload["concurrency"])]
+    if records != reported.get("driver_evidence"):
+        raise ValueError("Actual driver evidence differs from summary")
+    query_count = 1 if workload.get("point_key_workload") else len(workload["queries"])
+    reuse = workload.get("connection_mode", "reuse") == "reuse"
+    for worker, record in enumerate(records):
+        if record.get("worker") != worker or record.get("connection_mode") != ("reuse" if reuse else "per_request") \
+                or not record.get("driver_class") or not record.get("connection_classes"):
+            raise ValueError("Missing actual driver/connection identity")
+        worker_requests = [len(range(worker, count, workload["concurrency"]))
+                           for count in (warmup_count, measured_count)]
+        if sum(record["connection_classes"].values()) != (1 if reuse else sum(worker_requests)):
+            raise ValueError("Actual connection count differs from the declared mode")
+        queries = record.get("queries", [])
+        if len(queries) != query_count:
+            raise ValueError("Driver query count mismatch")
+        for index, query in enumerate(queries):
+            counts = [sum(1 for request in range(worker, count, workload["concurrency"])
+                          if request % query_count == index) for count in (warmup_count, measured_count)]
+            prepared = (workload["point_key_workload"]["mode"] == "prepared" if workload.get("point_key_workload")
+                        else workload["queries"][index].get("mode", "text") == "prepared")
+            if query.get("query_index") != index or query.get("prepared") is not prepared \
+                    or query.get("warmup_execute_attempts") != counts[0] \
+                    or query.get("measured_execute_attempts") != counts[1] \
+                    or query.get("statement_count") != (1 if reuse else sum(counts)) \
+                    or query.get("same_reused_statement") is not reuse \
+                    or (sum(counts) and not query.get("statement_classes")):
+                raise ValueError("Statement preparation/execution/reuse evidence mismatch")
+            if sum(query["statement_classes"].values()) != query["statement_count"]:
+                raise ValueError("Statement class counts differ from prepared handle counts")
+            if prepared and query["statement_count"] and (
+                    record["driver_class"] != "org.mariadb.jdbc.Driver"
+                    or set(query["statement_classes"]) != {"org.mariadb.jdbc.ServerPreparedStatement"}):
+                raise ValueError("Current prepared workload did not use the frozen server-prepared driver class")
+
+
 def verify_trial(directory, report, workload, frozen, input_path):
     audit = {"valid": False, "windows": [], "errors": [], "scope": "Raw artifacts and frozen input bindings"}
     try:
+        raw_before = raw_artifact_bindings(directory)
+        if workload.get("contract_group") and read_json(directory / "report.json") != report:
+            raise ValueError("Disk trial report differs from supplied report")
         if read_json(directory / "workload.json") != workload:
             raise ValueError("Actual workload differs from frozen trial")
         identity = read_json(directory / "identity.json")
@@ -208,6 +299,12 @@ def verify_trial(directory, report, workload, frozen, input_path):
                 raise ValueError("Actual " + name + " identity differs from frozen input")
         if identity.get("workload_sha256") != digest(input_path) or identity.get("build_identity") != workload["build_identity"]:
             raise ValueError("Actual workload/build identity mismatch")
+        if workload.get("contract_group") and identity.get("contract_selection") != frozen.get("contract_selection"):
+            raise ValueError("Actual current contract selection differs from frozen input")
+        if workload.get("contract_group") and (identity.get("business_workload_binding")
+                != baseline.business_workload_binding(workload)
+                or identity["business_workload_binding"] != frozen.get("business_workload_binding")):
+            raise ValueError("Actual canonical business workload differs from frozen input")
         for name in ("fe_artifact", "be_artifact"):
             if identity.get("artifact_sha256", {}).get(name) != bindings[name]["sha256"]:
                 raise ValueError("Actual executable artifact changed")
@@ -225,6 +322,10 @@ def verify_trial(directory, report, workload, frozen, input_path):
                 not report.get("identical_point_key_sequences_across_windows")
                 or len({tuple(w["key_hashes"]) for w in audit["windows"]}) != 1):
             raise ValueError("Window point key sequences differ")
+        raw_after = raw_artifact_bindings(directory)
+        if raw_before != raw_after:
+            raise ValueError("Raw trial artifacts changed during independent verification")
+        audit["raw_artifact_bindings"] = raw_after
         audit["valid"] = True
     except (OSError, ValueError, KeyError, TypeError, struct.error) as error:
         audit["errors"].append(type(error).__name__ + ": " + str(error))
@@ -271,7 +372,7 @@ def capacity_bracket(trials, mode, confirmation_shape_met, expected_rates):
             "nonmonotonic_response": nonmonotonic, "all_planned_trials_completed": complete,
             "all_trials_valid": all_valid,
             "confirmation_shape_met": confirmation_shape_met, "capacity_bracket_established": qualified,
-            "candidate_rates_30_60_85_percent": ([int(lower * fraction) for fraction in (.30, .60, .85)]
+            "candidate_rates_30_60_85_percent": ([lower * fraction for fraction in (.30, .60, .85)]
                                                 if qualified else None),
             "scope": "Observed offered-rate bracket under the frozen P99/drain SLO, not a theoretical maximum",
             "release_performance_pass": False, "AA_precision_proven": False}
@@ -348,6 +449,18 @@ def interrupt_handlers():
             signal.signal(number, handler)
 
 
+def parse_rates(value):
+    """Permit a precise low-rate bracket while retaining historical integer trial names."""
+    try:
+        values = [float(item) for item in value.split(",")]
+    except (TypeError, ValueError):
+        raise ValueError("Rates must be comma-separated positive finite numbers") from None
+    if not values or any(not math.isfinite(item) or not 0 < item <= 100000 for item in values) \
+            or values != sorted(set(values)):
+        raise ValueError("Rates must be unique, increasing, positive finite numbers at most 100000")
+    return [int(item) if item.is_integer() else item for item in values]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workload", type=Path, required=True)
@@ -359,19 +472,21 @@ def main():
     parser.add_argument("--java-home", type=Path, required=True)
     parser.add_argument("--jdbc-jar", type=Path, required=True)
     args = parser.parse_args()
-    rates = [int(value) for value in args.rates.split(",")]
-    if rates != sorted(set(rates)) or not rates or rates[0] <= 0 or rates[-1] > 100000:
-        parser.error("Rates must be unique, increasing, and within 1..100000")
+    try:
+        rates = parse_rates(args.rates)
+    except ValueError as error:
+        parser.error(str(error))
     if not 0 < args.p99_slo_ms <= 60000 or not 0 <= args.max_drain_seconds <= 30:
         parser.error("Invalid explicit latency/drain SLO")
     workload = json.loads(args.workload.read_text())
     baseline.check_workload(workload)
-    case = next(c for c in json.loads(CONTRACT.read_text())["cases"] if c["id"] == workload["case_id"])
-    shape = case["load_shape"]
+    _, shape, selection = baseline.contract_inputs(workload, CONTRACT)
     shape_met = (workload["pairs"] >= 5 and workload["warmup_seconds"] >= shape["warmup_seconds"]
                  and workload["duration_seconds"] >= shape["duration_seconds_per_window"])
     if args.mode == "confirm" and not shape_met:
         parser.error("Confirmation requires at least five pairs and the original case warmup/duration")
+    if args.mode == "confirm" and workload.get("contract_group") and not workload.get("business_workload_sha256"):
+        parser.error("Current confirmation requires the controller's canonical business_workload_sha256")
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     bindings = freeze_bindings(args, workload)
@@ -382,6 +497,11 @@ def main():
                                       for name, info in workload["services"].items()},
               "scope": "Predeclared single case/concurrency/connection-mode sweep; no candidate B",
               "watchdog": "Bounded wall time stops only this trial's client process group"}
+    if workload.get("contract_group"):
+        frozen.update(phase="A_ONLY", current_group=workload["contract_group"], cell_id=workload["cell_id"],
+                      contract_selection=selection, business_workload_sha256=workload.get("business_workload_sha256"),
+                      business_workload_binding=baseline.business_workload_binding(workload),
+                      baseline_identity=baseline_identity(workload, bindings, required=args.mode == "confirm"))
     write_json(output / "frozen-inputs.json", frozen)
     trials = []
     interrupted = None
@@ -397,9 +517,11 @@ def main():
                     exit_code = 2
                     break
                 candidate = dict(workload, rate=rate)
-                path = output / ("rate-%d.json" % rate)
+                # parse_rates preserves ints; float str round-trips without merging nearby rates.
+                stem = "rate-" + str(rate)
+                path = output / (stem + ".json")
                 write_json(path, candidate)
-                directory = output / ("rate-%d" % rate)
+                directory = output / stem
                 command = [sys.executable, str(RUNNER), "--workload", str(path), "--output", str(directory),
                            "--java-home", str(args.java_home.resolve()), "--jdbc-jar", str(args.jdbc_jar.resolve())]
                 coordination = workload.get("coordination_timeout_seconds", 30)
@@ -409,7 +531,7 @@ def main():
                 timed_out = False
                 process = None
                 cleanup = None
-                with (output / ("rate-%d.log" % rate)).open("w") as log:
+                with (output / (stem + ".log")).open("w") as log:
                     try:
                         process = subprocess.Popen(command, stdout=log, stderr=log, start_new_session=True)
                         check_interrupt()
@@ -442,14 +564,14 @@ def main():
                 if process.returncode == 0 and cleanup and cleanup.get("term_sent"):
                     audit["valid"] = False
                     audit["errors"].append("Exited runner left orphaned client processes requiring cleanup")
-                write_json(output / ("rate-%d-artifact-audit.json" % rate), audit)
+                write_json(output / (stem + "-artifact-audit.json"), audit)
                 assessment = (assess(report, args.p99_slo_ms, args.max_drain_seconds, workload["pairs"] * 2,
                                      require_sample_floor=args.mode == "confirm", evidence=audit)
                               if process.returncode == 0 and not timed_out else "invalid_trial")
                 trial = {"rate": rate, "assessment": assessment, "exit_code": process.returncode,
                          "watchdog_terminated": timed_out, "cleanup": cleanup,
                          "report": str(report_path) if report else None,
-                         "artifact_audit": str(output / ("rate-%d-artifact-audit.json" % rate)),
+                         "artifact_audit": str(output / (stem + "-artifact-audit.json")),
                          "frozen_input_errors": drift,
                          "window_p99_ms": [w.get("p99_ms") for w in report.get("windows", [])]}
                 trials.append(trial)

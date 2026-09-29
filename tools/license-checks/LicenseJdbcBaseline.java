@@ -7,6 +7,8 @@
 
 import java.io.BufferedOutputStream;
 import java.io.BufferedWriter;
+import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -17,12 +19,16 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.SQLTimeoutException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Properties;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
@@ -47,13 +53,17 @@ public final class LicenseJdbcBaseline {
         private final String[] parameters;
         private final boolean point;
         private final String[] pointPayloads;
+        private final ResultOracle oracle;
 
-        private Query(String line) {
+        private Query(String line) throws Exception {
             String[] fields = line.split("\t", -1);
             sql = new String(Base64.getDecoder().decode(fields[0]), StandardCharsets.UTF_8);
             prepared = fields[1].equals("prepared");
             expectedRows = Long.parseLong(fields[2]);
-            parameters = java.util.Arrays.copyOfRange(fields, 3, fields.length);
+            boolean hasOracle = fields.length > 3 && fields[fields.length - 1].startsWith("o");
+            parameters = java.util.Arrays.copyOfRange(fields, 3, fields.length - (hasOracle ? 1 : 0));
+            oracle = hasOracle ? new ResultOracle(Base64.getDecoder().decode(
+                    fields[fields.length - 1].substring(1))) : null;
             point = false;
             pointPayloads = null;
         }
@@ -69,6 +79,7 @@ public final class LicenseJdbcBaseline {
             parameters = new String[0];
             point = true;
             pointPayloads = new String[1_000_000];
+            oracle = null;
         }
 
         private int preparePointOracle(int[] measured, int[] warmup) throws Exception {
@@ -87,9 +98,134 @@ public final class LicenseJdbcBaseline {
         }
     }
 
+    private static final class ResultOracle {
+        private final boolean ordered;
+        private final String[] labels;
+        private final int[] types;
+        private final List<List<String>> rows = new ArrayList<>();
+        private final Map<List<String>, Integer> counts = new LinkedHashMap<>();
+
+        private ResultOracle(byte[] bytes) throws Exception {
+            if (bytes.length > 16 * 1024 * 1024) {
+                throw new IllegalArgumentException("Result oracle exceeds limit");
+            }
+            try (DataInputStream input = new DataInputStream(new ByteArrayInputStream(bytes))) {
+                ordered = input.readBoolean();
+                int columns = input.readInt();
+                int rowCount = input.readInt();
+                if (columns < 1 || columns > 1024 || rowCount < 0 || rowCount > 100000) {
+                    throw new IllegalArgumentException("Invalid result oracle shape");
+                }
+                labels = new String[columns];
+                types = new int[columns];
+                for (int i = 0; i < columns; i++) {
+                    labels[i] = readString(input);
+                    types[i] = input.readInt();
+                }
+                for (int r = 0; r < rowCount; r++) {
+                    List<String> row = new ArrayList<>();
+                    for (int c = 0; c < columns; c++) {
+                        row.add(readString(input));
+                    }
+                    rows.add(row);
+                    counts.merge(row, 1, Integer::sum);
+                }
+                if (input.available() != 0) {
+                    throw new IllegalArgumentException("Trailing result oracle bytes");
+                }
+            }
+        }
+
+        private static String readString(DataInputStream input) throws Exception {
+            int length = input.readInt();
+            if (length == -1) {
+                return null;
+            }
+            if (length < 0 || length > input.available()) {
+                throw new IllegalArgumentException("Invalid oracle string length");
+            }
+            return new String(input.readNBytes(length), StandardCharsets.UTF_8);
+        }
+    }
+
+    private static String quoted(String value) {
+        // Values here are Java class names / fixed enums, never SQL or arbitrary server strings.
+        return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+
+    private static String classCounts(Map<String, Long> counts) {
+        List<String> values = new ArrayList<>();
+        counts.forEach((name, count) -> values.add(quoted(name) + ":" + count));
+        return "{" + String.join(",", values) + "}";
+    }
+
+    private static final class DriverEvidence {
+        private final boolean reuse;
+        private final boolean[] prepared;
+        private final Statement[] reused;
+        private final long[] statements;
+        private final long[] warmup;
+        private final long[] measured;
+        private final List<Map<String, Long>> statementClasses = new ArrayList<>();
+        private final Map<String, Long> connectionClasses = new LinkedHashMap<>();
+        private String driverClass = "";
+        private boolean sameReusedStatement = true;
+
+        private DriverEvidence(boolean reuse, List<Query> queries) {
+            this.reuse = reuse;
+            prepared = new boolean[queries.size()];
+            reused = new Statement[queries.size()];
+            statements = new long[queries.size()];
+            warmup = new long[queries.size()];
+            measured = new long[queries.size()];
+            for (int i = 0; i < queries.size(); i++) {
+                prepared[i] = queries.get(i).prepared;
+                statementClasses.add(new LinkedHashMap<>());
+            }
+        }
+
+        private void connection(Connection connection, Properties configuration) throws SQLException {
+            connectionClasses.merge(connection.getClass().getName(), 1L, Long::sum);
+            driverClass = DriverManager.getDriver(configuration.getProperty("url")).getClass().getName();
+        }
+
+        private void prepared(int index, Statement statement) {
+            statements[index]++;
+            statementClasses.get(index).merge(statement.getClass().getName(), 1L, Long::sum);
+            if (reuse) {
+                if (reused[index] != null && reused[index] != statement) {
+                    sameReusedStatement = false;
+                }
+                reused[index] = statement;
+            }
+        }
+
+        private void execute(int index, Statement statement, boolean warming) {
+            (warming ? warmup : measured)[index]++;
+            if (reuse && reused[index] != statement) {
+                sameReusedStatement = false;
+            }
+        }
+
+        private String json(int worker) {
+            List<String> queries = new ArrayList<>();
+            for (int index = 0; index < prepared.length; index++) {
+                queries.add("{\"query_index\":" + index + ",\"prepared\":" + prepared[index]
+                        + ",\"statement_count\":" + statements[index] + ",\"warmup_execute_attempts\":"
+                        + warmup[index] + ",\"measured_execute_attempts\":" + measured[index]
+                        + ",\"same_reused_statement\":" + (reuse && sameReusedStatement)
+                        + ",\"statement_classes\":" + classCounts(statementClasses.get(index)) + "}");
+            }
+            return "{\"worker\":" + worker + ",\"connection_mode\":" + quoted(reuse ? "reuse" : "per_request")
+                    + ",\"driver_class\":" + quoted(driverClass) + ",\"connection_classes\":"
+                    + classCounts(connectionClasses) + ",\"queries\":[" + String.join(",", queries)
+                    + "],\"fe_fast_path_proven\":false,\"harness_retries\":0}";
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         if (args.length == 5 && args[0].equals("--schedule-only")) {
-            writeSchedule(Path.of(args[4]), poissonSchedule(Long.parseLong(args[1]),
+            writeSchedule(Path.of(args[4]), poissonSchedule(Double.parseDouble(args[1]),
                     Long.parseLong(args[2]), Long.parseLong(args[3])));
             return;
         }
@@ -118,7 +254,7 @@ public final class LicenseJdbcBaseline {
             sessionSql.add(new String(Base64.getDecoder().decode(line), StandardCharsets.UTF_8));
         }
         int concurrency = Integer.parseInt(configuration.getProperty("concurrency"));
-        long rate = Long.parseLong(configuration.getProperty("rate"));
+        double rate = Double.parseDouble(configuration.getProperty("rate"));
         long duration = Long.parseLong(configuration.getProperty("duration_seconds"));
         long warmup = Long.parseLong(configuration.getProperty("warmup_seconds"));
         long seed = Long.parseLong(configuration.getProperty("seed"));
@@ -172,12 +308,16 @@ public final class LicenseJdbcBaseline {
             Thread thread = new Thread(() -> {
                 Connection connection = null;
                 List<Statement> statements = new ArrayList<>();
+                DriverEvidence evidence = new DriverEvidence(!perRequest, queries);
                 try (BufferedWriter writer = Files.newBufferedWriter(output.resolve("worker-" + workerId + ".csv"))) {
                     if (!perRequest) {
                         connection = openConnection(configuration, timeout);
+                        evidence.connection(connection, configuration);
                         initialize(connection, sessionSql);
                         for (Query query : queries) {
-                            statements.add(prepare(connection, query, timeout));
+                            Statement statement = prepare(connection, query, timeout);
+                            evidence.prepared(statements.size(), statement);
+                            statements.add(statement);
                         }
                     }
                     connectionsReady.countDown();
@@ -187,14 +327,22 @@ public final class LicenseJdbcBaseline {
                         int queryIndex = index % queries.size();
                         int key = point ? warmupKeys[index] : -1;
                         RequestResult result = perRequest
-                                ? executeNewConnection(configuration, sessionSql, queries.get(queryIndex), timeout, key)
-                                : executeReused(statements.get(queryIndex), queries.get(queryIndex), key);
+                                ? executeNewConnection(configuration, sessionSql, queries.get(queryIndex), timeout, key,
+                                        evidence, queryIndex, true)
+                                : executeReused(statements.get(queryIndex), queries.get(queryIndex), key,
+                                        evidence, queryIndex, true);
                         if (result.error != 0) {
+                            publish(output.resolve("warmup-failure-" + workerId + ".json"), "{\"index\":" + index
+                                    + ",\"query_index\":" + queryIndex + ",\"error_code\":" + result.error
+                                    + ",\"sql_state\":" + quoted(result.state) + ",\"error_class\":"
+                                    + quoted(result.errorClass) + ",\"scheduled_ns\":" + warmupArrivals[index]
+                                    + ",\"start_ns\":" + (result.start - warmupEpoch.get()) + ",\"end_ns\":"
+                                    + (result.end - warmupEpoch.get()) + "}");
                             throw new SQLException("Warmup request failed");
                         }
                     }
                     waitUntil(warmupEpoch.get() + TimeUnit.SECONDS.toNanos(warmup));
-                    writer.write("index,query_index,scheduled_ns,start_ns,end_ns,rows,error_code,sql_state"
+                    writer.write("index,query_index,scheduled_ns,start_ns,end_ns,rows,error_code,sql_state,error_class"
                             + (point ? ",point_key" : "")
                             + (perRequest ? ",connection_ns,session_init_ns,prepare_ns,execute_ns,close_ns" : "")
                             + "\n");
@@ -207,12 +355,14 @@ public final class LicenseJdbcBaseline {
                         int queryIndex = index % queries.size();
                         int key = point ? keys[index] : -1;
                         RequestResult result = perRequest
-                                ? executeNewConnection(configuration, sessionSql, queries.get(queryIndex), timeout, key)
-                                : executeReused(statements.get(queryIndex), queries.get(queryIndex), key);
+                                ? executeNewConnection(configuration, sessionSql, queries.get(queryIndex), timeout, key,
+                                        evidence, queryIndex, false)
+                                : executeReused(statements.get(queryIndex), queries.get(queryIndex), key,
+                                        evidence, queryIndex, false);
                         last = result.end;
                         writer.write(index + "," + queryIndex + "," + (scheduled - epoch.get()) + ","
                                 + (result.start - epoch.get()) + "," + (result.end - epoch.get()) + ","
-                                + result.rows + "," + result.error + "," + result.state
+                                + result.rows + "," + result.error + "," + result.state + "," + result.errorClass
                                 + (point ? "," + key : "")
                                 + (perRequest ? "," + result.connectionNanos + "," + result.sessionNanos + ","
                                         + result.prepareNanos + "," + result.executeNanos + ","
@@ -241,6 +391,11 @@ public final class LicenseJdbcBaseline {
                     } catch (Throwable exception) {
                         failure.compareAndSet(null, exception);
                     } finally {
+                        try {
+                            publish(output.resolve("driver-worker-" + workerId + ".json"), evidence.json(workerId));
+                        } catch (Throwable exception) {
+                            failure.compareAndSet(null, exception);
+                        }
                         cleaned.countDown();
                     }
                 }
@@ -253,12 +408,20 @@ public final class LicenseJdbcBaseline {
         String phase = "connections";
         try {
             awaitWorkers(connectionsReady, coordination, failure);
+            phase = "clock_handshake";
+            clockHandshake(configuration, output, coordination, failure);
             warmupEpoch.set(System.nanoTime());
             warmupStart.countDown();
             phase = "warmup";
             awaitWorkers(ready, Math.addExact(warmup, drain), failure);
+            long warmupEnd = System.nanoTime();
             phase = "start_ack";
-            publish(output.resolve("measurement-ready.json"), "{\"ready_ns\":" + System.nanoTime() + "}");
+            String warmupReceipt = configuration.containsKey("p4_launch")
+                    ? ",\"warmup_start_ns\":" + warmupEpoch.get() + ",\"warmup_end_ns\":" + warmupEnd
+                            + ",\"launch_token\":" + quoted(configuration.getProperty("p4_launch_token"))
+                            + ",\"launch_sha256\":" + quoted(configuration.getProperty("p4_launch_sha256")) : "";
+            publish(output.resolve("measurement-ready.json"), "{\"ready_ns\":" + System.nanoTime()
+                    + warmupReceipt + "}");
             awaitMarker(output.resolve("measurement-start-ack"), coordination, failure);
             // /proc sampling is performed in this JVM so the recorded CPU boundaries and request
             // timestamps use the same monotonic clock. Python provides the trusted PID/HZ inputs.
@@ -302,6 +465,73 @@ public final class LicenseJdbcBaseline {
                 worker.interrupt();
             }
         }
+    }
+
+    private static String sha256(Path path) throws Exception {
+        return HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(Files.readAllBytes(path)));
+    }
+
+    private static void requireClock(boolean valid) {
+        if (!valid) {
+            throw new IllegalStateException("Invalid lifecycle handshake");
+        }
+    }
+
+    private static Properties clockProperties(Path path, long deadline, AtomicReference<Throwable> failure)
+            throws Exception {
+        while (!Files.exists(path)) {
+            if (failure.get() != null || System.nanoTime() >= deadline) {
+                throw new java.util.concurrent.TimeoutException("Lifecycle handshake expired");
+            }
+            Thread.sleep(2);
+        }
+        Properties value = new Properties();
+        try (java.io.InputStream stream = Files.newInputStream(path)) {
+            value.load(stream);
+        }
+        requireClock(System.nanoTime() < deadline);
+        return value;
+    }
+
+    private static void clockHandshake(Properties configuration, Path output, long seconds,
+            AtomicReference<Throwable> failure) throws Exception {
+        if (!configuration.containsKey("p4_launch")) {
+            return;
+        }
+        Path launch = Path.of(configuration.getProperty("p4_launch"));
+        String token = configuration.getProperty("p4_launch_token");
+        String digest = configuration.getProperty("p4_launch_sha256");
+        String boot = Files.readString(Path.of("/proc/sys/kernel/random/boot_id")).trim();
+        requireClock(token != null && token.matches("[a-f0-9]{64}") && digest != null
+                && digest.matches("[a-f0-9]{64}") && sha256(launch).equals(digest)
+                && boot.equals(configuration.getProperty("p4_boot_id")));
+        long pid = ProcessHandle.current().pid();
+        String stat = Files.readString(Path.of("/proc/self/stat"));
+        long ticks = Long.parseLong(stat.substring(stat.lastIndexOf(')') + 1).trim().split("\\s+")[19]);
+        String identity = "{\"schema_version\":1,\"launch_token\":" + quoted(token)
+                + ",\"launch_sha256\":" + quoted(digest) + ",\"boot_id\":" + quoted(boot)
+                + ",\"helper_pid\":" + pid + ",\"helper_start_ticks\":" + ticks;
+        String readyNonce = java.util.UUID.randomUUID().toString();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds);
+        publish(output.resolve("p4-clock-ready.json"), identity + ",\"ready_nonce\":" + quoted(readyNonce) + "}");
+        Properties request = clockProperties(output.resolve("p4-clock-request.properties"), deadline, failure);
+        for (String key : new String[] {"p4_launch", "p4_launch_token", "p4_launch_sha256", "p4_boot_id"}) {
+            requireClock(configuration.getProperty(key).equals(request.getProperty(key)));
+        }
+        String nonce = request.getProperty("nonce");
+        requireClock(readyNonce.equals(request.getProperty("ready_nonce"))
+                && nonce != null && nonce.matches("[a-f0-9]{64}"));
+        long sample = System.nanoTime();
+        Path helperClock = output.resolve("p4-helper-clock.json");
+        publish(helperClock, identity + ",\"nonce\":" + quoted(nonce) + ",\"jvm_sample_ns\":" + sample + "}");
+        Properties ack = clockProperties(output.resolve("p4-clock-ack.properties"), deadline, failure);
+        for (String key : request.stringPropertyNames()) {
+            requireClock(request.getProperty(key).equals(ack.getProperty(key)));
+        }
+        requireClock(sha256(helperClock).equals(ack.getProperty("helper_clock_sha256"))
+                && sha256(output.resolve("p4-clock-bridge.json")).equals(ack.getProperty("bridge_sha256"))
+                && sha256(launch).equals(digest) && System.nanoTime() < deadline);
     }
 
     private static void publish(Path path, String json) throws Exception {
@@ -403,14 +633,17 @@ public final class LicenseJdbcBaseline {
         return statement;
     }
 
-    private static RequestResult executeReused(Statement statement, Query query, int key) {
+    private static RequestResult executeReused(Statement statement, Query query, int key,
+            DriverEvidence evidence, int queryIndex, boolean warming) {
         RequestResult result = new RequestResult();
         result.start = System.nanoTime();
         try {
+            evidence.execute(queryIndex, statement, warming);
             result.rows = execute(statement, query, key);
             if (result.rows != query.expectedRows) {
                 result.error = -1;
                 result.state = "ROWS";
+                result.errorClass = "RESULT_MISMATCH";
             }
         } catch (SQLException exception) {
             result.fail(exception);
@@ -425,6 +658,7 @@ public final class LicenseJdbcBaseline {
         long rows = -1;
         int error;
         String state = "00000";
+        String errorClass = "NONE";
         long connectionNanos;
         long sessionNanos;
         long prepareNanos;
@@ -435,12 +669,16 @@ public final class LicenseJdbcBaseline {
             if (error == 0) {
                 error = exception.getErrorCode() == 0 ? -2 : exception.getErrorCode();
                 state = String.valueOf(exception.getSQLState()).replaceAll("[^A-Za-z0-9]", "_");
+                errorClass = exception instanceof SQLTimeoutException || state.equals("HYT00")
+                        || state.equals("HYT01") || state.equals("S1T00") ? "SQL_TIMEOUT"
+                        : state.equals("VALUE") ? "RESULT_MISMATCH"
+                        : state.startsWith("08") ? "CONNECTION_ERROR" : "SQL_ERROR";
             }
         }
     }
 
     private static RequestResult executeNewConnection(Properties configuration, List<String> sessionSql,
-            Query query, int timeout, int key) {
+            Query query, int timeout, int key, DriverEvidence evidence, int queryIndex, boolean warming) {
         RequestResult result = new RequestResult();
         result.start = System.nanoTime();
         Connection connection = null;
@@ -449,6 +687,7 @@ public final class LicenseJdbcBaseline {
         int phase = 0;
         try {
             connection = openConnection(configuration, timeout);
+            evidence.connection(connection, configuration);
             result.connectionNanos = System.nanoTime() - phaseStart;
             phaseStart = System.nanoTime();
             phase = 1;
@@ -457,15 +696,18 @@ public final class LicenseJdbcBaseline {
             phaseStart = System.nanoTime();
             phase = 2;
             statement = prepare(connection, query, timeout);
+            evidence.prepared(queryIndex, statement);
             result.prepareNanos = System.nanoTime() - phaseStart;
             phaseStart = System.nanoTime();
             phase = 3;
+            evidence.execute(queryIndex, statement, warming);
             result.rows = execute(statement, query, key);
             result.executeNanos = System.nanoTime() - phaseStart;
             phase = 4;
             if (result.rows != query.expectedRows) {
                 result.error = -1;
                 result.state = "ROWS";
+                result.errorClass = "RESULT_MISMATCH";
             }
         } catch (SQLException exception) {
             long failedPhaseNanos = System.nanoTime() - phaseStart;
@@ -509,8 +751,8 @@ public final class LicenseJdbcBaseline {
         }
     }
 
-    private static long[] poissonSchedule(long rate, long durationSeconds, long seed) {
-        if (rate <= 0 || durationSeconds < 0) {
+    private static long[] poissonSchedule(double rate, long durationSeconds, long seed) {
+        if (!Double.isFinite(rate) || rate <= 0 || rate > 100000 || durationSeconds < 0) {
             throw new IllegalArgumentException("Invalid arrival rate or duration");
         }
         long durationNanos = Math.multiplyExact(durationSeconds, 1_000_000_000L);
@@ -587,21 +829,63 @@ public final class LicenseJdbcBaseline {
         }
         boolean hasRows = query.prepared ? ((PreparedStatement) statement).execute() : statement.execute(sql);
         long rows = 0;
+        if (!hasRows && query.oracle != null) {
+            throw new SQLException("Expected a result set", "VALUE", -3);
+        }
         if (hasRows) {
             try (ResultSet result = statement.getResultSet()) {
                 int columns = result.getMetaData().getColumnCount();
                 if (query.point && columns != 1) {
                     throw new SQLException("Point result must contain exactly one payload column", "VALUE", -3);
                 }
-                while (result.next()) {
+                ResultOracle oracle = query.oracle;
+                Map<List<String>, Integer> remaining = oracle != null && !oracle.ordered
+                        ? new LinkedHashMap<>(oracle.counts) : null;
+                if (oracle != null) {
+                    if (columns != oracle.labels.length) {
+                        throw new SQLException("Result column count differs from oracle", "VALUE", -3);
+                    }
                     for (int column = 1; column <= columns; column++) {
-                        Object value = result.getObject(column);
+                        if (!Objects.equals(oracle.labels[column - 1], result.getMetaData().getColumnLabel(column))
+                                || oracle.types[column - 1] != result.getMetaData().getColumnType(column)) {
+                            throw new SQLException("Result column structure differs from oracle", "VALUE", -3);
+                        }
+                    }
+                }
+                while (result.next()) {
+                    if (oracle != null && rows >= oracle.rows.size()) {
+                        throw new SQLException("Unexpected additional result row", "VALUE", -3);
+                    }
+                    List<String> actual = remaining == null ? null : new ArrayList<>(columns);
+                    for (int column = 1; column <= columns; column++) {
+                        Object value = oracle == null ? result.getObject(column) : result.getString(column);
                         if (query.point && (query.pointPayloads[key] == null
                                 || !query.pointPayloads[key].equals(value))) {
                             throw new SQLException("Point payload differs from the deterministic key model", "VALUE", -3);
                         }
+                        if (oracle != null) {
+                            if (actual != null) {
+                                actual.add((String) value);
+                            } else if (!Objects.equals(oracle.rows.get((int) rows).get(column - 1), value)) {
+                                throw new SQLException("Result value differs from oracle", "VALUE", -3);
+                            }
+                        }
+                    }
+                    if (actual != null) {
+                        Integer count = remaining.get(actual);
+                        if (count == null || count == 0) {
+                            throw new SQLException("Unordered result row differs from oracle", "VALUE", -3);
+                        }
+                        if (count == 1) {
+                            remaining.remove(actual);
+                        } else {
+                            remaining.put(actual, count - 1);
+                        }
                     }
                     rows++;
+                }
+                if (oracle != null && (rows != oracle.rows.size() || remaining != null && !remaining.isEmpty())) {
+                    throw new SQLException("Missing expected result rows", "VALUE", -3);
                 }
             }
         }

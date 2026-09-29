@@ -37,6 +37,44 @@ def assess_windows(windows, expected=None, formal=False):
 
 
 class CapacityDecisionsTest(unittest.TestCase):
+    def test_fractional_capacity_sweep_preserves_a_sub_one_percent_bracket(self):
+        rates = capacity.parse_rates("0.25,0.252")
+        trials = [{"rate": rates[0], "assessment": "within_slo"},
+                  {"rate": rates[1], "assessment": "outside_slo"}]
+        result = capacity.capacity_bracket(trials, "confirm", True, rates)
+        self.assertTrue(result["capacity_bracket_established"])
+        self.assertAlmostEqual(result["bracket_width_percent_of_lower_bound"], .8)
+        self.assertEqual(result["candidate_rates_30_60_85_percent"], [.075, .15, .2125])
+        # A fractional offered rate does not waive the independent per-window sample floor.
+        self.assertEqual(assess_windows([evidence_window(count=150)], formal=True), "invalid_trial")
+
+    def test_capacity_cli_rejects_invalid_rates_and_keeps_integer_trial_names(self):
+        rates = capacity.parse_rates("750,1000,1250")
+        self.assertEqual(rates, [750, 1000, 1250])
+        self.assertTrue(all(type(item) is int for item in rates))
+        for value in ("", "1,", "NaN", "Infinity", "-1", "0", "100001", "2,1", "0.1,1e-1"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                capacity.parse_rates(value)
+
+    def test_current_baseline_identity_is_bound_to_actual_artifacts(self):
+        identity = {"source_commit": "a" * 40, "fe_sha256": "b" * 64, "be_sha256": "c" * 64,
+                    "environment_sha256": "d" * 64, "configuration_sha256": "e" * 64,
+                    "fixture_sha256": "f" * 64, "client_sha256": "1" * 64}
+        workload = {"p4_baseline_identity": identity, "build_identity": {"baseline_source_commit": "a" * 40}}
+        bindings = {"fe_artifact": {"sha256": "b" * 64}, "be_artifact": {"sha256": "c" * 64}}
+        self.assertEqual(capacity.baseline_identity(workload, bindings, required=True), identity)
+        with self.assertRaisesRegex(ValueError, "executable artifacts"):
+            capacity.baseline_identity(workload, dict(bindings, fe_artifact={"sha256": "0" * 64}), required=True)
+        self.assertIsNone(capacity.baseline_identity({}, bindings))
+        with self.assertRaisesRegex(ValueError, "complete p4_baseline_identity"):
+            capacity.baseline_identity({}, bindings, required=True)
+
+    def test_capacity_percentages_preserve_fractional_offered_rates(self):
+        trials = [{"rate": 4250, "assessment": "within_slo"}, {"rate": 4290, "assessment": "outside_slo"}]
+        result = capacity.capacity_bracket(trials, "confirm", True, [4250, 4290])
+        self.assertTrue(result["capacity_bracket_established"])
+        self.assertEqual(result["candidate_rates_30_60_85_percent"], [1275.0, 2550.0, 3612.5])
+
     def test_fixed_rate_success_is_not_an_unbounded_capacity_claim(self):
         result = capacity.capacity_bracket([{"rate": 1000, "assessment": "within_slo"}], "confirm", True, [1000])
         self.assertFalse(result["capacity_bracket_established"])
@@ -240,6 +278,65 @@ class RawEvidenceTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "p99_ms differs"):
             capacity.verify_window(directory, report, workload, self.ticks)
 
+    def test_reported_cpu_cost_cannot_override_actual_boundary_counters(self):
+        directory, workload, report = self.window()
+        report["fe_cpu_seconds_per_success"] = 0
+        capacity.write_json(directory / "summary.json", report)
+        with self.assertRaisesRegex(ValueError, "CPU per success"):
+            capacity.verify_window(directory, report, workload, self.ticks)
+
+    def test_frozen_static_full_result_oracle_must_match_actual_summary(self):
+        directory, workload, report = self.window(point=False)
+        workload["queries"][0]["expected_result"] = {
+            "columns": [{"label": "1", "jdbc_type": 4}], "rows": [["1"]]}
+        with self.assertRaisesRegex(ValueError, "Static full-result oracle"):
+            capacity.verify_window(directory, report, workload, self.ticks)
+        query = workload["queries"][0]
+        report["static_result_oracles"] = [{"query_index": 0,
+            "sha256": hashlib.sha256(capacity.baseline.encode_result_oracle(query)).hexdigest(),
+            "columns": 1, "rows": 1, "ordered": True, "comparison_inside_request_timing": True}]
+        capacity.write_json(directory / "summary.json", report)
+        self.assertEqual(capacity.verify_window(directory, report, workload, self.ticks)["successful_requests"], 4)
+
+    def driver_evidence(self):
+        workload = {"concurrency": 2, "connection_mode": "reuse",
+                    "point_key_workload": {"mode": "prepared"}}
+        records = [{"worker": worker, "connection_mode": "reuse", "driver_class": "org.mariadb.jdbc.Driver",
+                    "connection_classes": {"org.mariadb.jdbc.Connection": 1}, "queries": [{"query_index": 0,
+                    "prepared": True, "statement_count": 1, "warmup_execute_attempts": 1,
+                    "measured_execute_attempts": 2, "same_reused_statement": True,
+                    "statement_classes": {"org.mariadb.jdbc.ServerPreparedStatement": 1}}]} for worker in range(2)]
+        return workload, records
+
+    def save_driver_evidence(self, records):
+        for worker, record in enumerate(records):
+            capacity.write_json(self.root / ("driver-worker-%d.json" % worker), record)
+        return {"driver_evidence": records}
+
+    def test_actual_server_statement_and_repeated_execute_evidence_is_accepted(self):
+        workload, records = self.driver_evidence()
+        capacity.verify_driver_evidence(self.root, self.save_driver_evidence(records), workload, 4, 2)
+
+    def test_client_prepared_fallback_is_not_server_prepared_evidence(self):
+        workload, records = self.driver_evidence()
+        records[0]["queries"][0]["statement_classes"] = {"org.mariadb.jdbc.ClientPreparedStatement": 1}
+        with self.assertRaisesRegex(ValueError, "server-prepared"):
+            capacity.verify_driver_evidence(self.root, self.save_driver_evidence(records), workload, 4, 2)
+
+    def test_reprepare_or_stale_execute_counts_cannot_claim_reuse(self):
+        for field, value in (("statement_count", 3), ("measured_execute_attempts", 1),
+                             ("same_reused_statement", False)):
+            workload, records = self.driver_evidence()
+            records[0]["queries"][0][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "reuse evidence"):
+                capacity.verify_driver_evidence(self.root, self.save_driver_evidence(records), workload, 4, 2)
+
+    def test_short_connections_cannot_hide_extra_connections(self):
+        workload, records = self.driver_evidence()
+        records[0]["connection_classes"]["org.mariadb.jdbc.Connection"] = 2
+        with self.assertRaisesRegex(ValueError, "connection count"):
+            capacity.verify_driver_evidence(self.root, self.save_driver_evidence(records), workload, 4, 2)
+
     def test_cpu_last_request_boundary_is_checked_against_actual_csv(self):
         directory, workload, report = self.window()
         end = capacity.read_json(directory / "measurement-end.json")
@@ -270,9 +367,25 @@ class RawEvidenceTest(unittest.TestCase):
         frozen = {"bindings": bindings, "service_start_ticks": self.ticks}
         audit = capacity.verify_trial(self.root, report, self.workload, frozen, path)
         self.assertTrue(audit["valid"], audit)
+        raw = {item["path"]: item["sha256"] for item in audit["raw_artifact_bindings"]}
+        sample = self.root / "window-00/worker-0.csv"
+        self.assertEqual(raw[str(sample.resolve())], capacity.digest(sample))
+        self.assertIn(str((self.root / "window-00/arrivals.bin").resolve()), raw)
+        self.assertIn(str((self.root / "identity.json").resolve()), raw)
+        with patch.object(capacity, "raw_artifact_bindings", side_effect=[audit["raw_artifact_bindings"], []]):
+            changed = capacity.verify_trial(self.root, report, self.workload, frozen, path)
+        self.assertFalse(changed["valid"])
+        self.assertIn("changed during", changed["errors"][0])
         identity["artifact_sha256"]["be_artifact"] = "different"
         capacity.write_json(self.root / "identity.json", identity)
         self.assertFalse(capacity.verify_trial(self.root, report, self.workload, frozen, path)["valid"])
+
+    def test_raw_bindings_reject_symlinks(self):
+        actual = self.root / "raw.csv"
+        actual.write_text("original bytes\n")
+        (self.root / "alias.csv").symlink_to(actual)
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            capacity.raw_artifact_bindings(self.root)
 
 
 class ControllerLifecycleTest(unittest.TestCase):
@@ -287,6 +400,66 @@ class ControllerLifecycleTest(unittest.TestCase):
             self.assertIsNone(process.poll(), "Controller exited before publishing test process identity")
             self.assertLess(time.monotonic(), deadline)
             time.sleep(.02)
+
+    def test_cli_sweep_keeps_fractional_artifacts_distinct_and_integer_names_unchanged(self):
+        workload = {"case_id": "LP-001", "pairs": 1, "warmup_seconds": 0, "duration_seconds": 1,
+                    "timeout_seconds": 1, "services": {name: {"pid": os.getpid()} for name in ("fe", "be")}}
+        capacity.write_json(self.root / "input.json", workload)
+        capacity.write_json(self.root / "contract.json", {"cases": [{"id": "LP-001", "load_shape": {
+            "warmup_seconds": 0, "duration_seconds_per_window": 1}}]})
+        fake = self.root / "fake_runner.py"
+        fake.write_text("import json,pathlib,sys\n"
+                        "args=sys.argv[1:]\n"
+                        "source=pathlib.Path(args[args.index('--workload')+1])\n"
+                        "output=pathlib.Path(args[args.index('--output')+1])\n"
+                        "output.mkdir(exist_ok=False)\n"
+                        "workload=json.loads(source.read_text())\n"
+                        "(output/'workload.json').write_text(source.read_text())\n"
+                        "window=" + repr(evidence_window(count=2)) + "\n"
+                        "(output/'report.json').write_text(json.dumps({'windows':[window,window]}))\n"
+                        "print(json.dumps({'rate':workload['rate']}),flush=True)\n")
+        # Includes adjacent representable floats, scientific notation, and historical integer names.
+        text = "1e-7,1.01e-7,0.5,0.5000000000000001,0.505,1.0,1000"
+        labels = ["1e-07", "1.01e-07", "0.5", "0.5000000000000001", "0.505", "1", "1000"]
+        expected_rates = [1e-7, 1.01e-7, .5, .5000000000000001, .505, 1, 1000]
+        output = self.root / "result"
+        argv = ["capacity", "--workload", str(self.root / "input.json"), "--rates", text,
+                "--p99-slo-ms", "100", "--mode", "pilot", "--output", str(output),
+                "--java-home", str(self.root), "--jdbc-jar", str(self.root / "fake.jar")]
+        audited = []
+        def audit(directory, report, candidate, frozen, path):
+            actual = capacity.read_json(directory / "workload.json")
+            self.assertEqual(actual, capacity.read_json(path))
+            self.assertEqual(actual, candidate)
+            audited.append(actual["rate"])
+            return {"valid": True, "windows": report["windows"], "errors": [], "input_rate": actual["rate"]}
+        with patch.object(sys, "argv", argv), patch.object(capacity, "RUNNER", fake), \
+                patch.object(capacity, "CONTRACT", self.root / "contract.json"), \
+                patch.object(capacity.baseline, "check_workload"), \
+                patch.object(capacity, "freeze_bindings", return_value={}), \
+                patch.object(capacity, "verify_trial", side_effect=audit):
+            self.assertEqual(capacity.main(), 0)
+        self.assertEqual(audited, expected_rates)
+        result = capacity.read_json(output / "report.json")
+        self.assertEqual(result["frozen_inputs"]["rates"], expected_rates)
+        self.assertFalse(result["bracket"]["capacity_bracket_established"])
+        self.assertEqual(len(result["trials"]), len(expected_rates))
+        for label, rate, trial in zip(labels, expected_rates, result["trials"]):
+            with self.subTest(label=label):
+                stem = "rate-" + label
+                self.assertEqual(capacity.read_json(output / (stem + ".json"))["rate"], rate)
+                self.assertEqual(capacity.read_json(output / (stem + ".log"))["rate"], rate)
+                self.assertEqual(capacity.read_json(output / stem / "workload.json")["rate"], rate)
+                self.assertEqual(trial["report"], str(output / stem / "report.json"))
+                self.assertEqual(trial["artifact_audit"], str(output / (stem + "-artifact-audit.json")))
+                self.assertEqual(capacity.read_json(Path(trial["artifact_audit"]))["input_rate"], rate)
+                self.assertEqual(trial["exit_code"], 0)
+                self.assertEqual(trial["assessment"], "within_slo")
+                self.assertEqual(trial["cleanup"]["remaining_live_pids"], [])
+        self.assertEqual({path.name for path in output.iterdir()},
+                         {"frozen-inputs.json", "report.json"} | {
+                             "rate-" + label + suffix for label in labels
+                             for suffix in ("", ".json", ".log", "-artifact-audit.json")})
 
     def test_cancellation_during_cleanup_is_deferred_not_discarded(self):
         with capacity.interrupt_handlers() as checkpoint:

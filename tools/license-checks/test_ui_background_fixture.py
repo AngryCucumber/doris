@@ -183,6 +183,7 @@ class UiBackgroundExitHandshakeTest(unittest.TestCase):
     def fixture(self, directory):
         fixture = background.Background.__new__(background.Background)
         fixture.output, fixture.guard = directory, Mock()
+        fixture.profile = profile()
         fixture.whole_deadline = float("inf")
         fixture.process, fixture.pin = FakeChild(), helper_pin()
         fixture.peak, fixture.samples, fixture.last_sample = 0, 0, 0
@@ -600,6 +601,178 @@ class StartupPinTest(unittest.TestCase):
                 background.owned_live(Mock(), FakeChild(timeout=True), result['pin'], 'after')
         self.assertEqual('LIVE_IDENTITY_CHANGED', caught.exception.reason)
 
+
+
+def current_profile(qualification="formal", duration=600):
+    value = {key: bounds[0] for key, bounds in background.CURRENT_BOUNDS.items()}
+    value.update(schema_version=1, profile=background.CURRENT_PROFILE, group="G5", qualification=qualification,
+                 seed=20260922, duration_seconds=duration, rate_per_second=10.0,
+                 rate_basis="controller_frozen_input_not_capacity_qualification",
+                 read_account={"username": "ui_reader", "host": "%", "password_env": "MASSDB_UI_READ_PASSWORD"},
+                 write_account={"username": "ui_writer", "host": "%", "password_env": "MASSDB_UI_WRITE_PASSWORD"},
+                 metadata_oracles=[{"sql": "SELECT 1", "columns": ["1"], "rows": [["1"]]},
+                     {"sql": "SHOW TABLES FROM license_perf", "columns": ["Tables_in_license_perf"],
+                      "rows": [["point_rows"], ["${OWNED_TABLE}"]]},
+                     {"sql": "DESC license_perf.point_rows", "columns": ["Field", "Type", "Null", "Key", "Default", "Extra"],
+                      "rows": [[name, kind, "Yes", key, None, ""] for name, kind, key in
+                               [("id", "bigint", "true"), ("grp", "int", "false"),
+                                ("v", "bigint", "false"), ("payload", "varchar(64)", "false")]]}])
+    return value
+
+
+class CurrentBackgroundTest(unittest.TestCase):
+    def test_explicit_profile_leaves_legacy_defaults_valid(self):
+        self.assertEqual(background.validate_config(profile()), profile())
+        self.assertEqual(background.validate_config(current_profile()), current_profile())
+        missing = current_profile(); del missing["profile"]
+        with self.assertRaises(ValueError): background.validate_config(missing)
+
+    def test_formal_minimums_and_explicit_diagnostic_never_merge(self):
+        for group, minimum in (("G5", 600), ("G6", 600), ("G7", 300)):
+            value = current_profile(duration=minimum); value["group"] = group
+            self.assertEqual(background.validate_config(value), value)
+            value["duration_seconds"] -= 1
+            with self.assertRaisesRegex(ValueError, "too short"): background.validate_config(value)
+            value.update(qualification="diagnostic", duration_seconds=1)
+            self.assertEqual(background.validate_config(value), value)
+
+    def test_exact_sixteen_workers_hundred_rows_seed_and_open_loop_rate(self):
+        for key, bad in (("read_workers", 1), ("write_workers", 16), ("write_batch_rows", 99),
+                         ("seed", 7), ("rate_per_second", float("nan")), ("rate_per_second", True)):
+            value = current_profile(); value[key] = bad
+            with self.subTest(key=key), self.assertRaises(ValueError): background.validate_config(value)
+
+    def test_metadata_must_use_complete_independent_source_and_owned_target(self):
+        for mutation in ("source", "owned", "columns", "desc", "select"):
+            value = current_profile()
+            if mutation == "source": value["metadata_oracles"][1]["rows"].pop(0)
+            if mutation == "owned": value["metadata_oracles"][1]["rows"].pop()
+            if mutation == "columns": value["metadata_oracles"][2]["rows"][0].pop()
+            if mutation == "desc": value["metadata_oracles"][2]["rows"].pop()
+            if mutation == "select": value["metadata_oracles"][0]["rows"] = [["2"]]
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError): background.validate_config(value)
+
+    def fixture(self, directory):
+        value = current_profile("diagnostic", 3); value["rate_per_second"] = 20.0
+        token, table = "a" * 32, "license_perf.ui_bg_" + "a" * 32
+        identity = {"token": token, "pid": 42, "start_ticks": 99, "namespace": "net:[1]"}
+        epoch = 1_000_000_000
+        total = background.current_arrivals(value["rate_per_second"], value["duration_seconds"])
+        count = len(total) // 2
+        def write_json(name, item): (directory / name).write_text(json.dumps(item))
+        api = SimpleNamespace(read_json=lambda path: json.loads(path.read_text()),
+                              sha=lambda path: hashlib.sha256(path.read_bytes()).hexdigest())
+        pins = {role: {"pid": pid, "start_ticks": 10} for role, pid in (("fe", 100), ("be", 101))}
+        write_json("config.json", {**value, "table": table, "cpu_services": pins})
+        models = background.current_metadata_models(value, table)
+        write_json("metadata-oracles.json", models)
+        hashes = [hashlib.sha256(json.dumps(model, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+                  for model in models]
+        (directory / "total-arrivals.tsv").write_text("sequence\toffset_ns\n" + "".join(
+            f"{index}\t{offset}\n" for index, offset in enumerate(total)))
+        last = epoch
+        for stream, slot in (("write", 0), ("read", 1)):
+            header = "sequence\toffset_ns\tid\n" if stream == "read" else "sequence\toffset_ns\tfirst_id\trows\n"
+            lines = []
+            workers = [[] for _ in range(8)]
+            for index in range(count):
+                offset = total[2 * index + slot]
+                tail = str(index % 3) if stream == "read" else f"{1000000000 + index * 100}\t100"
+                lines.append(f"{index}\t{offset}\t{tail}\n")
+                queue, elapsed = (10, 100) if stream == "read" else (30, 200)
+                begin, end = epoch + offset + queue, epoch + offset + elapsed
+                last = max(last, end)
+                workers[index % 8].append({"sequence": str(index), "scheduled_ns": str(epoch + offset),
+                    "started_ns": str(begin), "finished_ns": str(end), "outcome": "OK" if stream == "read" else "ACK",
+                    "affected_rows": "-1" if stream == "read" else "100", "sql_state": "NONE", "error_code": "0",
+                    "e2e_ns": str(elapsed), "result_sha256": hashes[index % 3] if stream == "read" else "NONE"})
+            (directory / (stream + "-arrivals.tsv")).write_text(header + "".join(lines))
+            fields = ["sequence", "scheduled_ns", "started_ns", "finished_ns", "outcome", "affected_rows",
+                      "sql_state", "error_code", "e2e_ns", "result_sha256"]
+            for worker, receipts in enumerate(workers):
+                with (directory / f"{stream}-{worker}.tsv").open("w") as file:
+                    writer = csv.DictWriter(file, fieldnames=fields, delimiter="\t"); writer.writeheader(); writer.writerows(receipts)
+        cutoff = epoch + value["duration_seconds"] * 10**9
+        write_json("window-start.json", {**identity, "epoch_java_monotonic_ns": epoch})
+        write_json("window-end.json", {**identity, "java_monotonic_ns": cutoff, "scheduled_window_complete": True})
+        first = {role: {**pin, "cpu_seconds": 1.0, "sample_started_java_ns": epoch - 10,
+                       "sample_ended_java_ns": epoch - 1} for role, pin in pins.items()}
+        final = {role: {**pin, "cpu_seconds": 2.0, "sample_started_java_ns": max(cutoff, last),
+                       "sample_ended_java_ns": max(cutoff, last) + 10} for role, pin in pins.items()}
+        write_json("measurement-start.json", {**identity, "cpu": first})
+        write_json("measurement-end.json", {**identity, "cpu": final, "epoch_java_monotonic_ns": epoch,
+            "last_request_end_java_ns": last, "request_interval_end_java_ns": max(cutoff, last)})
+        summary = {**identity, "status": "PASS", "profile": background.CURRENT_PROFILE,
+            "metadata_preflight_verified": True, "generated_total_requests": len(total),
+            "tail_arrivals_not_scheduled": len(total) % 2, "scheduled_total_requests": count * 2,
+            "planned_reads": count, "planned_write_batches": count}
+        for stream in ("total", "read", "write"): summary[stream + "_schedule_sha256"] = api.sha(directory / (stream + "-arrivals.tsv"))
+        return api, value, summary
+
+    def test_current_full_receipt_oracle_does_not_claim_formal_or_online_visibility(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary); api, value, summary = self.fixture(directory)
+            result = background.audit_current_receipts(api, directory, value, summary)
+            self.assertEqual(result["streams"]["read"]["scheduled"], result["streams"]["write"]["scheduled"])
+            self.assertFalse(result["eligible_window_shape"])
+            self.assertFalse(result["formal_performance_pass"])
+            self.assertFalse(result["p99_sample_floor_met"])
+            self.assertEqual(result["generated_requests"] - result["scheduled_requests"], result["tail_arrivals_not_scheduled"])
+            self.assertEqual(result["visibility_policy"], "post_window_full_model_not_online_visibility_latency")
+
+    def test_current_metadata_write_metrics_keep_distinct_service_queue_and_latency(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary); api, value, summary = self.fixture(directory)
+            result = background.audit_current_receipts(api, directory, value, summary)
+            for stream, queue, service, elapsed in (("read", 10, 90, 100), ("write", 30, 170, 200)):
+                metrics = result["streams"][stream]
+                self.assertEqual(metrics["success_qps"], metrics["successful"] / value["duration_seconds"])
+                self.assertFalse(metrics["p99_sample_floor_met"])
+                for percentile in ("p95", "p99"):
+                    self.assertAlmostEqual(metrics[percentile + "_ms"], elapsed / 1e6)
+                    self.assertAlmostEqual(metrics["service_" + percentile + "_ms"], service / 1e6)
+                    self.assertAlmostEqual(metrics["queue_" + percentile + "_ms"], queue / 1e6)
+            self.assertEqual(sum(item["success_qps"] for item in result["streams"].values()), result["success_qps"])
+            self.assertNotEqual(result["streams"]["read"]["p99_ms"], result["streams"]["write"]["p99_ms"])
+
+    def test_current_runtime_configuration_must_match_frozen_profile(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary); api, value, summary = self.fixture(directory)
+            file = directory / "config.json"; config = api.read_json(file)
+            config["read_slo_millis"] += 1; file.write_text(json.dumps(config))
+            with self.assertRaisesRegex(ValueError, "frozen configuration changed"):
+                background.audit_current_receipts(api, directory, value, summary)
+
+    def test_current_corrupt_oracle_hash_cpu_boundary_or_tail_cannot_pass(self):
+        for mutation in ("result_hash", "cpu_lifetime", "cpu_end", "last_request", "tail"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary); api, value, summary = self.fixture(directory)
+                if mutation == "result_hash":
+                    file = directory / "read-0.tsv"; lines = file.read_text().splitlines(); columns = lines[1].split("\t")
+                    columns[-1] = "f" * 64; lines[1] = "\t".join(columns); file.write_text("\n".join(lines) + "\n")
+                elif mutation == "tail": summary["tail_arrivals_not_scheduled"] = 7
+                else:
+                    file = directory / "measurement-end.json"; content = api.read_json(file)
+                    if mutation == "cpu_lifetime": content["cpu"]["fe"]["start_ticks"] = 11
+                    if mutation == "cpu_end": content["cpu"]["fe"]["sample_started_java_ns"] = 1
+                    if mutation == "last_request": content["last_request_end_java_ns"] += 1
+                    file.write_text(json.dumps(content))
+                with self.assertRaises(ValueError): background.audit_current_receipts(api, directory, value, summary)
+
+    def test_unknown_write_is_preserved_and_cannot_be_a_successful_pass(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary); api, value, summary = self.fixture(directory)
+            file = directory / "write-0.tsv"; lines = file.read_text().splitlines(); columns = lines[1].split("\t")
+            columns[4], columns[5] = "UNKNOWN", "-1"; lines[1] = "\t".join(columns); file.write_text("\n".join(lines) + "\n")
+            with self.assertRaisesRegex(ValueError, "PASS hides"): background.audit_current_receipts(api, directory, value, summary)
+            summary["status"] = "FAIL"
+            audit = background.audit_current_receipts(api, directory, value, summary)
+            self.assertEqual(audit["streams"]["write"]["unknown"], 1)
+            self.assertEqual(audit["scheduled_requests"] - audit["successful_requests"], 1)
+
+    def test_only_explicit_current_facade_ignores_browser_coordination(self):
+        fixture = background.CurrentBackground.__new__(background.CurrentBackground); fixture.check = Mock()
+        fixture.coordinate(); fixture.check.assert_called_once()
 
 
 if __name__ == "__main__":

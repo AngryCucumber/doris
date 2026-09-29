@@ -31,6 +31,55 @@ SPEC.loader.exec_module(BASELINE)
 
 
 class BaselineStatisticsTest(unittest.TestCase):
+    def test_current_contract_binds_retained_group_and_rejects_unfrozen_static_results(self):
+        workload = {"case_id": "LP-001", "contract_group": "G1", "cell_id": "point-text-c1-reuse-low",
+                    "seed": 20260922, "concurrency": 1,
+                    "point_key_workload": {"seed": 20260922}}
+        path, shape, selection = BASELINE.contract_inputs(workload)
+        self.assertEqual(path, BASELINE.CURRENT_CONTRACT)
+        self.assertEqual((shape["warmup_seconds"], shape["duration_seconds_per_window"]), (120, 300))
+        self.assertEqual(selection["plan_sha256"], BASELINE.sha(BASELINE.CURRENT_PLAN))
+        for key, value in (("seed", 1), ("concurrency", 64), ("cell_id", ""), ("case_id", "LP-009")):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                BASELINE.contract_inputs(dict(workload, **{key: value}))
+        workload.pop("point_key_workload")
+        workload["queries"] = [{"sql": "SELECT 1", "expected_rows": 1}]
+        with self.assertRaisesRegex(ValueError, "full expected_result"):
+            BASELINE.contract_inputs(workload)
+
+    def test_exact_oracle_requires_unambiguous_types_and_shape(self):
+        query = {"expected_rows": 2, "expected_result": {"columns": [{"label": "x", "jdbc_type": 12}],
+                                                       "rows": [[None], ["雪\n\x00"]]}}
+        self.assertEqual(BASELINE.encode_result_oracle(query), BASELINE.encode_result_oracle(query))
+        for rows in ([[1], ["2"]], [[None, "extra"], ["2"]], [["one"]]):
+            with self.assertRaises(ValueError):
+                BASELINE.encode_result_oracle(dict(query, expected_result=dict(query["expected_result"], rows=rows)))
+
+    def test_business_binding_excludes_endpoint_rate_and_window_but_keeps_oracle_and_mode(self):
+        workload = {"case_id": "LP-005", "contract_group": "G1", "concurrency": 1, "seed": 20260922,
+                    "timeout_seconds": 10, "connection_mode": "reuse", "session_sql": ["SET enable_sql_cache=false"],
+                    "queries": [{"sql": "SELECT 1", "expected_rows": 1, "expected_result": {
+                        "columns": [{"label": "1", "jdbc_type": 4}], "rows": [["1"]]}}]}
+        original = BASELINE.business_workload_binding(workload)
+        canonical = json.dumps(original["payload"], sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        self.assertEqual(original["sha256"], hashlib.sha256(canonical.encode()).hexdigest())
+        changed = dict(workload, host="127.0.0.2", port=9030, rate=12.75, duration_seconds=600,
+                       warmup_seconds=120, pairs=5, build_identity={"candidate": "B"})
+        self.assertEqual(original["sha256"], BASELINE.business_workload_binding(changed)["sha256"])
+        for key, value in (("concurrency", 16), ("connection_mode", "per_request"), ("seed", 5),
+                           ("timeout_seconds", 20), ("session_sql", []), ("fixture_sha256", "a" * 64)):
+            self.assertNotEqual(original["sha256"], BASELINE.business_workload_binding(dict(workload, **{key: value}))["sha256"])
+        changed = json.loads(json.dumps(workload))
+        changed["queries"][0]["expected_result"]["rows"] = [["wrong"]]
+        self.assertNotEqual(original["sha256"], BASELINE.business_workload_binding(changed)["sha256"])
+
+    def test_arbitrary_business_hash_is_rejected_before_connecting(self):
+        workload = {"profile": "checkout_isolated", "host": "127.0.0.1", "port": 9030, "case_id": "LP-001",
+                    "duration_seconds": 1, "pairs": 1, "rate": 12.5, "concurrency": 1, "timeout_seconds": 1,
+                    "seed": 20260922, "business_workload_sha256": "0" * 64}
+        with self.assertRaisesRegex(ValueError, "actual canonical"):
+            BASELINE.check_workload(workload)
+
     def test_backlog_is_in_end_to_end_latency(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
@@ -206,6 +255,9 @@ public final class FakeBaselineDriver implements Driver {
                         if (args != null && args.length > 0 && args[0].toString().startsWith("SET")) {
                             event("initialize", id, 10, ""); return false;
                         }
+                        if (System.getenv().getOrDefault("MASSDB_BASELINE_FAKE_FAILURE", "").equals("timeout")) {
+                            throw new SQLTimeoutException("Secret server message must not be archived", "HYT00", 123);
+                        }
                         int delay = Integer.parseInt(System.getenv().getOrDefault("MASSDB_BASELINE_FAKE_DELAY", "5"));
                         event("execute", id, delay, prepared ? parameter.get() : args[0].toString());
                         returnedKey.set(prepared ? parameter.get()
@@ -224,15 +276,22 @@ public final class FakeBaselineDriver implements Driver {
         if (fault.equals("wrong_key")) key = String.valueOf(Long.parseLong(key) + 1);
         byte[] digest = java.security.MessageDigest.getInstance("MD5").digest(key.getBytes("US-ASCII"));
         String value = String.format("%032x", new java.math.BigInteger(1, digest));
+        String[] values = System.getenv().getOrDefault("MASSDB_BASELINE_FAKE_VALUES", value).split("\\|", -1);
         return Proxy.newProxyInstance(getClass().getClassLoader(), new Class[]{ResultSet.class},
             (proxy, method, args) -> {
                 switch(method.getName()) {
-                    case "next": return rows.getAndIncrement() == 0;
+                    case "next": return rows.getAndIncrement() < values.length;
                     case "getObject": return fault.equals("null") ? null : fault.equals("type") ? 1L : value;
+                    case "getString": return values[rows.get() - 1].equals("__NULL__") ? null : values[rows.get() - 1];
                     case "close": event("closeResult", id, 0, ""); return null;
                     case "getMetaData": return Proxy.newProxyInstance(getClass().getClassLoader(),
                         new Class[]{ResultSetMetaData.class}, (p, m, a) ->
-                        m.getName().equals("getColumnCount") ? (fault.equals("columns") ? 2 : 1) : empty(m.getReturnType()));
+                        {
+                            if (m.getName().equals("getColumnCount")) return fault.equals("columns") ? 2 : 1;
+                            if (m.getName().equals("getColumnLabel")) return fault.equals("label") ? "wrong" : "payload";
+                            if (m.getName().equals("getColumnType")) return fault.equals("jdbc_type") ? Types.BIGINT : Types.VARCHAR;
+                            return empty(m.getReturnType());
+                        });
                     default: return empty(method.getReturnType());
                 }
             });
@@ -287,6 +346,14 @@ class PoissonArrivalScheduleTest(unittest.TestCase):
         b, _ = self.schedule("seed-b.bin", seed=20260923)
         self.assertNotEqual(a, b)
 
+    def test_fractional_arrival_rate_is_supported_without_flooring(self):
+        a, offsets = self.schedule("fraction.bin", rate=12.75, duration=3)
+        b, _ = self.schedule("fraction-repeat.bin", rate=12.75, duration=3)
+        floored, _ = self.schedule("fraction-floor.bin", rate=12, duration=3)
+        self.assertEqual(a, b)
+        self.assertNotEqual(a, floored)
+        self.assertTrue(offsets)
+
     def test_poisson_intervals_and_arrival_count_are_not_fixed(self):
         _, offsets = self.schedule("intervals.bin")
         intervals = [right - left for left, right in zip([0] + offsets, offsets)]
@@ -296,7 +363,7 @@ class PoissonArrivalScheduleTest(unittest.TestCase):
         self.assertLess(min(intervals), 100000)
         self.assertGreater(max(intervals), 3000000)
 
-    def run_connection_mode(self, mode, point_mode=None, warmup=0, concurrency=1):
+    def run_connection_mode(self, mode, point_mode=None, warmup=0, concurrency=1, oracle=None, expect_exit=0):
         directory = self.root / self._testMethodName
         settings = {"host": "127.0.0.1", "port": 29030, "database": "license_perf", "user": "test",
                     "concurrency": concurrency, "rate": 5, "duration_seconds": 1, "warmup_seconds": warmup,
@@ -308,6 +375,8 @@ class PoissonArrivalScheduleTest(unittest.TestCase):
             settings["point_key_workload"] = {"table": "license_perf.point_rows", "mode": point_mode, "seed": 77}
         else:
             settings["queries"] = [{"sql": "SELECT ?", "mode": "prepared", "parameters": [42], "expected_rows": 1}]
+            if oracle is not None:
+                settings["queries"][0].update(expected_result=oracle, expected_rows=len(oracle["rows"]))
         event_log = self.root / (self._testMethodName + ".driver.log")
         with patch.dict(os.environ, {"MASSDB_BASELINE_FAKE_LOG": str(event_log)}):
             summary = BASELINE.run_window(settings, directory, self.java, self.root, self.root)
@@ -317,8 +386,8 @@ class PoissonArrivalScheduleTest(unittest.TestCase):
                 rows.extend(csv.DictReader(stream))
         rows.sort(key=lambda row: int(row["index"]))
         events = [line.split(",", 3) for line in event_log.read_text().splitlines()]
-        self.assertEqual(summary["process_exit_code"], 0)
-        self.assertTrue(summary["cpu_boundary_verified"])
+        self.assertEqual(summary["process_exit_code"], expect_exit)
+        self.assertEqual(summary["cpu_boundary_verified"], expect_exit == 0)
         self.assertFalse(summary["fixed_rate_success_qps_is_capacity"])
         return rows, events, int((directory / "arrival-count").read_text()), summary, directory
 
@@ -343,7 +412,84 @@ class PoissonArrivalScheduleTest(unittest.TestCase):
         for action in ("connect", "initialize", "prepare", "bind", "close"):
             self.assertEqual(sum(event[0] == action for event in events), 1, action)
         self.assertEqual(sum(event[0] == "execute" for event in events), count)
-        self.assertEqual(set(rows[0]), {"index", "query_index", "scheduled_ns", "start_ns", "end_ns", "rows", "error_code", "sql_state"})
+        self.assertEqual(set(rows[0]), {"index", "query_index", "scheduled_ns", "start_ns", "end_ns", "rows",
+                                      "error_code", "sql_state", "error_class"})
+
+    def static_oracle(self, rows=None, ordered=True):
+        return {"columns": [{"label": "payload", "jdbc_type": 12}], "ordered": ordered,
+                "rows": rows if rows is not None else [[hashlib.md5(b"42").hexdigest()]]}
+
+    def test_exact_static_oracle_checks_structure_and_complete_values(self):
+        rows, _, count, summary, _ = self.run_connection_mode("reuse", oracle=self.static_oracle())
+        self.assertEqual(summary["successful_requests"], count)
+        self.assertTrue(all(row["error_class"] == "NONE" for row in rows))
+        self.assertEqual(summary["static_result_oracles"][0]["columns"], 1)
+        self.assertTrue(summary["static_result_oracles"][0]["comparison_inside_request_timing"])
+
+    def test_correct_static_row_count_with_wrong_value_is_rejected(self):
+        _, _, count, summary, _ = self.run_connection_mode("reuse", oracle=self.static_oracle([["wrong"]]))
+        self.assertEqual(summary["successful_requests"], 0)
+        self.assertEqual(summary["errors"], {"-3/VALUE": count})
+        self.assertEqual(summary["error_classes"], {"RESULT_MISMATCH": count})
+        self.assertIsNotNone(summary["failed_request_p99_ms"])
+
+    def test_static_column_labels_are_checked(self):
+        with patch.dict(os.environ, {"MASSDB_BASELINE_FAKE_PAYLOAD": "label"}):
+            _, _, count, summary, _ = self.run_connection_mode("reuse", oracle=self.static_oracle())
+        self.assertEqual(summary["errors"], {"-3/VALUE": count})
+
+    def test_static_jdbc_column_types_are_checked(self):
+        with patch.dict(os.environ, {"MASSDB_BASELINE_FAKE_PAYLOAD": "jdbc_type"}):
+            _, _, count, summary, _ = self.run_connection_mode("reuse", oracle=self.static_oracle())
+        self.assertEqual(summary["errors"], {"-3/VALUE": count})
+
+    def test_unordered_static_oracle_accepts_reordering_and_preserves_null(self):
+        with patch.dict(os.environ, {"MASSDB_BASELINE_FAKE_VALUES": "雪|__NULL__|雪"}):
+            _, _, count, summary, _ = self.run_connection_mode("per_request",
+                    oracle=self.static_oracle([[None], ["雪"], ["雪"]], ordered=False))
+        self.assertEqual(summary["successful_requests"], count)
+
+    def test_unordered_static_oracle_rejects_same_count_different_multiplicity(self):
+        with patch.dict(os.environ, {"MASSDB_BASELINE_FAKE_VALUES": "a|b|b"}):
+            _, _, count, summary, _ = self.run_connection_mode("reuse",
+                    oracle=self.static_oracle([["a"], ["a"], ["b"]], ordered=False))
+        self.assertEqual(summary["errors"], {"-3/VALUE": count})
+
+    def test_driver_reuse_evidence_counts_the_actual_instances_and_executions(self):
+        _, _, count, summary, directory = self.run_connection_mode("reuse", "prepared", warmup=2)
+        record = summary["driver_evidence"][0]
+        self.assertEqual(record["driver_class"], "FakeBaselineDriver")
+        query = record["queries"][0]
+        self.assertEqual(sum(record["connection_classes"].values()), 1)
+        self.assertEqual(query["statement_count"], 1)
+        self.assertEqual(query["measured_execute_attempts"], count)
+        self.assertEqual(query["warmup_execute_attempts"], (directory / "warmup-arrivals.bin").stat().st_size // 8)
+        self.assertGreater(query["warmup_execute_attempts"], 0)
+        self.assertTrue(query["same_reused_statement"])
+        self.assertFalse(record["fe_fast_path_proven"])
+
+    def test_driver_short_connection_evidence_never_claims_prepared_context_reuse(self):
+        _, _, count, summary, _ = self.run_connection_mode("per_request", "prepared")
+        record = summary["driver_evidence"][0]
+        self.assertEqual(sum(record["connection_classes"].values()), count)
+        self.assertEqual(record["queries"][0]["statement_count"], count)
+        self.assertFalse(record["queries"][0]["same_reused_statement"])
+
+    def test_sql_timeout_is_preserved_without_server_message_or_automatic_retry(self):
+        with patch.dict(os.environ, {"MASSDB_BASELINE_FAKE_FAILURE": "timeout"}):
+            rows, _, count, summary, directory = self.run_connection_mode("reuse")
+        self.assertEqual(summary["error_classes"], {"SQL_TIMEOUT": count})
+        self.assertEqual(summary["errors"], {"123/HYT00": count})
+        self.assertEqual(len(rows), count)
+        self.assertEqual(summary["harness_retries"], 0)
+        self.assertNotIn("Secret server message", (directory / "client.log").read_text())
+
+    def test_warmup_timeout_retains_first_error_receipt(self):
+        with patch.dict(os.environ, {"MASSDB_BASELINE_FAKE_FAILURE": "timeout"}):
+            _, _, _, summary, _ = self.run_connection_mode("reuse", warmup=2, expect_exit=1)
+        self.assertEqual(summary["warmup_failure"][0]["error_class"], "SQL_TIMEOUT")
+        self.assertEqual(summary["warmup_failure"][0]["error_code"], 123)
+        self.assertEqual(summary["warmup_failure"][0]["sql_state"], "HYT00")
 
     def test_point_sequence_is_reproducible_uniform_range_and_not_a_small_repeated_vector(self):
         paths = [self.root / name for name in ("keys-a.bin", "keys-b.bin", "keys-c.bin")]

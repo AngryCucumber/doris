@@ -38,6 +38,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 /** Original external scanner protocol, with complete unordered synthetic data and cleanup oracles. */
 public final class LicenseExternalScannerFixture {
@@ -47,7 +51,74 @@ public final class LicenseExternalScannerFixture {
     private static final int MAX_IPC_BYTES = 16 * 1024 * 1024;
     private static final int MAX_CALLS_PER_TABLET = 4096;
     private static final int[] BATCH_SIZES = {1024, 8192};
-    private static volatile Handle activeHandle;
+    private static final HandleRegistry LEGACY_HANDLES = new HandleRegistry();
+    private static final ScheduledThreadPoolExecutor DEADLINES = deadlines();
+
+    private static ScheduledThreadPoolExecutor deadlines() {
+        ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1, task -> {
+            Thread thread = new Thread(task, "scanner-owned-socket-deadline");
+            thread.setDaemon(true);
+            return thread;
+        });
+        executor.setRemoveOnCancelPolicy(true);
+        return executor;
+    }
+
+    /** One worker's owned contexts. A failed close or missing open ACK is never cleared as success. */
+    static final class HandleRegistry {
+        private final Set<Handle> handles = ConcurrentHashMap.newKeySet();
+        private volatile boolean unknownOpen;
+
+        synchronized void submitted() {
+            require(handles.isEmpty() && !unknownOpen, "PREVIOUS_CONTEXT_NOT_CLEAN");
+            unknownOpen = true;
+        }
+
+        synchronized void received(Handle handle) {
+            handles.add(handle);
+            unknownOpen = false;
+        }
+
+        Map<String, Object> closeOwned() {
+            List<String> failures = new ArrayList<>();
+            for (Handle handle : handles) {
+                try {
+                    handle.close();
+                    handles.remove(handle);
+                } catch (Exception error) {
+                    failures.add(error.getClass().getName());
+                }
+            }
+            return Map.of("remaining_contexts", handles.size(), "unknown_open", unknownOpen,
+                    "close_error_classes", failures, "cleanup_verified", handles.isEmpty() && !unknownOpen);
+        }
+    }
+
+    /** Current-window RPC deadline, including fragmented reads; the legacy path keeps its original timeouts. */
+    private static final class SocketDeadline implements AutoCloseable {
+        private final TSocket socket;
+        private final long deadline;
+        private final ScheduledFuture<?> timer;
+
+        SocketDeadline(TSocket socket, long operationDeadline, int seconds, boolean bounded) {
+            this.socket = socket;
+            deadline = bounded ? Math.min(operationDeadline, System.nanoTime() + seconds * 1000000000L) : Long.MAX_VALUE;
+            require(System.nanoTime() < deadline, "RPC_DEADLINE_EXCEEDED");
+            timer = bounded ? DEADLINES.schedule(socket::close, Math.max(1, deadline - System.nanoTime()),
+                    TimeUnit.NANOSECONDS) : null;
+        }
+
+        void complete() {
+            require(System.nanoTime() < deadline, "RPC_DEADLINE_EXCEEDED");
+        }
+
+        public void close() {
+            if (timer != null) {
+                timer.cancel(false);
+                require(System.nanoTime() < deadline, "RPC_DEADLINE_EXCEEDED");
+            }
+        }
+    }
 
     private static void require(boolean value, String message) {
         if (!value) {
@@ -99,12 +170,14 @@ public final class LicenseExternalScannerFixture {
         private final JsonNode config;
         private final String context;
         private final Map<String, Object> step;
+        private final boolean bounded;
         private boolean closed;
 
-        Handle(JsonNode config, String context, Map<String, Object> step) {
+        Handle(JsonNode config, String context, Map<String, Object> step, boolean bounded) {
             this.config = config;
             this.context = context;
             this.step = step;
+            this.bounded = bounded;
         }
 
         @Override
@@ -114,12 +187,17 @@ public final class LicenseExternalScannerFixture {
             }
             // A separate bounded connection also works after the read socket has timed out.
             step.put("close_attempted", true);
+            step.put("close_attempts", ((Number) step.getOrDefault("close_attempts", 0)).intValue() + 1);
+            long deadline = System.nanoTime() + 5000000000L;
             try (TSocket closeSocket = socket(config, 5000)) {
                 TDorisExternalService.Client client =
                         new TDorisExternalService.Client(new TBinaryProtocol(closeSocket));
-                TScanCloseResult result = client.closeScanner(new TScanCloseParams().setContextId(context));
-                step.put("close_status", result.getStatus().getStatusCode().name());
-                status(result.getStatus());
+                try (SocketDeadline bound = new SocketDeadline(closeSocket, deadline, 5, bounded)) {
+                    TScanCloseResult result = client.closeScanner(new TScanCloseParams().setContextId(context));
+                    bound.complete();
+                    step.put("close_status", result.getStatus().getStatusCode().name());
+                    status(result.getStatus());
+                }
                 closed = true;
                 step.put("closed", true);
             } catch (Exception error) {
@@ -221,7 +299,7 @@ public final class LicenseExternalScannerFixture {
 
     private static void scanTablet(JsonNode config, JsonNode tablet, int batchSize, RowSetOracle oracle,
             RootAllocator allocator, Set<String> contextHashes, List<Map<String, Object>> steps,
-            long deadline) throws Exception {
+            long deadline, HandleRegistry registry, boolean bounded) throws Exception {
         require(System.nanoTime() < deadline, "MATRIX_DEADLINE_EXCEEDED");
         require(tablet.path("host").asText().equals("127.0.0.1")
                 && tablet.path("port").asInt() == config.path("be_port").asInt(), "UNOWNED_TABLET_ROUTE");
@@ -234,7 +312,10 @@ public final class LicenseExternalScannerFixture {
         step.put("batches", batches);
         Handle handle = null;
         Exception primary = null;
-        try (TSocket readSocket = socket(config, 10000)) {
+        long openDeadline = bounded ? Math.min(deadline, System.nanoTime() + 10000000000L) : deadline;
+        int connectMillis = bounded ? (int) Math.max(1, Math.min(10000,
+                TimeUnit.NANOSECONDS.toMillis(openDeadline - System.nanoTime()))) : 10000;
+        try (TSocket readSocket = socket(config, connectMillis)) {
             TDorisExternalService.Client client = new TDorisExternalService.Client(new TBinaryProtocol(readSocket));
             TScanOpenParams params = new TScanOpenParams("default_cluster", "license_perf", "point_rows",
                     List.of(tablet.path("tablet_id").asLong()), config.path("opaque_plan").asText());
@@ -242,12 +323,23 @@ public final class LicenseExternalScannerFixture {
             params.setBatchSize(batchSize).setUser(config.path("user").asText())
                     .setPasswd(System.getenv().getOrDefault(config.path("password_env").asText(), ""))
                     .setKeepAliveMin((short) 1).setExecutionTimeout(60).setMemLimit(268435456L);
-            step.put("open_attempted", true);
-            TScanOpenResult opened = client.openScanner(params);
+            TScanOpenResult opened;
+            try (SocketDeadline bound = new SocketDeadline(readSocket, openDeadline, 10, bounded)) {
+                step.put("open_attempted", true);
+                if (bounded) {
+                    registry.submitted();
+                }
+                opened = client.openScanner(params);
+                // Register a received context before checking the deadline/status: cleanup must still own it.
+                String received = opened.getContextId();
+                if (received != null && !received.isEmpty()) {
+                    handle = new Handle(config, received, step, bounded);
+                    registry.received(handle);
+                }
+                bound.complete();
+            }
             String context = opened.getContextId();
             if (context != null && !context.isEmpty()) {
-                handle = new Handle(config, context, step);
-                activeHandle = handle;
                 String contextHash = sha256(context.getBytes(StandardCharsets.UTF_8));
                 step.put("context_id_sha256", contextHash);
                 require(contextHashes.add(contextHash), "CONTEXT_REUSED_ACROSS_OPENS");
@@ -263,8 +355,11 @@ public final class LicenseExternalScannerFixture {
                 Map<String, Object> batch = new LinkedHashMap<>();
                 batches.add(batch);
                 batch.put("request_offset", offset);
-                TScanBatchResult next = client.getNext(new TScanNextBatchParams()
-                        .setContextId(context).setOffset(offset));
+                TScanBatchResult next;
+                try (SocketDeadline bound = new SocketDeadline(readSocket, deadline, 10, bounded)) {
+                    next = client.getNext(new TScanNextBatchParams().setContextId(context).setOffset(offset));
+                    bound.complete();
+                }
                 batch.put("status", next.getStatus().getStatusCode().name());
                 status(next.getStatus());
                 require(next.isSetEos(), "EOS_FLAG_ABSENT");
@@ -289,8 +384,12 @@ public final class LicenseExternalScannerFixture {
             try {
                 if (handle != null) {
                     handle.close();
+                    registry.handles.remove(handle);
                 } else {
                     step.put("cleanup_boundary", "No context ID received; explicit close cannot be confirmed");
+                    if (bounded && registry.unknownOpen) {
+                        step.put("server_context_state", "OPEN_ACK_UNKNOWN");
+                    }
                 }
             } catch (Exception closeError) {
                 if (primary != null) {
@@ -298,8 +397,6 @@ public final class LicenseExternalScannerFixture {
                 } else {
                     throw closeError;
                 }
-            } finally {
-                activeHandle = null;
             }
         }
     }
@@ -309,6 +406,15 @@ public final class LicenseExternalScannerFixture {
         result.put("batch_size", batchSize);
         result.put("attempt", attempt);
         result.put("mode", attempt == 0 ? "first_open" : "same_plan_reopen_after_close");
+        scanOnce(config, batchSize, contextHashes, result, deadline, LEGACY_HANDLES, false);
+    }
+
+    /** The performance helper supplies a fresh FE response and its own worker registry for every operation. */
+    static void scanOnce(JsonNode config, int batchSize, Set<String> contextHashes,
+            Map<String, Object> result, long deadline, HandleRegistry registry, boolean bounded) throws Exception {
+        require(batchSize == 1024 || batchSize == 8192, "FIXED_SCANNER_BATCH_SIZE");
+        require(config.path("tablets").size() == TABLETS, "EXPECTED_16_TABLETS");
+        result.put("batch_size", batchSize);
         result.put("plan_sha256", sha256(config.path("opaque_plan").asText().getBytes(StandardCharsets.US_ASCII)));
         result.put("status", "FAIL");
         long started = System.nanoTime();
@@ -317,7 +423,7 @@ public final class LicenseExternalScannerFixture {
         RowSetOracle oracle = new RowSetOracle(ROWS);
         try (RootAllocator allocator = new RootAllocator(128L * 1024 * 1024)) {
             for (JsonNode tablet : config.path("tablets")) {
-                scanTablet(config, tablet, batchSize, oracle, allocator, contextHashes, steps, deadline);
+                scanTablet(config, tablet, batchSize, oracle, allocator, contextHashes, steps, deadline, registry, bounded);
             }
             Map<String, Object> actual = oracle.finish();
             result.put("complete_unordered_set", actual);
@@ -330,6 +436,50 @@ public final class LicenseExternalScannerFixture {
             result.put("rows_verified", oracle.count);
             result.put("elapsed_nanos_with_complete_oracle", System.nanoTime() - started);
         }
+    }
+
+    /** Additional current-window checks. No open(), RPC, or network connection is made. */
+    static List<String> boundedSelfTest() throws Exception {
+        List<String> passed = new ArrayList<>();
+        HandleRegistry failed = new HandleRegistry();
+        Map<String, Object> step = new LinkedHashMap<>();
+        // An invalid namespace fails the guard before socket creation, deterministically exercising close retention.
+        failed.received(new Handle(JSON.createObjectNode(), "offline-unsubmitted-context", step, true));
+        Map<String, Object> cleanup = failed.closeOwned();
+        require(cleanup.get("remaining_contexts").equals(1) && Boolean.FALSE.equals(cleanup.get("cleanup_verified")),
+                "FAILED_CLOSE_REMOVED_FROM_REGISTRY");
+        require(failed.closeOwned().get("remaining_contexts").equals(1), "SECOND_FAILED_CLOSE_WAS_CLEARED");
+        passed.add("failed_close_remains_owned_without_network");
+        class UnopenedSocket extends TSocket {
+            final java.util.concurrent.atomic.AtomicInteger closes = new java.util.concurrent.atomic.AtomicInteger();
+            UnopenedSocket() throws Exception {
+                super("127.0.0.1", 1, 1);
+            }
+            @Override
+            public void close() {
+                closes.incrementAndGet();
+                super.close();
+            }
+        }
+        UnopenedSocket expired = new UnopenedSocket();
+        SocketDeadline deadline = new SocketDeadline(expired, System.nanoTime() + 20000000L, 1, true);
+        long stop = System.nanoTime() + 1000000000L;
+        while (expired.closes.get() == 0 && System.nanoTime() < stop) {
+            Thread.sleep(2);
+        }
+        require(expired.closes.get() > 0, "RPC_WATCHDOG_DID_NOT_CLOSE_OWNED_SOCKET");
+        reject(deadline::complete, "RPC_DEADLINE_EXCEEDED");
+        reject(deadline::close, "RPC_DEADLINE_EXCEEDED");
+        passed.add("absolute_rpc_watchdog_closes_unopened_socket");
+        UnopenedSocket cancelled = new UnopenedSocket();
+        try (SocketDeadline completed = new SocketDeadline(cancelled, System.nanoTime() + 20000000L, 1, true)) {
+            completed.complete();
+        }
+        Thread.sleep(40);
+        require(cancelled.closes.get() == 0, "CANCELLED_RPC_WATCHDOG_CLOSED_SOCKET");
+        cancelled.close();
+        passed.add("completed_rpc_cancels_watchdog");
+        return passed;
     }
 
     @FunctionalInterface
@@ -407,14 +557,7 @@ public final class LicenseExternalScannerFixture {
         report.put("runs", runs);
         report.put("scope", "Original scanner functional fixture; no expiry or performance qualification");
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            Handle handle = activeHandle;
-            if (handle != null) {
-                try {
-                    handle.close();
-                } catch (Exception ignored) {
-                    // Bounded best effort on termination; the normal report requires confirmed close.
-                }
-            }
+            LEGACY_HANDLES.closeOwned();
         }, "external-scanner-fixture-cleanup"));
         try {
             guard(config);

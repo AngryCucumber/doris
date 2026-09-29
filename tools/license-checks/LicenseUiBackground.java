@@ -46,6 +46,10 @@ public final class LicenseUiBackground {
     private static final String[] WRITE_SESSION = {"SET group_commit='off_mode'", "SET enable_insert_strict=true",
         "SET enable_unique_key_partial_update=false"};
     private final JsonNode config;
+    private final boolean currentProfile;
+    private JsonNode p4Launch;
+    private String p4LaunchHash;
+    private final AtomicLong lastRequestEnd = new AtomicLong();
     private final Path directory;
     private final Path configurationPath;
     private final String token;
@@ -75,6 +79,7 @@ public final class LicenseUiBackground {
     private LicenseUiBackground(Path path) throws Exception {
         configurationPath = path.toRealPath();
         config = JSON.readTree(configurationPath.toFile());
+        currentProfile = config.path("profile").asText().equals("current_allowed_business_v1");
         directory = Path.of(config.path("output").asText()).toRealPath();
         require(configurationPath.getParent().equals(directory), "CONFIG_DIRECTORY");
         token = config.path("token").asText();
@@ -86,17 +91,47 @@ public final class LicenseUiBackground {
         require(token.matches("[a-f0-9]{32}") && table.equals("license_perf.ui_bg_" + token), "OWNED_TABLE_NAME");
         require(config.path("source_table").asText().equals(SOURCE)
                 && config.path("source_rows").asInt() == 1_000_000, "SOURCE_MODEL");
-        require(number("duration_seconds") == 300 && number("read_rate_per_second") > 0
-                && number("read_rate_per_second") <= 1000 && number("write_batches_per_second") > 0
-                && number("write_batches_per_second") <= 20 && number("write_batch_rows") > 0
-                && number("write_batch_rows") <= 1000, "INPUT_BOUNDS");
+        if (currentProfile) {
+            require(config.path("seed").asLong() == 20260922 && number("read_workers") == 8
+                    && number("write_workers") == 8 && number("write_batch_rows") == 100, "CURRENT_FIXED_MIX");
+            require(config.path("qualification").asText().equals("diagnostic")
+                    || config.path("qualification").asText().equals("formal"), "CURRENT_QUALIFICATION");
+            String group = config.path("group").asText();
+            require(group.equals("G5") || group.equals("G6") || group.equals("G7"), "CURRENT_GROUP");
+            require(number("duration_seconds") > 0 && number("duration_seconds") <= 7200
+                    && (config.path("qualification").asText().equals("diagnostic")
+                    || number("duration_seconds") >= (group.equals("G7") ? 300 : 600)), "CURRENT_DURATION");
+            double rate = config.path("rate_per_second").asDouble();
+            require(Double.isFinite(rate) && rate > 0 && rate <= 1000, "CURRENT_RATE");
+            require(config.path("metadata_oracles").isArray() && config.path("metadata_oracles").size() == 3,
+                    "CURRENT_METADATA_ORACLES");
+            require(config.path("clock_ticks_per_second").asLong() > 0, "CURRENT_CPU_CLOCK");
+        } else {
+            require(number("duration_seconds") == 300 && number("read_rate_per_second") > 0
+                    && number("read_rate_per_second") <= 1000 && number("write_batches_per_second") > 0
+                    && number("write_batches_per_second") <= 20 && number("write_batch_rows") > 0
+                    && number("write_batch_rows") <= 1000, "INPUT_BOUNDS");
+        }
         require(number("read_workers") > 0 && number("read_workers") <= 32
                 && number("write_workers") > 0 && number("write_workers") <= 8
                 && number("timeout_seconds") > 0 && number("timeout_seconds") <= 30, "WORKER_BOUNDS");
+        if (config.has("p4_launch")) {
+            require(currentProfile, "P4_CURRENT_PROFILE_ONLY");
+            Path launchPath = Path.of(config.path("p4_launch").path("path").asText());
+            p4LaunchHash = digest(Files.readAllBytes(launchPath));
+            require(p4LaunchHash.equals(config.path("p4_launch").path("sha256").asText()), "P4_LAUNCH_CHANGED");
+            p4Launch = JSON.readTree(launchPath.toFile());
+            require(p4Launch.path("launch_token").asText().matches("[a-f0-9]{64}")
+                    && p4Launch.path("boot_id").asText().equals(
+                    Files.readString(Path.of("/proc/sys/kernel/random/boot_id")).trim()), "P4_LAUNCH_IDENTITY");
+            require(config.path("p4_coordination_seconds").asInt() > 0
+                    && config.path("p4_coordination_seconds").asInt() <= 300, "P4_COORDINATION_BOUND");
+        }
         summary.put("schema_version", 1).put("token", token).put("table", table).put("status", "FAIL")
                 .put("pid", pid).put("start_ticks", startTicks).put("namespace", namespace)
                 .put("formal_performance_pass", false).put("full_goal_complete", false)
                 .put("credentials_recorded", false).put("automatic_write_replays", 0);
+        if (p4Launch != null) { p4Identity(summary); }
     }
 
     private static void require(boolean condition, String code) {
@@ -126,9 +161,50 @@ public final class LicenseUiBackground {
     }
 
     private ObjectNode timestamp() {
-        return JSON.createObjectNode().put("token", token).put("java_monotonic_ns", System.nanoTime())
+        ObjectNode value = JSON.createObjectNode().put("token", token).put("java_monotonic_ns", System.nanoTime())
                 .put("pid", pid).put("start_ticks", startTicks).put("namespace", namespace)
                 .put("unix_millis", System.currentTimeMillis()).put("at_utc", Instant.now().toString());
+        return p4Launch == null ? value : p4Identity(value);
+    }
+
+    private ObjectNode p4Identity(ObjectNode value) {
+        return value.put("schema_version", 1).put("launch_token", p4Launch.path("launch_token").asText())
+                .put("launch_sha256", p4LaunchHash).put("boot_id", p4Launch.path("boot_id").asText())
+                .put("helper_pid", pid).put("helper_start_ticks", startTicks).put("namespace", namespace);
+    }
+
+    private JsonNode p4Await(String name, long deadline) throws Exception {
+        Path path = directory.resolve(name);
+        while (!Files.exists(path)) {
+            require(System.nanoTime() < deadline && !Files.exists(directory.resolve("stop.json")), "P4_CLOCK_TIMEOUT");
+            identity(); Thread.sleep(2);
+        }
+        JsonNode value = JSON.readTree(path.toFile());
+        require(value.path("launch_token").asText().equals(p4Launch.path("launch_token").asText())
+                && value.path("launch_sha256").asText().equals(p4LaunchHash)
+                && value.path("boot_id").asText().equals(p4Launch.path("boot_id").asText())
+                && digest(Files.readAllBytes(Path.of(config.path("p4_launch").path("path").asText())))
+                .equals(p4LaunchHash), "P4_CLOCK_IDENTITY");
+        require(System.nanoTime() < deadline, "P4_CLOCK_EXPIRED");
+        return value;
+    }
+
+    private void p4Handshake() throws Exception {
+        if (p4Launch == null) { return; }
+        long deadline = System.nanoTime() + config.path("p4_coordination_seconds").asLong() * BILLION;
+        String readyNonce = java.util.UUID.randomUUID().toString();
+        publish("p4-clock-ready.json", p4Identity(JSON.createObjectNode()).put("ready_nonce", readyNonce));
+        JsonNode request = p4Await("clock-request.json", deadline);
+        require(request.path("ready_nonce").asText().equals(readyNonce)
+                && request.path("nonce").asText().matches("[a-f0-9]{64}"), "P4_CLOCK_NONCE");
+        publish("p4-helper-clock.json", p4Identity(JSON.createObjectNode())
+                .put("nonce", request.path("nonce").asText()).put("jvm_sample_ns", System.nanoTime()));
+        JsonNode ack = p4Await("clock-ack.json", deadline);
+        require(ack.path("nonce").asText().equals(request.path("nonce").asText())
+                && ack.path("helper_clock_sha256").asText().equals(
+                digest(Files.readAllBytes(directory.resolve("p4-helper-clock.json"))))
+                && ack.path("bridge_sha256").asText().equals(
+                digest(Files.readAllBytes(directory.resolve("p4-clock-bridge.json")))), "P4_CLOCK_ACK");
     }
 
     private void identity() throws Exception {
@@ -351,7 +427,168 @@ public final class LicenseUiBackground {
         }
     }
 
+    private String currentInsert(int index) throws Exception {
+        long first = WRITE_BASE + (long) index * 100;
+        StringBuilder sql = new StringBuilder("INSERT INTO " + table + " VALUES ");
+        for (int row = 0; row < 100; row++) {
+            long id = first + row;
+            if (row != 0) { sql.append(','); }
+            sql.append('(').append(id).append(',').append(id % 1024).append(',').append(id % 100000)
+                    .append(",'").append(md5(id)).append("')");
+        }
+        return sql.toString();
+    }
+
+    private ArrayNode currentOracle(int index) {
+        JsonNode expected = config.path("metadata_oracles").get(index);
+        ArrayNode value = JSON.createArrayNode();
+        value.add(expected.path("columns"));
+        ArrayNode rows = value.addArray();
+        for (JsonNode row : expected.path("rows")) {
+            ArrayNode copy = rows.addArray();
+            for (JsonNode field : row) {
+                if (field.isNull()) { copy.addNull(); }
+                else { copy.add(field.asText().replace("${OWNED_TABLE}", table.substring("license_perf.".length()))); }
+            }
+        }
+        if (index == 1) {
+            List<JsonNode> sorted = new ArrayList<>(); rows.forEach(sorted::add);
+            sorted.sort(java.util.Comparator.comparing(row -> row.get(0).asText()));
+            rows.removeAll(); sorted.forEach(rows::add);
+        }
+        return value;
+    }
+
+    private String currentMetadata(Statement statement, int index) throws Exception {
+        String[] sql = {"SELECT 1", "SHOW TABLES FROM license_perf", "DESC " + SOURCE};
+        JsonNode oracle = config.path("metadata_oracles").get(index);
+        require(oracle.path("sql").asText().equals(sql[index]), "METADATA_SQL_CHANGED");
+        ArrayNode observed = JSON.createArrayNode();
+        ArrayNode columns = observed.addArray();
+        ArrayNode actual = observed.addArray();
+        try (ResultSet rows = statement.executeQuery(sql[index])) {
+            int count = rows.getMetaData().getColumnCount();
+            require(count == oracle.path("columns").size(), "METADATA_COLUMN_COUNT");
+            for (int column = 1; column <= count; column++) { columns.add(rows.getMetaData().getColumnLabel(column)); }
+            while (rows.next()) {
+                require(actual.size() < 10000, "METADATA_ROW_BOUND");
+                ArrayNode row = actual.addArray();
+                for (int column = 1; column <= count; column++) { row.add(rows.getString(column)); }
+            }
+        }
+        if (index == 1) {
+            List<JsonNode> sorted = new ArrayList<>(); actual.forEach(sorted::add);
+            sorted.sort(java.util.Comparator.comparing(row -> row.get(0).asText()));
+            actual.removeAll(); sorted.forEach(actual::add);
+        }
+        require(observed.equals(currentOracle(index)), "METADATA_FULL_VALUE_ORACLE");
+        return digest(JSON.writeValueAsBytes(observed));
+    }
+
+    private void currentInputs() throws Exception {
+        Random random = new Random(20260922);
+        double elapsed = 0;
+        long[] total = new long[1024];
+        int generated = 0;
+        try (BufferedWriter all = Files.newBufferedWriter(directory.resolve("total-arrivals.tsv"))) {
+            all.write("sequence\toffset_ns\n");
+            while (true) {
+                double uniform = random.nextDouble();
+                if (uniform == 0) { continue; }
+                elapsed += -StrictMath.log(uniform) * BILLION / config.path("rate_per_second").asDouble();
+                if (elapsed >= number("duration_seconds") * (double) BILLION) { break; }
+                require(generated < 1_000_000, "CURRENT_SCHEDULE_BOUND");
+                if (generated == total.length) { total = Arrays.copyOf(total, Math.min(1_000_000, total.length * 2)); }
+                total[generated] = (long) elapsed;
+                all.write(generated + "\t" + total[generated] + "\n");
+                generated++;
+            }
+        }
+        int pairs = generated / 2;
+        require(pairs > 0, "CURRENT_EMPTY_SCHEDULE");
+        reads = new long[pairs]; writes = new long[pairs];
+        writeState = new AtomicIntegerArray(pairs); writeAck = new AtomicLong[pairs]; visible = new int[pairs];
+        try (BufferedWriter read = Files.newBufferedWriter(directory.resolve("read-arrivals.tsv"));
+                BufferedWriter write = Files.newBufferedWriter(directory.resolve("write-arrivals.tsv"))) {
+            read.write("sequence\toffset_ns\tid\n");
+            write.write("sequence\toffset_ns\tfirst_id\trows\n");
+            for (int index = 0; index < pairs; index++) {
+                writes[index] = total[index * 2]; reads[index] = total[index * 2 + 1];
+                writeAck[index] = new AtomicLong();
+                read.write(index + "\t" + reads[index] + "\t" + index % 3 + "\n");
+                write.write(index + "\t" + writes[index] + "\t" + (WRITE_BASE + (long) index * 100) + "\t100\n");
+            }
+        }
+        summary.put("profile", "current_allowed_business_v1").put("group", config.path("group").asText())
+                .put("qualification", config.path("qualification").asText())
+                .put("generated_total_requests", generated).put("scheduled_total_requests", pairs * 2)
+                .put("tail_arrivals_not_scheduled", generated % 2).put("read_workers", 8).put("write_workers", 8)
+                .put("arrival_policy", "single_poisson_alternating_write_metadata_drop_final_odd_arrival")
+                .put("total_schedule_sha256", digest(Files.readAllBytes(directory.resolve("total-arrivals.tsv"))))
+                .put("read_schedule_sha256", digest(Files.readAllBytes(directory.resolve("read-arrivals.tsv"))))
+                .put("write_schedule_sha256", digest(Files.readAllBytes(directory.resolve("write-arrivals.tsv"))))
+                .put("planned_reads", pairs).put("planned_write_batches", pairs)
+                .put("visibility_policy", "post_window_full_model_after_controller_verify_release_no_online_latency_claim")
+                .put("eligible_window_shape", !config.path("qualification").asText().equals("diagnostic"));
+        ArrayNode oracles = JSON.createArrayNode();
+        for (int index = 0; index < 3; index++) { oracles.add(currentOracle(index)); }
+        publish("metadata-oracles.json", oracles);
+    }
+
+    private ObjectNode currentCpu() throws Exception {
+        identity();
+        ObjectNode samples = JSON.createObjectNode();
+        long ticks = config.path("clock_ticks_per_second").asLong();
+        for (String name : new String[] {"fe", "be"}) {
+            JsonNode pin = config.path("cpu_services").path(name);
+            long pid = pin.path("pid").asLong();
+            long before = System.nanoTime();
+            String stat = Files.readString(Path.of("/proc", Long.toString(pid), "stat"));
+            long after = System.nanoTime();
+            String[] fields = stat.substring(stat.lastIndexOf(')') + 1).trim().split("\\s+");
+            require(Long.parseLong(fields[19]) == pin.path("start_ticks").asLong(), "CPU_SERVICE_LIFETIME");
+            samples.putObject(name).put("pid", pid).put("start_ticks", Long.parseLong(fields[19]))
+                    .put("cpu_seconds", (Long.parseLong(fields[11]) + Long.parseLong(fields[12])) / (double) ticks)
+                    .put("sample_started_java_ns", before).put("sample_ended_java_ns", after);
+        }
+        identity();
+        return samples;
+    }
+
+    private void currentWindowEnd() throws Exception {
+        while (System.nanoTime() < phaseDeadline && !Files.exists(directory.resolve("stop.json"))) {
+            windowEnd(); identity();
+            if (windowEnded && workers.stream().noneMatch(Thread::isAlive)) { break; }
+            Thread.sleep(10);
+        }
+        windowEnd();
+        require(windowEnded && !Files.exists(directory.resolve("stop.json"))
+                && workers.stream().noneMatch(Thread::isAlive), "CURRENT_WINDOW_INCOMPLETE");
+        ObjectNode end = timestamp().put("epoch_java_monotonic_ns", epoch.get())
+                .put("last_request_end_java_ns", lastRequestEnd.get())
+                .put("request_interval_end_java_ns", Math.max(epoch.get() + number("duration_seconds") * BILLION,
+                        lastRequestEnd.get()));
+        end.set("cpu", currentCpu());
+        publish("measurement-end.json", end);
+        closeWorkers(); require(workersClosed, "WORKERS_NOT_QUIESCENT");
+    }
+
+    private void currentVerifyRelease() throws Exception {
+        publish("verification-ready.json", timestamp().put("business_window_finished", windowEnded)
+                .put("workers_closed", workersClosed).put("business_reads_during_window", 0));
+        while (!Files.exists(directory.resolve("verify-release.json"))) {
+            identity();
+            require(!Files.exists(directory.resolve("stop.json")), "VERIFY_CANCELLED");
+            Thread.sleep(20);
+        }
+        JsonNode release = JSON.readTree(directory.resolve("verify-release.json").toFile());
+        require(release.path("token").asText().equals(token), "VERIFY_RELEASE_IDENTITY");
+        summary.put("verify_release_received", true);
+        publish("verification-start.json", timestamp());
+    }
+
     private void inputs() throws Exception {
+        if (currentProfile) { currentInputs(); return; }
         long seed = config.path("seed").asLong();
         reads = schedule(number("read_rate_per_second"), number("duration_seconds"), seed);
         writes = schedule(number("write_batches_per_second"), number("duration_seconds"), seed ^ 0x9E3779B97F4A7C15L);
@@ -421,15 +658,26 @@ public final class LicenseUiBackground {
         String role = write ? "write" : "read";
         boolean announced = false;
         try (Connection connection = connect(role);
-                Statement writer = write ? statement(connection) : null;
-                PreparedStatement reader = write ? null : connection.prepareStatement(
+                Statement writer = write || currentProfile ? statement(connection) : null;
+                PreparedStatement reader = write || currentProfile ? null : connection.prepareStatement(
                         "SELECT payload FROM " + SOURCE + " WHERE id = ?");
                 BufferedWriter receipts = Files.newBufferedWriter(directory.resolve(role + "-" + worker + ".tsv"))) {
             if (reader != null) {
                 reader.setQueryTimeout(number("timeout_seconds"));
             }
             publish(role + "-" + worker + "-session.json", session(connection, write));
-            receipts.write("sequence\tscheduled_ns\tstarted_ns\tfinished_ns\toutcome\taffected_rows\tsql_state\terror_code\te2e_ns\n");
+            Object p4Client = null;
+            long p4ConnectionId = -1;
+            if (p4Launch != null) {
+                require(connection instanceof org.mariadb.jdbc.Connection, "P4_ACTUAL_MARIADB_CONNECTION");
+                org.mariadb.jdbc.Connection maria = (org.mariadb.jdbc.Connection) connection;
+                p4Client = maria.getClient(); p4ConnectionId = maria.getThreadId();
+                publish(role + "-" + worker + "-p4-open.json", timestamp().put("role", role).put("worker", worker)
+                        .put("connection_id", p4ConnectionId).put("connection_class", connection.getClass().getName())
+                        .put("driver_version", connection.getMetaData().getDriverVersion()).put("connections_opened", 1));
+            }
+            receipts.write("sequence\tscheduled_ns\tstarted_ns\tfinished_ns\toutcome\taffected_rows\tsql_state\terror_code\te2e_ns"
+                    + (currentProfile ? "\tresult_sha256" : "") + "\n");
             ready.countDown();
             announced = true;
             while (epoch.get() == 0 && !cancelled && System.nanoTime() < phaseDeadline) {
@@ -443,19 +691,23 @@ public final class LicenseUiBackground {
                 String sqlState = "NONE";
                 int errorCode = 0;
                 int affected = -1;
+                String resultHash = "NONE";
                 if (epoch.get() != 0 && sendable(scheduled)) {
                     try {
                         identity();
                         if (write) {
                             // Set UNKNOWN before executing: any exception after this point must never trigger replay.
                             writeState.set(index, 2);
-                            affected = writer.executeUpdate(inserts[index]);
+                            affected = writer.executeUpdate(currentProfile ? currentInsert(index) : inserts[index]);
                             outcome = "ACK";
                             writeState.set(index, 1);
                             if (affected != number("write_batch_rows")) {
                                 outcome = "ACK_AFFECTED_MISMATCH";
                                 errors.incrementAndGet();
                             }
+                        } else if (currentProfile) {
+                            resultHash = currentMetadata(writer, index % 3);
+                            outcome = "OK";
                         } else {
                             reader.setLong(1, keys[index]);
                             // Same result contract as frozen LicenseJdbcBaseline: one String payload, exact MD5, one row.
@@ -480,6 +732,7 @@ public final class LicenseUiBackground {
                     errors.incrementAndGet();
                 }
                 long ended = System.nanoTime();
+                if (currentProfile) { lastRequestEnd.accumulateAndGet(ended, Math::max); }
                 if (write) {
                     if (writeState.get(index) == 0) {
                         writeState.set(index, 3);
@@ -487,12 +740,21 @@ public final class LicenseUiBackground {
                     writeAck[index].set(ended);
                 }
                 long elapsed = ended - scheduled;
-                if (elapsed > number(write ? "write_ack_slo_millis" : "read_slo_millis") * 1_000_000L) {
+                if (!currentProfile && elapsed > number(write ? "write_ack_slo_millis" : "read_slo_millis") * 1_000_000L) {
                     errors.incrementAndGet();
                 }
                 receipts.write(index + "\t" + scheduled + "\t" + started + "\t" + ended + "\t" + outcome
-                        + "\t" + affected + "\t" + sqlState + "\t" + errorCode + "\t" + elapsed + "\n");
+                        + "\t" + affected + "\t" + sqlState + "\t" + errorCode + "\t" + elapsed
+                        + (currentProfile ? "\t" + resultHash : "") + "\n");
                 receipts.flush();
+            }
+            if (p4Launch != null) {
+                org.mariadb.jdbc.Connection maria = (org.mariadb.jdbc.Connection) connection;
+                require(!connection.isClosed() && maria.getClient() == p4Client
+                        && maria.getThreadId() == p4ConnectionId, "P4_WORKER_CONNECTION_CHANGED");
+                publish(role + "-" + worker + "-p4-end.json", timestamp().put("role", role).put("worker", worker)
+                        .put("connection_id", p4ConnectionId).put("same_client_and_connection", true)
+                        .put("operations", (arrivals.length + concurrency - 1 - worker) / concurrency));
             }
         } catch (Exception error) {
             errors.incrementAndGet();
@@ -528,7 +790,7 @@ public final class LicenseUiBackground {
     }
 
     private void runWindow(Connection oracle) throws Exception {
-        phaseDeadline = System.nanoTime() + 90 * BILLION;
+        phaseDeadline = System.nanoTime() + (currentProfile ? number("prepare_timeout_seconds") : 90) * BILLION;
         CountDownLatch ready = new CountDownLatch(number("read_workers") + number("write_workers"));
         for (boolean write : new boolean[] {false, true}) {
             int concurrency = number(write ? "write_workers" : "read_workers");
@@ -542,6 +804,7 @@ public final class LicenseUiBackground {
             }
         }
         require(ready.await(30, TimeUnit.SECONDS) && errors.get() == 0, "CONNECTION_READINESS");
+        p4Handshake();
         publish("ready.json", timestamp().put("source_rows_verified", 1_000_000).put("empty_owned_target", true)
                 .put("read_schedule_sha256", summary.path("read_schedule_sha256").asText())
                 .put("write_schedule_sha256", summary.path("write_schedule_sha256").asText()));
@@ -552,11 +815,17 @@ public final class LicenseUiBackground {
         }
         JsonNode release = JSON.readTree(directory.resolve("release.json").toFile());
         require(release.path("token").asText().equals(token), "RELEASE_IDENTITY");
+        if (currentProfile) {
+            ObjectNode boundary = timestamp();
+            boundary.set("cpu", currentCpu());
+            publish("measurement-start.json", boundary);
+        }
         long start = System.nanoTime() + 500_000_000L;
         phaseDeadline = start + (number("duration_seconds") + number("drain_seconds")) * BILLION;
         epoch.set(start);
         publish("window-start.json", timestamp().put("epoch_java_monotonic_ns", start)
                 .put("duration_seconds", number("duration_seconds")).put("epoch_delay_millis", 500));
+        if (currentProfile) { currentWindowEnd(); return; }
         long[] firstObserved = new long[writes.length];
         try (BufferedWriter evidence = Files.newBufferedWriter(directory.resolve("visibility.tsv"))) {
             evidence.write("sequence\tobserved_ns\tack_or_error_ns\trows\tstate\n");
@@ -735,6 +1004,12 @@ public final class LicenseUiBackground {
                         .put("configuration_sha256", digest(Files.readAllBytes(configurationPath)));
                 owner.set("identity", tableIdentity);
                 publish("owner.json", owner);
+                if (currentProfile) {
+                    try (Statement statement = statement(oracle)) {
+                        for (int index = 0; index < 3; index++) { currentMetadata(statement, index); }
+                    }
+                    summary.put("metadata_preflight_verified", true);
+                }
             }
             try (Connection observer = connect("oracle")) {
                 runWindow(observer);
@@ -746,7 +1021,14 @@ public final class LicenseUiBackground {
             closeWorkers();
             phaseDeadline = System.nanoTime() + number("verify_timeout_seconds") * BILLION;
             if (summary.has("source_before") && workersClosed) {
+                if (currentProfile) {
+                    try { currentVerifyRelease(); } catch (Exception error) {
+                        summary.put("verification_release_failure", error.getClass().getSimpleName());
+                        errors.incrementAndGet();
+                    }
+                }
                 try (Connection oracle = connect("oracle")) {
+                    require(!currentProfile || summary.path("verify_release_received").asBoolean(), "VERIFY_RELEASE_MISSING");
                     summary.set("source_after", fullSource(oracle));
                     require(summary.path("source_before").equals(summary.path("source_after")), "SOURCE_CHANGED");
                     summary.put("source_model_unchanged", true);
@@ -772,14 +1054,31 @@ public final class LicenseUiBackground {
                     .put("status", errors.get() == 0 && cleaned && workersClosed && windowEnded
                             && summary.path("source_model_unchanged").asBoolean()
                             && summary.has("target_after") ? "PASS" : "FAIL");
+            if (p4Launch != null) { summary.put("cleanup_end_java_ns", System.nanoTime()); }
             publish("summary.json", summary);
         }
     }
 
     public static void main(String[] args) {
         try {
-            require(args.length == 1 || (args.length == 2 && args[1].equals("--cleanup-only")), "ARGUMENTS");
+            require(args.length == 1 || (args.length == 2
+                    && (args[1].equals("--cleanup-only") || args[1].equals("--plan-only")
+                    || args[1].equals("--p4-clock-only"))), "ARGUMENTS");
             LicenseUiBackground fixture = new LicenseUiBackground(Path.of(args[0]));
+            if (args.length == 2 && args[1].equals("--p4-clock-only")) {
+                require(fixture.p4Launch != null, "P4_CLOCK_ONLY_EXPLICIT_LAUNCH");
+                fixture.phaseDeadline = System.nanoTime() + 300 * BILLION;
+                fixture.p4Handshake();
+                fixture.publish("p4-clock-only.json", fixture.timestamp().put("database_requests", 0));
+                return;
+            }
+            if (args.length == 2 && args[1].equals("--plan-only")) {
+                require(fixture.currentProfile, "PLAN_ONLY_CURRENT_PROFILE");
+                fixture.currentInputs();
+                fixture.summary.put("status", "PLANNED_NOT_RUN");
+                fixture.publish("plan-only.json", fixture.summary);
+                return;
+            }
             fixture.run(args.length == 2);
             if (args.length == 1 && !fixture.summary.path("status").asText().equals("PASS")) {
                 System.exit(2);

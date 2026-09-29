@@ -21,6 +21,7 @@ from pathlib import Path
 import re
 import resource
 import signal
+import shutil
 import stat
 import threading
 import time
@@ -29,6 +30,12 @@ from stream_load_fixture import ROOT, digest, owned, save, utc, validate_cluster
 
 
 MAX_BODY_BYTES = 2 * 1024 * 1024
+# Explicit P4-only extension: 7200 warmup + 86400 measurement + 2*3600 drain
+# + 480 runner allowance + 720 observer preparation/finalization seconds.
+# The historical observer mode remains bounded to 14400 seconds.
+P4_MAX_DURATION_SECONDS = 102000
+P4_MAX_SAMPLE_BYTES = 8 * 1024 * 1024
+P4_MAX_LOG_BYTES = 8 * 1024**3
 IO_FIELDS = ("rchar", "wchar", "syscr", "syscw", "read_bytes", "write_bytes", "cancelled_write_bytes")
 STATUS_FIELDS = ("VmRSS", "VmHWM", "VmSwap")
 NET_FIELDS = ("rx_bytes", "rx_packets", "rx_errors", "rx_dropped", "tx_bytes", "tx_packets", "tx_errors", "tx_dropped")
@@ -816,28 +823,73 @@ class StopSignals:
             signal.signal(number, previous)
 
 
-def observe(output, duration, interval, collector, stop, metadata, clock=time.monotonic):
-    if not 0 < duration <= 14400 or not 1 <= interval <= 60:
-        raise ValueError("Require duration in (0,14400] and interval in [1,60] seconds")
+class ObserverBudgetExceeded(ValueError):
+    """An explicit long-window resource bound stopped collection before another sample."""
+
+
+def validate_window_limits(duration, interval, long_limits=None):
+    maximum = 14400 if long_limits is None else P4_MAX_DURATION_SECONDS
+    if not 0 < duration <= maximum or not 1 <= interval <= 60:
+        raise ValueError("Require duration in (0,%d] and interval in [1,60] seconds" % maximum)
+    if long_limits is None:
+        return None
+    if not isinstance(long_limits, dict) or set(long_limits) != {"max_samples", "max_log_bytes", "min_free_disk_bytes"}:
+        raise ValueError("P4 long windows require explicit sample/log/disk budgets")
+    if any(type(value) is not int or value <= 0 for value in long_limits.values()):
+        raise ValueError("P4 budgets must be positive integers")
+    expected = math.floor(duration / interval) + 1
+    if not expected <= long_limits["max_samples"] <= P4_MAX_DURATION_SECONDS + 1:
+        raise ValueError("P4 sample budget cannot cover the full declared schedule")
+    if not P4_MAX_SAMPLE_BYTES <= long_limits["max_log_bytes"] <= P4_MAX_LOG_BYTES:
+        raise ValueError("P4 sample log byte budget lies outside explicit bounds")
+    if long_limits["min_free_disk_bytes"] < 1024**2:
+        raise ValueError("P4 final-receipt disk reserve must be at least one MiB")
+    return {**long_limits, "maximum_sample_bytes": P4_MAX_SAMPLE_BYTES, "maximum_scheduled_samples": expected}
+
+
+def observe(output, duration, interval, collector, stop, metadata, clock=time.monotonic,
+            long_limits=None, disk_free=None):
+    limits = validate_window_limits(duration, interval, long_limits)
+    disk_free = disk_free or (lambda: shutil.disk_usage(output).free)
     started, index, skipped, failures = clock(), 0, 0, 0
     deadline, samples, error_types = started + duration, 0, Counter()
     before = resource.getrusage(resource.RUSAGE_SELF)
     report = {**metadata, "started_at_utc": utc(), "started_monotonic_ns": int(started * 1e9),
               "duration_seconds": duration, "interval_seconds": interval,
               "status": "RUNNING", "statistical_precision_proven": False, "performance_pass_proven": False}
+    if limits is not None:
+        report["p4_long_window_limits"] = limits
+    bytes_written = 0
     save(output / "summary.json", report)
     try:
+        if limits is not None and disk_free() < limits["max_log_bytes"] + limits["min_free_disk_bytes"]:
+            raise ObserverBudgetExceeded("P4 declared log allocation and final-receipt reserve unavailable")
         with (output / "samples.jsonl").open("x", encoding="utf-8") as stream:
             while started + index * interval <= deadline:
                 scheduled = started + index * interval
                 if stop.event.wait(max(0, scheduled - clock())):
                     break
+                if limits is not None:
+                    # Leave room for a full bounded record before calling the collector.
+                    # Never collect/then silently omit a sample to keep a green window.
+                    if samples >= limits["max_samples"]:
+                        raise ObserverBudgetExceeded("P4 actual sample count exceeds frozen budget")
+                    if bytes_written + P4_MAX_SAMPLE_BYTES > limits["max_log_bytes"]:
+                        raise ObserverBudgetExceeded("P4 raw log has no space for another full bounded sample")
+                    if disk_free() < P4_MAX_SAMPLE_BYTES + limits["min_free_disk_bytes"]:
+                        raise ObserverBudgetExceeded("P4 disk reserve reached before next sample")
                 sample = collector()
                 sample["sample_index"] = samples
                 sample["scheduled_offset_seconds"] = index * interval
                 sample["schedule_lag_seconds"] = max(0, clock() - scheduled - sample.get("elapsed_nanos", 0) / 1e9)
-                stream.write(json.dumps(sample, ensure_ascii=False, allow_nan=False) + "\n")
+                encoded = json.dumps(sample, ensure_ascii=False, allow_nan=False) + "\n"
+                encoded_bytes = len(encoded.encode("utf-8")) if limits is not None else 0
+                if limits is not None and encoded_bytes > P4_MAX_SAMPLE_BYTES:
+                    report["unarchived_oversized_samples"] = 1
+                    raise ObserverBudgetExceeded("P4 collector produced an oversized raw record; window invalid")
+                stream.write(encoded)
                 stream.flush()
+                bytes_written += encoded_bytes
                 samples += 1
                 failures += bool(sample["errors"])
                 error_types.update(item["type"] for item in sample["errors"])
@@ -854,7 +906,7 @@ def observe(output, duration, interval, collector, stop, metadata, clock=time.mo
             if report["status"] == "RUNNING":
                 report["status"] = "INTERRUPTED" if stop.event.is_set() else "COMPLETED_WITH_ERRORS" if failures else "COMPLETED"
     except Exception as error:
-        report["status"] = "FAILED"
+        report["status"] = "FAILED_RESOURCE_BOUND" if isinstance(error, ObserverBudgetExceeded) else "FAILED"
         report["failure_type"] = type(error).__name__
         raise
     finally:
@@ -866,6 +918,8 @@ def observe(output, duration, interval, collector, stop, metadata, clock=time.mo
                        "skipped_schedule_slots": skipped, "signal_number": stop.signal_number,
                        "observer_cpu_seconds": after.ru_utime + after.ru_stime - before.ru_utime - before.ru_stime,
                        "observer_peak_rss_bytes": after.ru_maxrss * 1024})
+        if limits is not None:
+            report["raw_sample_bytes_written"] = bytes_written
         if (output / "samples.jsonl").exists():
             report["samples_sha256"] = digest(output / "samples.jsonl")
         save(output / "summary.json", report)
@@ -882,11 +936,22 @@ def main():
     parser.add_argument("--rpc-selection", type=Path,
                         help="Opt in to exact original FE RPC hostname/method selection from an owned JSON file")
     parser.add_argument("--gc-pauses", action="store_true", help="Opt in to existing original FE GC log event reads")
+    parser.add_argument("--p4-long-window", action="store_true", help="Explicit bounded P4 collection up to 102000 seconds; default remains 14400")
+    parser.add_argument("--max-samples", type=int)
+    parser.add_argument("--max-log-bytes", type=int)
+    parser.add_argument("--min-free-disk-bytes", type=int)
     args = parser.parse_args()
     if not 0.05 <= args.http_timeout_seconds <= 5:
         parser.error("HTTP timeout must be in [0.05,5] seconds")
-    if not 0 < args.duration_seconds <= 14400 or not 1 <= args.interval_seconds <= 60:
-        parser.error("Duration must be in (0,14400], interval in [1,60] seconds")
+    budgets = {"max_samples": args.max_samples, "max_log_bytes": args.max_log_bytes,
+               "min_free_disk_bytes": args.min_free_disk_bytes}
+    if not args.p4_long_window and any(value is not None for value in budgets.values()):
+        parser.error("Long-window budgets require explicit --p4-long-window")
+    long_limits = budgets if args.p4_long_window else None
+    try:
+        validate_window_limits(args.duration_seconds, args.interval_seconds, long_limits)
+    except ValueError as error:
+        parser.error(str(error))
     state, pins = freeze_cluster(args.cluster_record)
     selection, selection_receipt = (load_rpc_selection(args.rpc_selection) if args.rpc_selection else (None, None))
     binding = gc_binding(state, pins["fe"]) if args.gc_pauses else None
@@ -936,7 +1001,8 @@ def main():
                 if tracker:
                     tracker.update(value)
                 return value
-            report = observe(output, args.duration_seconds, args.interval_seconds, collect, stop, metadata)
+            report = observe(output, args.duration_seconds, args.interval_seconds, collect, stop, metadata,
+                             long_limits=long_limits)
         except BaseException as error:
             primary_error = error
         finally:

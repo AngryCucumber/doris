@@ -4,6 +4,83 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License P4 measurement tooling (2026-09-29, in progress)
+
+- Update the execution documents for the user's quick-acceptance scope and add
+  `docs/license-p4-acceptance-20260929.md` with actual six-case JDBC A/B and
+  valid-state functional results. Retain measured CPU and latency increases,
+  the long-lived-A/newly-started-B limitation, and pending expiry, page and
+  independent-package runtime checks. The historical capacity, long-window
+  and fine-precision gates below no longer block this quick acceptance;
+  previous failures and qualification records remain unchanged. Preserve the
+  commercial HTML-comment header used by the existing Markdown documents;
+  these documentation changes do not change FE/BE product behavior.
+- Bind current G1-G7 measurements to the reduced execution contract while
+  preserving historical LP records. Add complete static result oracles and
+  actual JDBC statement lifecycle receipts to the existing query runner.
+- Add an A-only freeze and paired A/B statistics layer with fixed CPU/throughput
+  and latency precision ceilings. Require independent windows, raw evidence and
+  capacity bindings; missing evidence or precision cannot establish a pass.
+- Add an independent certificate-page performance driver for the retained
+  detail and import concurrency levels, bounded requests, explicit controller
+  barriers and cleanup. Keep browser samples separate from business metrics.
+- Add an explicit current write/metadata background profile while preserving
+  the original point-read profile. Retain sixteen reused workers, independent
+  full-result checks, disjoint writes and post-window verification for expired
+  certificates. Bind real JDBC execution records through a separate evidence
+  adapter; missing lifecycle or clock-mapping records remain unqualified.
+- Add an opt-in clock handshake to that background helper and a G5/G6/G7
+  participant with actual reused-connection evidence, explicit state barriers
+  and independently checked per-stream metrics. Keep legacy defaults and
+  measured request timing unchanged; state, management and UI qualification
+  remain the responsibility of the outer controller.
+- Recheck the original million-row point fixture and short-circuit path, and
+  retain new short-window diagnostics separately from formal acceptance.
+- Add an opt-in bounded JDBC clock handshake and waited lifecycle evidence;
+  historical windows remain unqualified when these records are missing. Add
+  an HTTP Query driver with a complete payload oracle and absolute request
+  deadlines, explicitly separating HTTP connection reuse from FE SQL sessions.
+- Add current G4 single-window DML and Stream Load adapters. Use distinct
+  operation domains, original transaction acknowledgements, complete final
+  data checks and owned cleanup. Reuse one bounded Stream Load input file
+  instead of copying every batch; require external certificate-state and
+  resource-observer evidence before formal normalization. Preserve diagnostic
+  failures and distinguish tool verification from performance qualification.
+- Add a Flight single-window wrapper around the unchanged full-result fixture,
+  with fresh FE tickets, reused channels, bounded scheduling and raw lifecycle
+  evidence. Preserve the original 65535-batch failure and require separate real
+  integration and paired performance acceptance.
+- Add a fresh-plan scanner window with per-worker handle ownership, actual HTTP
+  connection evidence, full million-row validation and acknowledged cleanup.
+  Preserve unknown opens and failed closes; keep the original BE unchanged.
+- Add a complex-planning window that reuses the independent 33-column oracle,
+  retains cold per-request connections and hot reused connections with the
+  fixed 180-second view change, and binds actual reader preflight evidence,
+  process clocks, raw requests and waited cleanup to the measured launch.
+  Original fixture defaults and historical evidence remain distinct.
+- Add a catalog/S3 read window with streaming JDBC results and complete
+  million-row, four-column validation. Bind the actual reader, private query
+  digest, source identity and CPU observation interval; timeout cleanup closes
+  only the owned socket and does not open a cancellation connection.
+- Add an external JDBC INSERT SELECT window with disjoint 100-row operations,
+  complete native PostgreSQL verification and transaction-locked owned-table
+  cleanup. Retain unknown write outcomes, actual FE acknowledgements and
+  separately frozen Java arrival schedules; offline tool checks do not qualify
+  real capacity or paired performance.
+- Add an explicit bounded long-window mode to the existing resource observer,
+  preserving default limits and metrics. Enforce sample, log and disk bounds
+  so low-rate workloads cannot silently lose observation coverage.
+- Add an A-only Flight/scanner capacity controller with independently warmed
+  windows, actual observer/client lifecycle and immutable predeclared SLOs.
+  Separate short diagnostic pilots from full confirmation; retain the complete
+  sample, pair, capacity-bracket and later A/A/A/B precision requirements.
+  Extend the same loop to catalog/S3 reads with predeclared actual Java arrival
+  files and complete source-container cgroup observations. Preserve native
+  PostgreSQL address and FE session-autocommit semantics in external-write
+  diagnostics without changing product protocol behavior.
+  P4 performance and deployment acceptance remain incomplete; these tooling
+  changes do not modify FE/BE product behavior or transport protocols.
+
 ## License P2U management page (2026-09-29)
 
 - Add a lazy License tab after Configuration with server-authoritative status,

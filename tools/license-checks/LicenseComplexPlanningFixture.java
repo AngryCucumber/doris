@@ -127,7 +127,11 @@ public final class LicenseComplexPlanningFixture {
     }
 
     static long[] offsets(JsonNode array, int seconds) {
-        require(array.isArray() && array.size() <= MAX_REQUESTS, "INVALID_ARRIVAL_ARRAY");
+        return offsets(array, seconds, MAX_REQUESTS);
+    }
+
+    static long[] offsets(JsonNode array, int seconds, int maximum) {
+        require(array.isArray() && array.size() <= maximum, "INVALID_ARRIVAL_ARRAY");
         long[] result = new long[array.size()];
         long previous = -1;
         for (int index = 0; index < result.length; index++) {
@@ -164,6 +168,8 @@ public final class LicenseComplexPlanningFixture {
 
     static final class Config {
         final JsonNode raw;
+        final boolean performance;
+        final long logLimit;
         final JsonNode definition;
         final Path output;
         final Path stopFile;
@@ -192,9 +198,17 @@ public final class LicenseComplexPlanningFixture {
         final int port;
 
         Config(Path file) throws Exception {
+            this(file, false);
+        }
+
+        Config(Path file, boolean performance) throws Exception {
+            this.performance = performance;
+            logLimit = performance ? 512L * 1024 * 1024 : MAX_LOG_BYTES;
             Path configDirectory = directory(file.getParent().toString());
             owned(configDirectory, file.toString(), true);
             raw = JSON.readTree(read(file, 65536));
+            require(performance ? raw.path("performance_profile").asText().equals("g2_complex_performance_v1")
+                    : !raw.has("performance_profile"), "EXPLICIT_PERFORMANCE_ENTRY_REQUIRED");
             output = directory(raw.path("output_directory").asText());
             require(output.equals(configDirectory), "CONFIG_OUTPUT_OWNER_MISMATCH");
             stopFile = owned(output, raw.path("stop_file").asText(), false);
@@ -212,21 +226,24 @@ public final class LicenseComplexPlanningFixture {
             sampleEvery = integer(raw, "profile_every_n", 1, MAX_REQUESTS);
             overlapLimit = integer(raw, "profile_overlap_limit", 64, 64);
             port = integer(raw, "query_port", 1, 65535);
-            int limit = integer(raw, "request_limit", 1, MAX_REQUESTS);
+            int limit = integer(raw, "request_limit", 1, performance ? 100000 : MAX_REQUESTS);
+            require(!performance || (Set.of(1, 8).contains(concurrency) && mode.equals("text")
+                    && connectionMode.equals(caseId.equals("LP-006") ? "per_request" : "reuse")),
+                    "CURRENT_PERFORMANCE_SHAPE");
             definition = pinnedJson("definition_file", "definition_sha256", 65536);
             validateDefinition(definition);
             definitionSha = raw.path("definition_sha256").asText();
             query = definition.path("query_sql").asText();
-            JsonNode schedule = pinnedJson("arrival_file", "arrival_sha256", 1024 * 1024);
+            JsonNode schedule = pinnedJson("arrival_file", "arrival_sha256", (performance ? 8 : 1) * 1024 * 1024);
             arrivalSha = raw.path("arrival_sha256").asText();
             require(schedule.path("schema_version").asInt() == 1 && schedule.path("seed").asInt() == 20260922
                     && schedule.path("rate_per_second").isNumber()
                     && Double.isFinite(schedule.path("rate_per_second").asDouble())
                     && schedule.path("rate_per_second").asDouble() > 0, "INVALID_FROZEN_SCHEDULE");
-            warmupSeconds = integer(schedule, "warmup_seconds", 0, 180);
-            windowSeconds = integer(schedule, "window_seconds", 240, 600);
-            warmup = offsets(schedule.path("warmup_offsets_ns"), warmupSeconds);
-            measured = offsets(schedule.path("measurement_offsets_ns"), windowSeconds);
+            warmupSeconds = integer(schedule, "warmup_seconds", performance ? 1 : 0, performance ? 1800 : 180);
+            windowSeconds = integer(schedule, "window_seconds", performance ? 1 : 240, performance ? 86400 : 600);
+            warmup = offsets(schedule.path("warmup_offsets_ns"), warmupSeconds, limit);
+            measured = offsets(schedule.path("measurement_offsets_ns"), windowSeconds, limit);
             require(measured.length > 0 && warmup.length + measured.length <= limit, "REQUEST_COUNT_BOUND");
             if (caseId.equals("LP-007")) {
                 require(measured[0] < EVENT_OFFSET_NS && measured[measured.length - 1] > EVENT_OFFSET_NS,
@@ -300,9 +317,15 @@ public final class LicenseComplexPlanningFixture {
     static final class JsonLines implements AutoCloseable {
         private final BufferedWriter writer;
         private long bytes;
+        private final long maximum;
         private boolean closed;
 
         JsonLines(Path path) throws IOException {
+            this(path, MAX_LOG_BYTES);
+        }
+
+        JsonLines(Path path, long maximum) throws IOException {
+            this.maximum = maximum;
             writer = Files.newBufferedWriter(path, StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
         }
@@ -310,7 +333,7 @@ public final class LicenseComplexPlanningFixture {
         synchronized void append(Object value) throws IOException {
             String line = JSON.writeValueAsString(value) + "\n";
             int size = line.getBytes(StandardCharsets.UTF_8).length;
-            require(!closed && size <= 16384 && bytes + size <= MAX_LOG_BYTES, "RECEIPT_LOG_BOUND");
+            require(!closed && size <= 16384 && bytes + size <= maximum, "RECEIPT_LOG_BOUND");
             writer.write(line);
             writer.flush();
             bytes += size;
@@ -347,9 +370,9 @@ public final class LicenseComplexPlanningFixture {
         }
     }
 
-    /** Target fetch and following last_query_id stay on one connection with no intervening SQL. */
-    static void executeAndIdentify(Connection connection, Statement statement, String query,
-            boolean prepared, int timeout, Map<String, Object> receipt) throws Exception {
+    /** Fetch the complete target result without issuing any additional SQL. */
+    static void executeTarget(Statement statement, String query, boolean prepared,
+            Map<String, Object> receipt) throws Exception {
         List<Map<String, String>> columns = new ArrayList<>();
         List<List<String>> values = new ArrayList<>();
         receipt.put("columns", columns);
@@ -384,6 +407,12 @@ public final class LicenseComplexPlanningFixture {
         } finally {
             receipt.put("finished_ns", System.nanoTime());
         }
+    }
+
+    /** Target fetch and following last_query_id stay on one connection with no intervening SQL. */
+    static void executeAndIdentify(Connection connection, Statement statement, String query,
+            boolean prepared, int timeout, Map<String, Object> receipt) throws Exception {
+        executeTarget(statement, query, prepared, receipt);
         long begin = System.nanoTime();
         try (Statement identity = connection.createStatement()) {
             identity.setQueryTimeout(timeout);
@@ -420,7 +449,7 @@ public final class LicenseComplexPlanningFixture {
                 && (eventAcknowledged == null || started <= eventAcknowledged);
     }
 
-    static final class Runner {
+    static class Runner {
         final Config config;
         final AtomicBoolean cancelled = new AtomicBoolean();
         final AtomicBoolean finalized = new AtomicBoolean();
@@ -463,8 +492,8 @@ public final class LicenseComplexPlanningFixture {
             ready = new CountDownLatch(config.concurrency);
             warmupDone = new CountDownLatch(config.concurrency);
             measuredDone = new CountDownLatch(config.concurrency);
-            starts = new JsonLines(config.output.resolve("request-starts.jsonl"));
-            requests = new JsonLines(config.output.resolve("requests.jsonl"));
+            starts = new JsonLines(config.output.resolve("request-starts.jsonl"), config.logLimit);
+            requests = new JsonLines(config.output.resolve("requests.jsonl"), config.logLimit);
             phaseDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
         }
 

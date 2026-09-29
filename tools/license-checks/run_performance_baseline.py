@@ -26,6 +26,7 @@ import platform
 import random
 import re
 import statistics
+import struct
 import subprocess
 import sys
 import time
@@ -34,6 +35,104 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = Path(__file__).with_name("LicenseJdbcBaseline.java")
 SUPPORTED = {"LP-%03d" % n for n in (1, 2, 3, 4, 5, 6, 7, 9)}
 PERFORMANCE_CONTRACT = ROOT / "docs/license-performance-cases-20260922.json"
+CURRENT_CONTRACT = ROOT / "docs/license-p0-contract-20260922.md"
+CURRENT_PLAN = ROOT / "docs/license-certificate-execution-plan-20260922.md"
+CURRENT_GROUPS = {"G1": {"warmup_seconds": 120, "duration_seconds_per_window": 300,
+                          "concurrency": [1, 16], "cases": ["LP-001", "LP-002", "LP-003", "LP-005"]},
+                  "G2": {"warmup_seconds": 180, "duration_seconds_per_window": 600,
+                          "concurrency": [1, 8], "cases": ["LP-004", "LP-006", "LP-007"]}}
+
+
+def business_workload_binding(workload):
+    """Bind workload semantics across capacity/A/A/A/B; endpoints and observation windows are separate identities."""
+    payload = {"schema": "license_jdbc_business_v1", "current_group": workload.get("contract_group"),
+               "case_id": workload["case_id"], "database": workload.get("database", ""),
+               "concurrency": workload["concurrency"], "connection_mode": workload.get("connection_mode", "reuse"),
+               "arrival": "poisson_java_random_strictmath_v1", "seed": workload["seed"],
+               "timeout_seconds": workload["timeout_seconds"], "session_sql": workload.get("session_sql", [])}
+    if workload.get("point_key_workload"):
+        payload["point_key_workload"] = workload["point_key_workload"]
+        payload["point_oracle"] = {"range_inclusive": [0, 999999], "payload": "lowercase_md5_ascii_decimal_id"}
+    else:
+        payload["queries"] = [{"sql": query["sql"], "mode": query.get("mode", "text"),
+                                "parameters": query.get("parameters", []), "expected_rows": query["expected_rows"],
+                                "expected_result": query.get("expected_result")}
+                               for query in workload.get("queries", [])]
+    if "fixture_sha256" in workload:
+        value = workload["fixture_sha256"]
+        if type(value) is not str or not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError("fixture_sha256 must bind the controller's independent fixture evidence")
+        payload["fixture_sha256"] = value
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return {"payload": payload, "canonical_encoding": "UTF-8 JSON; sorted keys; compact separators; no final newline",
+            "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+            "excluded": ["host", "port", "user", "password_env", "services", "build_identity", "runtime_contract",
+                         "rate", "warmup_seconds", "duration_seconds", "pairs", "drain_timeout_seconds",
+                         "coordination_timeout_seconds", "cell_id", "notes"]}
+
+
+def contract_inputs(workload, historical_path=PERFORMANCE_CONTRACT):
+    """Explicit opt-in to current retained JDBC groups; never rewrite historical reports."""
+    group = workload.get("contract_group")
+    if group is None:
+        case = next(item for item in json.loads(historical_path.read_text())["cases"]
+                    if item["id"] == workload["case_id"])
+        return historical_path, case["load_shape"], {"mode": "historical_lp", "path": str(historical_path)}
+    if group not in CURRENT_GROUPS or workload["case_id"] not in CURRENT_GROUPS[group]["cases"]:
+        raise ValueError("Unsupported current contract_group / JDBC case combination")
+    shape = CURRENT_GROUPS[group]
+    if not isinstance(workload.get("cell_id"), str) \
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", workload["cell_id"]):
+        raise ValueError("Current contract requires an explicit simple cell_id")
+    if workload.get("seed") != 20260922 or workload.get("concurrency") not in shape["concurrency"]:
+        raise ValueError("Current contract requires seed 20260922 and the group's declared concurrency")
+    if workload.get("point_key_workload", {}).get("seed", 20260922) != 20260922:
+        raise ValueError("Current point key seed must be 20260922")
+    if not workload.get("point_key_workload") and any("expected_result" not in query
+                                                      for query in workload.get("queries", [])):
+        raise ValueError("Current static queries require a full expected_result oracle")
+    return CURRENT_CONTRACT, shape, {"mode": "current_retained_scope", "group": group,
+                                    "path": str(CURRENT_CONTRACT), "plan_path": str(CURRENT_PLAN),
+                                    "plan_sha256": sha(CURRENT_PLAN)}
+
+
+def encode_result_oracle(query):
+    """Length-prefixed UTF-8 avoids delimiter/null ambiguity; JDBC textual values are explicit."""
+    oracle = query.get("expected_result")
+    if oracle is None:
+        return None
+    if not isinstance(oracle, dict) or set(oracle) - {"columns", "rows", "ordered"}:
+        raise ValueError("expected_result must contain columns, rows and optional ordered")
+    columns, rows = oracle.get("columns"), oracle.get("rows")
+    if not isinstance(columns, list) or not 1 <= len(columns) <= 1024 or not isinstance(rows, list) \
+            or len(rows) != query["expected_rows"] or len(rows) > 100000 \
+            or type(oracle.get("ordered", True)) is not bool:
+        raise ValueError("Invalid exact result oracle shape")
+    data = bytearray(struct.pack(">?ii", oracle.get("ordered", True), len(columns), len(rows)))
+    def string(value):
+        if value is None:
+            data.extend(struct.pack(">i", -1))
+        elif type(value) is str:
+            raw = value.encode("utf-8")
+            data.extend(struct.pack(">i", len(raw)))
+            data.extend(raw)
+        else:
+            raise ValueError("Oracle values must be explicit JDBC strings or null")
+    for column in columns:
+        if not isinstance(column, dict) or set(column) != {"label", "jdbc_type"} \
+                or type(column["label"]) is not str or type(column["jdbc_type"]) is not int \
+                or not -(1 << 31) <= column["jdbc_type"] < (1 << 31):
+            raise ValueError("Each oracle column requires label and JDBC integer type")
+        string(column["label"])
+        data.extend(struct.pack(">i", column["jdbc_type"]))
+    for row in rows:
+        if not isinstance(row, list) or len(row) != len(columns):
+            raise ValueError("Oracle row width differs from columns")
+        for value in row:
+            string(value)
+    if len(data) > 16 * 1024 * 1024:
+        raise ValueError("Result oracle exceeds 16 MiB")
+    return bytes(data)
 
 
 def sha(path):
@@ -94,9 +193,18 @@ def check_workload(workload):
         raise ValueError("Unsupported port or LP case for this JDBC runner")
     if not re.fullmatch(r"[A-Za-z0-9_]*", workload.get("database", "")):
         raise ValueError("Use a simple isolated database name")
-    for key in ("duration_seconds", "pairs", "rate", "concurrency", "timeout_seconds"):
-        if not isinstance(workload[key], int) or workload[key] <= 0:
+    for key in ("duration_seconds", "pairs", "concurrency", "timeout_seconds"):
+        if type(workload[key]) is not int or workload[key] <= 0:
             raise ValueError(key + " must be a positive integer")
+    if type(workload.get("rate")) not in (int, float) or not math.isfinite(workload["rate"]) \
+            or not 0 < workload["rate"] <= 100000:
+        raise ValueError("rate must be a finite number in (0,100000]")
+    if "business_workload_sha256" in workload and (type(workload["business_workload_sha256"]) is not str
+            or not re.fullmatch(r"[0-9a-f]{64}", workload["business_workload_sha256"])):
+        raise ValueError("business_workload_sha256 must be a canonical SHA-256 supplied by the controller")
+    if "business_workload_sha256" in workload \
+            and workload["business_workload_sha256"] != business_workload_binding(workload)["sha256"]:
+        raise ValueError("business_workload_sha256 differs from the actual canonical business workload")
     if workload.get("connection_mode", "reuse") not in ("reuse", "per_request"):
         raise ValueError("connection_mode must be reuse or per_request")
     if not isinstance(workload["warmup_seconds"], int) or workload["warmup_seconds"] < 0:
@@ -124,13 +232,17 @@ def check_workload(workload):
             raise ValueError("This runner only supports read/metadata queries; setup SQL is separate")
         if ";" in sql or re.search(r"\b(INTO\s+OUTFILE|EXPORT)\b", sql, re.I):
             raise ValueError("Multi-statement or export SQL is not a baseline read query")
-        if query.get("mode", "text") not in ("text", "prepared") or query["expected_rows"] < 0:
+        if query.get("mode", "text") not in ("text", "prepared") \
+                or type(query["expected_rows"]) is not int or query["expected_rows"] < 0:
             raise ValueError("Invalid query mode/expected rows")
         for value in query.get("parameters", []):
             if value is not None and type(value) not in (int, str):
                 raise ValueError("Prepared parameters support integer/string/null")
         if query.get("parameters") and query.get("mode") != "prepared":
             raise ValueError("Parameters require prepared mode")
+        encode_result_oracle(query)
+    if workload.get("contract_group") is not None:
+        contract_inputs(workload)
     for sql in workload.get("session_sql", []):
         if not re.match(r"^SET\s+(?:SESSION\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=", sql, re.I) or ";" in sql:
             raise ValueError("Only explicit SET session assignments are supported")
@@ -180,7 +292,7 @@ def process_sample(pid):
 def summarize(directory, requested, duration, cpu):
     latencies, service, queue = [], [], []
     connection_phases = {name: [] for name in ("connection_ns", "session_init_ns", "prepare_ns", "execute_ns", "close_ns")}
-    errors = {}
+    errors, error_classes, failure_latencies = {}, {}, []
     last = 0
     observed = 0
     for path in directory.glob("worker-*.csv"):
@@ -192,6 +304,9 @@ def summarize(directory, requested, duration, cpu):
                 if row["error_code"] != "0":
                     key = row["error_code"] + "/" + row["sql_state"]
                     errors[key] = errors.get(key, 0) + 1
+                    category = row.get("error_class", "UNCLASSIFIED_HISTORICAL")
+                    error_classes[category] = error_classes.get(category, 0) + 1
+                    failure_latencies.append((end - scheduled) / 1e6)
                     continue
                 latencies.append((end - scheduled) / 1e6)
                 service.append((end - begin) / 1e6)
@@ -204,8 +319,12 @@ def summarize(directory, requested, duration, cpu):
               "errors": errors, "missing_requests": requested - observed, "effective_duration_seconds": seconds,
               "drain_seconds": max(0, seconds - duration), "success_qps": len(latencies) / seconds,
               "p50_ms": quantile(latencies, .5), "p95_ms": quantile(latencies, .95),
-              "p99_ms": quantile(latencies, .99), "service_p99_ms": quantile(service, .99),
+              "p99_ms": quantile(latencies, .99), "service_p95_ms": quantile(service, .95),
+              "service_p99_ms": quantile(service, .99), "client_queue_p95_ms": quantile(queue, .95),
               "client_queue_p99_ms": quantile(queue, .99), "p99_sample_floor_met": len(latencies) >= 10000}
+    result.update(error_classes=error_classes, failed_request_p95_ms=quantile(failure_latencies, .95),
+                  failed_request_p99_ms=quantile(failure_latencies, .99), harness_retries=0,
+                  retry_scope="No harness retry; driver-internal behavior is not inferred from successful results")
     result["per_request_connection_phase_ms"] = {
         name.removesuffix("_ns"): {"p50": quantile(values, .5), "p95": quantile(values, .95),
                                    "p99": quantile(values, .99), "samples": len(values)}
@@ -257,7 +376,7 @@ def boundary_evidence(start, end, lifecycle):
     return result
 
 
-def run_window(workload, output, java, jar, classes):
+def run_window(workload, output, java, jar, classes, lifecycle_context=None):
     output.mkdir()
     queries = output / "queries.tsv"
     with queries.open("w") as stream:
@@ -267,6 +386,9 @@ def run_window(workload, output, java, jar, classes):
             for value in query.get("parameters", []):
                 fields.append("n" if value is None else "i" + str(value) if type(value) is int
                               else "s" + base64.b64encode(value.encode()).decode())
+            oracle = encode_result_oracle(query)
+            if oracle is not None:
+                fields.append("o" + base64.b64encode(oracle).decode())
             stream.write("\t".join(fields) + "\n")
     session = output / "session.txt"
     session.write_text("\n".join(base64.b64encode(q.encode()).decode() for q in workload.get("session_sql", [])))
@@ -285,6 +407,11 @@ def run_window(workload, output, java, jar, classes):
         settings.update(point_table=point["table"], point_mode=point["mode"], point_seed=point["seed"])
     settings.update(queries=queries, session=session, output=output,
                     url="jdbc:mariadb://%s:%s/%s" % (host, workload["port"], workload.get("database", "")))
+    lifecycle = None
+    if lifecycle_context is not None:
+        from p4_jdbc_lifecycle import LifecycleController
+        lifecycle = LifecycleController(workload, output, lifecycle_context, __file__, SOURCE, jar, classes)
+        settings.update(lifecycle.settings())
     properties = output / "window.properties"
     properties.write_text("\n".join(str(key) + "=" + str(value).replace("\\", "\\\\") for key, value in settings.items()))
     env = dict(os.environ)
@@ -297,8 +424,13 @@ def run_window(workload, output, java, jar, classes):
     with (output / "client.log").open("w") as log:
         process = subprocess.Popen([str(java), "-cp", str(classes) + os.pathsep + str(jar),
                                     "LicenseJdbcBaseline", str(properties)], stdout=log, stderr=log, env=env)
+        lifecycle_error = None
         try:
+            if lifecycle is not None:
+                lifecycle.attach(process)
             while process.poll() is None:
+                if lifecycle is not None:
+                    lifecycle.poll()
                 now = time.monotonic()
                 if now > deadline:
                     watchdog_expired = True
@@ -322,6 +454,9 @@ def run_window(workload, output, java, jar, classes):
                     samples.append({"monotonic_seconds": now, **sample})
                     last_sample = now
                 time.sleep(.01 if not start_boundary or end_boundary else .05)
+        except BaseException as error:
+            lifecycle_error = error
+            raise
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -330,6 +465,8 @@ def run_window(workload, output, java, jar, classes):
                 except subprocess.TimeoutExpired:
                     process.kill()
             process.wait(timeout=2)
+            if lifecycle is not None:
+                lifecycle.finish(lifecycle_error)
     # On premature failure retain any published boundaries without inventing an end sample.
     start_boundary = start_boundary or read_json_if_present(output / "measurement-start.json")
     end_boundary = end_boundary or read_json_if_present(output / "measurement-end.json")
@@ -350,6 +487,11 @@ def run_window(workload, output, java, jar, classes):
         and result["warmup_arrival_schedule_sha256"]
         == (output / "warmup-arrivals.bin.sha256").read_text().strip())
     result["connection_mode"] = workload.get("connection_mode", "reuse")
+    result["timeout_contract"] = {
+        "jdbc_query_timeout_seconds": workload["timeout_seconds"], "socket_timeout_seconds": workload["timeout_seconds"],
+        "connect_timeout_seconds": 10, "scheduled_to_completion_deadline_seconds": None,
+        "queue_semantics": "No implicit queue deadline. SQL-success includes correct late results; all queue time remains "
+                           "in end-to-end latency and drain. Capacity SLO assessment is separate from SQL success."}
     result["connection_cost_boundary"] = ("Each scheduled request opens, initializes, prepares/binds, executes, fetches and closes its own connection; all inside start/end"
         if result["connection_mode"] == "per_request" else "Fixed worker connections initialized/prepared before timed window; start/end retains execute/fetch boundary")
     result["process_exit_code"] = process.returncode
@@ -359,6 +501,15 @@ def run_window(workload, output, java, jar, classes):
     result["client_failure"] = read_json_if_present(output / "client-failure.json")
     result["fixed_rate_success_qps_is_capacity"] = False
     result["query_workload_kind"] = "uniform_point_keys" if point else "static_query_vector"
+    result["static_result_oracles"] = [
+        {"query_index": index, "sha256": hashlib.sha256(encode_result_oracle(query)).hexdigest(),
+         "columns": len(query["expected_result"]["columns"]), "rows": query["expected_rows"],
+         "ordered": query["expected_result"].get("ordered", True), "comparison_inside_request_timing": True}
+        for index, query in enumerate(workload.get("queries", [])) if "expected_result" in query]
+    result["driver_evidence"] = [read_json_if_present(output / ("driver-worker-%d.json" % index))
+                                 for index in range(workload["concurrency"])]
+    result["warmup_failure"] = [read_json_if_present(output / ("warmup-failure-%d.json" % index))
+                                for index in range(workload["concurrency"])]
     if point:
         oracle = read_json_if_present(output / "point-result-oracle.json")
         result["point_result_oracle"] = oracle
@@ -408,12 +559,14 @@ def main():
                 "jdbc_sha256": sha(args.jdbc_jar), "build_identity": workload["build_identity"],
                 "artifact_sha256": {name: sha(workload["build_identity"][name]) for name in ("fe_artifact", "be_artifact")},
                 "baseline_kind": "A/A_only", "candidate_B_measured": False}
-    performance = json.loads(PERFORMANCE_CONTRACT.read_text())
-    case = next(item for item in performance["cases"] if item["id"] == workload["case_id"])
-    minimum_warmup = case["load_shape"]["warmup_seconds"]
-    minimum_duration = case["load_shape"]["duration_seconds_per_window"]
-    identity["performance_contract_sha256"] = sha(PERFORMANCE_CONTRACT)
-    identity["frozen_case_load_shape"] = case["load_shape"]
+    contract, shape, selection = contract_inputs(workload)
+    minimum_warmup = shape["warmup_seconds"]
+    minimum_duration = shape["duration_seconds_per_window"]
+    identity["performance_contract_sha256"] = sha(contract)
+    identity["contract_selection"] = selection
+    if workload.get("contract_group"):
+        identity["business_workload_binding"] = business_workload_binding(workload)
+    identity["frozen_case_load_shape"] = shape
     (output / "identity.json").write_text(json.dumps(identity, indent=2) + "\n")
     classes = output / "classes"
     classes.mkdir()

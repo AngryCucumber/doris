@@ -12,6 +12,7 @@ import csv
 from functools import lru_cache
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -42,6 +43,8 @@ def require(value, message):
 
 
 def validate_config(value):
+    if isinstance(value, dict) and value.get("profile") == "current_allowed_business_v1":
+        return validate_current_config(value)
     require(isinstance(value, dict) and set(value) == set(BOUNDS) | {
         "schema_version", "seed", "read_account", "write_account", "rate_basis"},
         "Background input has missing or extra fields")
@@ -67,6 +70,67 @@ def validate_config(value):
     return value
 
 
+CURRENT_PROFILE = "current_allowed_business_v1"
+CURRENT_BOUNDS = {key: bounds for key, bounds in BOUNDS.items()
+                  if key not in {"read_rate_per_second", "write_batches_per_second", "visibility_timeout_seconds",
+                                 "visibility_poll_millis", "visibility_slo_millis"}}
+CURRENT_BOUNDS.update(duration_seconds=(1, 7200), write_batch_rows=(100, 100), read_workers=(8, 8), write_workers=(8, 8))
+CURRENT_METADATA_SQL = ("SELECT 1", "SHOW TABLES FROM license_perf", "DESC license_perf.point_rows")
+
+
+def validate_current_config(value):
+    require(set(value) == set(CURRENT_BOUNDS) | {"schema_version", "profile", "group", "qualification", "seed",
+            "read_account", "write_account", "rate_basis", "rate_per_second", "metadata_oracles"},
+            "Current background input has missing or extra fields")
+    require(value["schema_version"] == 1 and value["profile"] == CURRENT_PROFILE and value["seed"] == 20260922,
+            "Current background schema/profile/seed changed")
+    require(value["group"] in {"G5", "G6", "G7"} and value["qualification"] in {"formal", "diagnostic"},
+            "Current background group/qualification invalid")
+    require(value["rate_basis"] == "controller_frozen_input_not_capacity_qualification", "Current rate is not a frozen input")
+    for key, (low, high) in CURRENT_BOUNDS.items():
+        require(type(value[key]) is int and low <= value[key] <= high, "Current background bound invalid: " + key)
+    require(value["qualification"] == "diagnostic" or value["duration_seconds"] >= (300 if value["group"] == "G7" else 600),
+            "Formal current window is too short")
+    rate = value["rate_per_second"]
+    require(type(rate) in (int, float) and math.isfinite(rate) and 0 < rate <= 1000, "Current total rate invalid")
+    require(rate * value["duration_seconds"] < 950000, "Current schedule can exceed the one-million arrival bound")
+    # Reuse the existing account validator without changing its legacy input semantics.
+    legacy = {key: bounds[0] for key, bounds in BOUNDS.items()}
+    legacy.update(schema_version=1, seed=20260922, rate_basis="explicit_functional_input_not_capacity_qualification",
+                  read_account=value["read_account"], write_account=value["write_account"])
+    validate_config(legacy)
+    oracles = value["metadata_oracles"]
+    require(isinstance(oracles, list) and len(oracles) == 3, "Exactly three independent metadata oracles required")
+    for oracle, sql in zip(oracles, CURRENT_METADATA_SQL):
+        require(isinstance(oracle, dict) and set(oracle) == {"sql", "columns", "rows"} and oracle["sql"] == sql,
+                "Current metadata SQL differs from frozen SELECT/SHOW/DESC")
+        require(isinstance(oracle["columns"], list) and 1 <= len(oracle["columns"]) <= 64
+                and all(isinstance(item, str) and 0 < len(item) <= 128 for item in oracle["columns"]),
+                "Missing complete metadata columns")
+        require(isinstance(oracle["rows"], list) and 0 < len(oracle["rows"]) <= 10000
+                and all(isinstance(row, list) and len(row) == len(oracle["columns"])
+                        and all(item is None or isinstance(item, str) and len(item) <= 1024 for item in row)
+                        for row in oracle["rows"]), "Missing complete metadata row values")
+    require(oracles[0]["columns"] == ["1"] and oracles[0]["rows"] == [["1"]], "SELECT 1 independent oracle differs")
+    tables = oracles[1]["rows"]
+    require(len(oracles[1]["columns"]) == 1 and ["point_rows"] in tables and ["${OWNED_TABLE}"] in tables
+            and len({tuple(row) for row in tables}) == len(tables), "SHOW TABLES must cover source and exact owned target")
+    require(len(oracles[2]["rows"]) == 4 and [row[0] for row in oracles[2]["rows"]] == ["id", "grp", "v", "payload"],
+            "DESC must cover all four source columns")
+    return value
+
+
+def current_metadata_models(profile, table):
+    result = []
+    for index, oracle in enumerate(profile["metadata_oracles"]):
+        rows = [[item.replace("${OWNED_TABLE}", table.split(".")[1]) if isinstance(item, str) else item
+                 for item in row] for row in oracle["rows"]]
+        if index == 1:
+            rows.sort(key=lambda row: row[0])
+        result.append([oracle["columns"], rows])
+    return result
+
+
 def freeze(api, path, cluster, resource, cells):
     path = api.owned(path)
     config = validate_config(api.read_json(path))
@@ -87,9 +151,12 @@ def freeze(api, path, cluster, resource, cells):
                 name: api.sha(java_home / name) for name in ("bin/java", "bin/javac", "lib/modules", "release")},
             "source_sha256": {str(item): api.sha(item) for item in (SOURCE, JAVA_SOURCE, *FROZEN_REFERENCES)},
             "dependencies_sha256": {str(path): api.sha(path) for path in dependencies},
-            "connection_mode": "reuse_per_worker_no_replay", "point_mode": "server_prepared",
+            "connection_mode": "reuse_per_worker_no_replay",
+            "point_mode": "metadata_text_statement" if config.get("profile") == CURRENT_PROFILE else "server_prepared",
             "schedule": "java.util.Random_poisson_StrictMath_log_frozen_before_SQL",
-            "scope": "300-second single-context functional coexistence; no formal qualification"}
+            "scope": ("Current allowed business background; independent controller release; no automatic qualification"
+                      if config.get("profile") == CURRENT_PROFILE else
+                      "300-second single-context functional coexistence; no formal qualification")}
 
 
 def validate_probe(api, plan, explicit_path):
@@ -204,6 +271,8 @@ def audit_full_models(api, output, profile, summary):
 
 
 def audit_receipts(api, output, profile, summary):
+    if profile.get("profile") == CURRENT_PROFILE:
+        return audit_current_receipts(api, output, profile, summary)
     start = api.read_json(output / "window-start.json")
     end = api.read_json(output / "window-end.json")
     require(start.get("token") == end.get("token") == summary.get("token")
@@ -293,6 +362,147 @@ def audit_receipts(api, output, profile, summary):
                 for index, receipt in enumerate(write_receipts)), "Missing independent visibility observations")
     result["write"]["visibility_receipts"] = sum(visibility)
     return result
+
+
+def current_arrivals(rate, seconds):
+    """Independent Java Random double/Poisson model; StrictMath/libm rounding checked within 1 ns."""
+    state = (20260922 ^ 0x5DEECE66D) & ((1 << 48) - 1)
+    def bits(count):
+        nonlocal state
+        state = (state * 0x5DEECE66D + 0xB) & ((1 << 48) - 1)
+        return state >> (48 - count)
+    elapsed, arrivals = 0.0, []
+    while True:
+        uniform = ((bits(26) << 27) + bits(27)) / float(1 << 53)
+        if uniform == 0:
+            continue
+        elapsed += -math.log(uniform) * 1_000_000_000 / rate
+        if elapsed >= seconds * 1_000_000_000:
+            return arrivals
+        require(len(arrivals) < 1_000_000, "Current independent schedule exceeds bound")
+        arrivals.append(int(elapsed))
+
+
+def audit_current_receipts(api, output, profile, summary):
+    validate_current_config(profile)
+    config = api.read_json(output / "config.json")
+    require(config["profile"] == CURRENT_PROFILE and summary.get("profile") == CURRENT_PROFILE
+            and summary.get("metadata_preflight_verified") is True, "Current profile/preflight missing")
+    require(all(config.get(key) == value for key, value in profile.items()), "Current frozen configuration changed")
+    models = current_metadata_models(profile, config["table"])
+    require(api.read_json(output / "metadata-oracles.json") == models, "Frozen metadata oracle changed")
+    hashes = [hashlib.sha256(json.dumps(model, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+              for model in models]
+    start, end = (api.read_json(output / name) for name in ("window-start.json", "window-end.json"))
+    cpu_start, cpu_end = (api.read_json(output / name) for name in ("measurement-start.json", "measurement-end.json"))
+    for item in (start, end, cpu_start, cpu_end):
+        require(all(item.get(key) == summary.get(key) for key in ("token", "pid", "start_ticks", "namespace")),
+                "Current boundary identity changed")
+    epoch = start["epoch_java_monotonic_ns"]
+    cutoff = epoch + profile["duration_seconds"] * 1_000_000_000
+    require(type(epoch) is int and epoch > 0 and end["java_monotonic_ns"] >= cutoff
+            and end.get("scheduled_window_complete") is True, "Current scheduled window incomplete")
+    paths = {stream: output / (stream + "-arrivals.tsv") for stream in ("total", "read", "write")}
+    for stream, file in paths.items():
+        require(api.sha(file) == summary[stream + "_schedule_sha256"], "Current arrival digest changed")
+    def rows(file):
+        with file.open(newline="") as stream:
+            return list(csv.DictReader(stream, delimiter="\t"))
+    total = rows(paths["total"])
+    expected = current_arrivals(profile["rate_per_second"], profile["duration_seconds"])
+    require(len(total) == len(expected) == summary["generated_total_requests"], "Current Poisson generated count differs")
+    for index, (row, offset) in enumerate(zip(total, expected)):
+        require(set(row) == {"sequence", "offset_ns"} and int(row["sequence"]) == index
+                and abs(int(row["offset_ns"]) - offset) <= 1, "Current Poisson schedule differs from independent model")
+    count = len(total) // 2
+    require(count > 0 and summary["tail_arrivals_not_scheduled"] == len(total) % 2
+            and summary["scheduled_total_requests"] == count * 2
+            and summary["planned_reads"] == summary["planned_write_batches"] == count,
+            "Current 50/50 split or explicit odd-tail accounting differs")
+    def quantile(samples, fraction):
+        ordered = sorted(samples)
+        if not ordered:
+            return None
+        position = (len(ordered) - 1) * fraction
+        low = int(position)
+        return ordered[low] + (ordered[min(low + 1, len(ordered) - 1)] - ordered[low]) * (position - low)
+
+    all_latency, streams, last = [], {}, epoch
+    for stream in ("read", "write"):
+        arrivals = rows(paths[stream])
+        require(len(arrivals) == count, "Current per-type schedule incomplete")
+        for index, row in enumerate(arrivals):
+            slot = index * 2 + (1 if stream == "read" else 0)
+            require(int(row["sequence"]) == index and int(row["offset_ns"]) == int(total[slot]["offset_ns"]),
+                    "Current alternating split changed")
+            if stream == "read":
+                require(set(row) == {"sequence", "offset_ns", "id"} and int(row["id"]) == index % 3,
+                        "Current metadata round robin changed")
+            else:
+                require(set(row) == {"sequence", "offset_ns", "first_id", "rows"} and int(row["rows"]) == 100
+                        and int(row["first_id"]) == 1_000_000_000 + index * 100, "Current write domains overlap")
+        seen, latency, service, queue = bytearray(count), [], [], []
+        counters = {"scheduled": count, "successful": 0, "unknown": 0, "not_sent": 0, "errors": 0}
+        for worker in range(8):
+            for row in rows(output / f"{stream}-{worker}.tsv"):
+                row = dict(row)
+                result_hash = row.pop("result_sha256", None)
+                index = int(row["sequence"])
+                require(0 <= index < count and not seen[index] and index % 8 == worker, "Current duplicate/foreign worker receipt")
+                seen[index] = 1
+                values = receipt_values(row, stream, int(arrivals[index]["offset_ns"]), epoch, 100,
+                                        profile["read_slo_millis" if stream == "read" else "write_ack_slo_millis"])
+                if values["successful"]:
+                    require(result_hash == (hashes[index % 3] if stream == "read" else "NONE"),
+                            "Current full metadata result hash differs from independent oracle")
+                    latency.append(values["e2e_ns"] / 1e6)
+                    service.append((values["finished_ns"] - values["started_ns"]) / 1e6)
+                    queue.append((values["started_ns"] - values["scheduled_ns"]) / 1e6)
+                else:
+                    require(result_hash == "NONE", "Failed request cannot claim a successful result hash")
+                counters["successful"] += values["successful"]
+                counters["unknown"] += row["outcome"] == "UNKNOWN"
+                counters["not_sent"] += row["outcome"] == "NOT_SENT"
+                counters["errors"] += not values["successful"]
+                last = max(last, values["finished_ns"])
+        require(all(seen), "Current missing raw request completions")
+        if summary.get("status") == "PASS":
+            require(counters["successful"] == count, "Current PASS hides unknown/error/missing delivery")
+        streams[stream] = {**counters, "successful_latency_ms": latency,
+                           "p95_ms": quantile(latency, .95), "p99_ms": quantile(latency, .99),
+                           "service_p95_ms": quantile(service, .95), "service_p99_ms": quantile(service, .99),
+                           "queue_p95_ms": quantile(queue, .95), "queue_p99_ms": quantile(queue, .99),
+                           "p99_sample_floor_met": counters["successful"] >= 10000}
+        all_latency.extend(latency)
+    require(cpu_end["epoch_java_monotonic_ns"] == epoch and cpu_end["last_request_end_java_ns"] == last
+            and cpu_end["request_interval_end_java_ns"] == max(cutoff, last), "Actual request/measurement boundary mismatch")
+    seconds = (max(cutoff, last) - epoch) / 1e9
+    success = len(all_latency)
+    for stream in streams.values():
+        stream["success_qps"] = stream["successful"] / seconds
+    cpu = {}
+    for role in ("fe", "be"):
+        first, final = cpu_start["cpu"][role], cpu_end["cpu"][role]
+        pin = config["cpu_services"][role]
+        require(first["pid"] == final["pid"] == pin["pid"]
+                and first["start_ticks"] == final["start_ticks"] == pin["start_ticks"], "Current CPU service lifetime differs")
+        require(first["sample_started_java_ns"] <= first["sample_ended_java_ns"] <= epoch
+                and final["sample_ended_java_ns"] >= final["sample_started_java_ns"] >= max(cutoff, last),
+                "CPU samples do not enclose the actual complete request interval")
+        delta = final["cpu_seconds"] - first["cpu_seconds"]
+        require(type(delta) in (int, float) and math.isfinite(delta) and delta >= 0, "Current CPU reset/nonfinite")
+        cpu[role] = {"cpu_seconds": delta, "cpu_seconds_per_success": delta / success if success else None,
+                     "leading_enclosure_ns": epoch - first["sample_ended_java_ns"],
+                     "trailing_enclosure_ns": final["sample_started_java_ns"] - max(cutoff, last)}
+    return {"status": "RAW_RECEIPTS_AUDITED", "streams": streams, "successful_requests": success,
+            "generated_requests": len(total), "scheduled_requests": count * 2,
+            "tail_arrivals_not_scheduled": len(total) % 2, "effective_duration_seconds": seconds,
+            "drain_seconds": seconds - profile["duration_seconds"], "success_qps": success / seconds,
+            "p95_ms": quantile(all_latency, .95), "p99_ms": quantile(all_latency, .99), "cpu": cpu,
+            "eligible_window_shape": profile["qualification"] == "formal",
+            "p99_sample_floor_met": success >= 10000, "formal_performance_pass": False,
+            "visibility_policy": "post_window_full_model_not_online_visibility_latency",
+            "schedule_rounding_tolerance_ns": 1}
 
 
 EXIT_SETTLE_SECONDS = 0.25
@@ -618,7 +828,8 @@ class Background:
         verify_frozen(self.api, self.frozen)
         classes = self.output / "classes"
         classes.mkdir()
-        jars = sorted((self.guard.jar.parent).glob("*.jar"))
+        jars = (sorted(Path(path) for path in self.frozen["dependencies_sha256"])
+                if self.profile.get("profile") == CURRENT_PROFILE else sorted((self.guard.jar.parent).glob("*.jar")))
         require(jars, "Packaged JDBC dependencies are missing")
         inputs = {str(path): self.api.sha(path) for path in jars}
         require(inputs == self.frozen["dependencies_sha256"], "Actual packaged JDBC dependency set changed")
@@ -748,18 +959,20 @@ class Background:
             model_audit = audit_full_models(self.api, self.output, self.profile, summary)
         except BaseException as error:
             errors.append({"stage": "independent_receipt_audit", "error_class": type(error).__name__})
-        browser_overlap = False
-        try:
-            browser = self.api.read_json(Path(self.plan["output"]) / self.config["cell"] / "browser.json")["background"]
-            require(browser["token"] == self.token and browser["end_receipt"]["scheduled_window_complete"] is True,
-                    "Browser/background interval identity mismatch")
-            require(browser["browser_actions_started_unix_millis"] >= browser["start_receipt"]["unix_millis"]
-                    and browser["browser_actions_started_unix_millis"] < browser["end_receipt"]["unix_millis"]
-                    and browser["browser_context_held_until_unix_millis"] >= browser["end_receipt"]["unix_millis"],
-                    "Browser did not span the background interval")
-            browser_overlap = True
-        except BaseException as error:
-            errors.append({"stage": "browser_overlap", "error_class": type(error).__name__})
+        browser_overlap = None
+        if self.profile.get("profile") != CURRENT_PROFILE:
+            browser_overlap = False
+            try:
+                browser = self.api.read_json(Path(self.plan["output"]) / self.config["cell"] / "browser.json")["background"]
+                require(browser["token"] == self.token and browser["end_receipt"]["scheduled_window_complete"] is True,
+                        "Browser/background interval identity mismatch")
+                require(browser["browser_actions_started_unix_millis"] >= browser["start_receipt"]["unix_millis"]
+                        and browser["browser_actions_started_unix_millis"] < browser["end_receipt"]["unix_millis"]
+                        and browser["browser_context_held_until_unix_millis"] >= browser["end_receipt"]["unix_millis"],
+                        "Browser did not span the background interval")
+                browser_overlap = True
+            except BaseException as error:
+                errors.append({"stage": "browser_overlap", "error_class": type(error).__name__})
         errors.extend(item for item in getattr(self, "process_evidence_errors", []) if item not in errors)
         record = {"status": "PASS" if clean and cleanup and not errors and summary.get("status") == "PASS" else "FAIL",
                   "token": self.token, "table": self.config["table"], "owned_child_exited": clean,
@@ -772,3 +985,37 @@ class Background:
                   "formal_performance_pass": False, "full_goal_complete": False}
         self.api.save(self.output / "controller.json", record)
         return record
+
+
+class CurrentBackground(Background):
+    """Standalone G5/G6/G7 participant. Its owner supplies capacity/A/A/A/B and UI coordination."""
+
+    def __init__(self, api, plan, guard, target, cell, admin, whole_deadline, cpu_services):
+        require(plan["background"]["config"].get("profile") == CURRENT_PROFILE, "Explicit current profile required")
+        require(set(cpu_services) == {"fe", "be"} and cpu_services["fe"]["pid"] != cpu_services["be"]["pid"]
+                and all(api.same(pin) for pin in cpu_services.values()), "Current CPU service pins invalid")
+        super().__init__(api, plan, guard, target, cell, admin, whole_deadline)
+        require(all(any(all(owned.get(key) == pin.get(key) for key in
+                           ("pid", "start_ticks", "namespace", "exe", "command_sha256"))
+                        for owned in self.config["cluster_pins"]) for pin in cpu_services.values()),
+                "CPU services are not frozen cluster members")
+        self.config.update(cpu_services=cpu_services, clock_ticks_per_second=os.sysconf("SC_CLK_TCK"))
+        self.api.save(self.config_path, self.config)
+
+    def coordinate(self):
+        self.check()  # Intentionally no dependency on browser-ready.json.
+
+    def release(self):
+        self.check()
+        require((self.output / "ready.json").exists() and not (self.output / "release.json").exists(),
+                "Current background is not ready or was already released")
+        self.api.save(self.output / "release.json", {"token": self.token,
+            "controller_monotonic_ns": time.monotonic_ns(), "controller_at_utc": self.api.utc()})
+
+    def allow_verification(self):
+        self.check()
+        require((self.output / "measurement-end.json").exists()
+                and (self.output / "verification-ready.json").exists(), "Business window/worker quiescence is incomplete")
+        require(not (self.output / "verify-release.json").exists(), "Verification already released")
+        self.api.save(self.output / "verify-release.json", {"token": self.token,
+            "controller_monotonic_ns": time.monotonic_ns(), "controller_at_utc": self.api.utc()})

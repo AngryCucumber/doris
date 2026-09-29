@@ -290,6 +290,86 @@ class ScheduleTest(unittest.TestCase):
                     child.communicate(timeout=5)
 
 
+class LongWindowTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="p4-observer-offline-", dir=observer.ROOT / ".build-records")
+        self.addCleanup(self.temporary.cleanup)
+        self.output = Path(self.temporary.name)
+        self.limits = {"max_samples": 102001, "max_log_bytes": 16 * 1024**2, "min_free_disk_bytes": 1024**2}
+        self.clock = [0.0]
+        self.stop = observer.StopSignals()
+        self.stop.event.wait = lambda delay: self.clock.__setitem__(0, self.clock[0] + delay) or False
+
+    def run_offline(self, duration, interval, collector, disk_free=lambda: 1024**3):
+        return observer.observe(self.output, duration, interval, collector, self.stop, {},
+                                clock=lambda: self.clock[0], long_limits=self.limits, disk_free=disk_free)
+
+    def test_explicit_long_mode_collects_full_maximum_schedule_without_wall_time_wait(self):
+        calls = []
+        def collect():
+            calls.append(self.clock[0]); return {"errors": [], "elapsed_nanos": 0}
+        report = self.run_offline(102000, 60, collect)
+        self.assertEqual(calls, list(range(0, 102001, 60)))
+        self.assertEqual(report["samples"], 1701)
+        self.assertEqual(report["status"], "COMPLETED")
+        self.assertEqual(report["skipped_schedule_slots"], 0)
+        self.assertEqual(report["raw_sample_bytes_written"], (self.output / "samples.jsonl").stat().st_size)
+        self.assertFalse(report["performance_pass_proven"])
+
+    def test_legacy_mode_keeps_14400_limit_and_has_no_new_report_fields(self):
+        with self.assertRaises(ValueError): observer.validate_window_limits(14401, 1)
+        report = observer.observe(self.output, 1, 1, lambda: {"errors": []}, self.stop, {}, clock=lambda: self.clock[0])
+        self.assertNotIn("p4_long_window_limits", report)
+        self.assertNotIn("raw_sample_bytes_written", report)
+
+    def test_incomplete_noninteger_and_underprovisioned_long_budgets_reject_before_collection(self):
+        cases = [None, {}, {**self.limits, "max_samples": 102000}, {**self.limits, "max_samples": True},
+                 {**self.limits, "max_log_bytes": observer.P4_MAX_LOG_BYTES + 1},
+                 {**self.limits, "min_free_disk_bytes": 1}]
+        for limits in cases:
+            with self.subTest(limits=limits), self.assertRaises(ValueError):
+                observer.validate_window_limits(102000, 1, limits)
+        with self.assertRaises(ValueError): observer.validate_window_limits(102001, 1, self.limits)
+
+    def test_initial_disk_budget_failure_keeps_failed_receipt_and_never_collects(self):
+        collector = MagicMock()
+        with self.assertRaises(observer.ObserverBudgetExceeded):
+            self.run_offline(14401, 60, collector, disk_free=lambda: 0)
+        collector.assert_not_called()
+        report = json.loads((self.output / "summary.json").read_text())
+        self.assertEqual(report["status"], "FAILED_RESOURCE_BOUND")
+        self.assertEqual(report["samples"], 0)
+
+    def test_log_exhaustion_stops_before_collecting_or_dropping_the_next_sample(self):
+        self.limits["max_log_bytes"] = observer.P4_MAX_SAMPLE_BYTES
+        collector = MagicMock(return_value={"errors": [], "payload": "中文"})
+        with self.assertRaises(observer.ObserverBudgetExceeded): self.run_offline(10, 1, collector)
+        self.assertEqual(collector.call_count, 1)
+        rows = (self.output / "samples.jsonl").read_text().splitlines()
+        self.assertEqual(len(rows), 1); self.assertEqual(json.loads(rows[0])["payload"], "中文")
+        report = json.loads((self.output / "summary.json").read_text())
+        self.assertEqual(report["status"], "FAILED_RESOURCE_BOUND")
+        self.assertEqual(report["raw_sample_bytes_written"], (self.output / "samples.jsonl").stat().st_size)
+
+    def test_depleting_disk_retains_every_completed_sample_and_marks_failure(self):
+        free = iter([1024**3, 1024**3, 0]); collector = MagicMock(return_value={"errors": []})
+        with self.assertRaises(observer.ObserverBudgetExceeded):
+            self.run_offline(10, 1, collector, disk_free=lambda: next(free))
+        self.assertEqual(collector.call_count, 1)
+        self.assertEqual(len((self.output / "samples.jsonl").read_text().splitlines()), 1)
+        self.assertEqual(json.loads((self.output / "summary.json").read_text())["status"], "FAILED_RESOURCE_BOUND")
+
+    def test_oversized_collector_record_cannot_claim_complete_or_truncate_content(self):
+        with patch.object(observer, "P4_MAX_SAMPLE_BYTES", 128):
+            with self.assertRaises(observer.ObserverBudgetExceeded):
+                self.run_offline(10, 1, lambda: {"errors": [], "payload": "x" * 200})
+        report = json.loads((self.output / "summary.json").read_text())
+        self.assertEqual(report["status"], "FAILED_RESOURCE_BOUND")
+        self.assertEqual(report["unarchived_oversized_samples"], 1)
+        self.assertEqual(report["samples"], 0)
+        self.assertEqual((self.output / "samples.jsonl").read_bytes(), b"")
+
+
 class ScopedRpcTest(unittest.TestCase):
     def setUp(self):
         self.selection = {"schema_version": 1, "be_hostnames": ["127.0.0.1"], "thrift_methods": ["report"]}

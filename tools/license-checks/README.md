@@ -59,9 +59,76 @@ python3 tools/license-checks/measure_core_cost.py \
 
 这是简单 harness，不是 JMH，也不是 SQL A/B 测试。接口派发、循环及少量测量开销均包含在原始数据中，不进行基线相减；后台编译、调度、JIT 和频率变化可能影响样本。正常路径的极小分配值可能来自每轮反射计数读取，不代表每次许可判断均分配对象。只把结果标为 `MEASURED`；不得据此把 LP023、P3 或产品端到端性能标为通过。
 
-Connection modes are explicit. `reuse` is the default and retains the original timing/result columns, adds `point_key` (empty for static queries), and keeps the execute/fetch timing boundary: one worker connection is initialized and prepared before the window. `per_request` creates a new authenticated JDBC connection for every scheduled request, executes its session initialization, prepares/binds only that request, fetches the complete result and closes the client connection. All those costs are inside both start/end service time and scheduled/end end-to-end time; raw rows add connection_ns/session_init_ns/prepare_ns/execute_ns/close_ns and summaries report these separately. A prepared query on a new connection must prepare again; it is never labeled prepared-context reuse.
+Connection modes are explicit. `reuse` is the default and retains the original timing/result columns, adds `error_class` and `point_key` for point queries, and keeps the execute/fetch timing boundary: one worker connection is initialized and prepared before the window. `per_request` creates a new authenticated JDBC connection for every scheduled request, executes its session initialization, prepares/binds only that request, fetches the complete result and closes the client connection. All those costs are inside both start/end service time and scheduled/end end-to-end time; raw rows add connection_ns/session_init_ns/prepare_ns/execute_ns/close_ns and summaries report these separately. A prepared query on a new connection must prepare again; it is never labeled prepared-context reuse.
 
 For short connections, zero-warmup smoke tests expose driver/class/JIT/first-connection costs and are intentionally not stable performance evidence. Reuse and per_request results cannot be pooled. Match connection mode and exact tool/JDBC hashes across comparisons; rate diagnostics from the earlier helper retain their original identity and are not interchangeable with later short-connection records.
+
+### 当前 P4 JDBC 输入与完整结果核对
+
+当前独立窗口另见 [Flight](flight-performance.md)、[新 FE 计划与原 BE scanner](external-scanner-performance.md)、
+[复杂冷/热规划](complex-performance.md)、[外部 catalog/S3 完整读取](external-read-performance.md)、
+[外部 JDBC 写入](external-write-performance.md)、
+[写入与元数据背景窗口](current-background-performance.md)、
+[DML](dml-performance.md)、[Stream Load](stream-load-g4.md)
+及 [HTTP Query](http-query-baseline.md)。各工具的离线检查和短窗诊断不替代正式性能验收，
+实际进展见 [P4 记录](/data/project/massdb-sql/docs/license-p4-progress-20260929.md)。
+Flight/scanner 的原版 A 容量试档、正式确认及逐窗资源调度见
+[协议容量调度](p4-protocol-capacity.md)；短 pilot 明确不具备容量或性能验收资格。
+
+新运行显式填写 `"contract_group": "G1"`（或本 JDBC helper 覆盖的 `G2`）与唯一 `cell_id`，绑定当前
+`docs/license-p0-contract-20260922.md` 和主计划摘要，种子固定 `20260922`；G1 并发为 1/16、预热至少120秒、
+正式窗至少300秒，G2 为1/8、180秒/600秒。旧输入未填 `contract_group` 时继续按历史 LP JSON 记录，
+不能视为当前 P4 通过。容量报告原 `frozen_inputs/bracket/trials` 结构保留，当前模式另注明
+`phase=A_ONLY`、`current_group`、`cell_id`。A/A统计与容量校准都不等于A/B验收。
+当前正式容量确认还要求controller提供 `business_workload_sha256`：去除A/B端点和版本身份后，对业务SQL、
+fixture、连接/会话配置和种子等输入做canonical摘要。缺失时仅能执行诊断pilot，不能正式confirm。
+runner支持小数请求速率，30%/60%/85%的输入保留精确比例，不向下取整；整数速率的到达生成序列保持相同。
+
+controller应调用 `run_performance_baseline.business_workload_binding(workload)`，将返回的 `sha256` 放回输入。
+校准器会重新计算、拒绝不匹配值，并归档canonical payload。算法为 UTF-8 JSON、键排序、紧凑分隔符、无末尾换行。
+包括group/case、database、并发、连接模式、到达算法/seed、SQL与参数、完整oracle、session SQL、query/socket超时，
+点查另含表/模式/键seed及百万键MD5模型；可选 `fixture_sha256` 绑定独立fixture证据。
+排除端点/用户/密码、服务/构建/runtime身份，以及rate、warmup/duration/pairs、drain/coordination、cell_id和notes。
+rate必须排除才能把同业务容量R与30%/60%/85%负载关联；窗口时长、速率、资源配置和版本仍由各自冻结门槛单独校验。
+
+例如先在Python读入输入后执行 `binding = business_workload_binding(workload)`，再设置
+`workload["business_workload_sha256"] = binding["sha256"]`；不能用任意64位字符串替代这一计算。
+当前confirm还要求 `p4_baseline_identity`，包含 `source_commit`、`fe_sha256`、`be_sha256`、
+`environment_sha256`、`configuration_sha256`、`fixture_sha256`、`client_sha256`。controller从已验证的环境、配置、
+fixture与客户端快照生成这些摘要；校准器归档为 `baseline_identity` 并核对source与实际FE/BE文件摘要。
+环境/配置等快照的内容仍须由调度/冻结层核验，单有摘要字符串不证明运行环境一致。缺省只能诊断pilot。
+
+当前静态查询必须预先冻结 `expected_result`，而不是只给 `expected_rows`。例如：
+
+```json
+{
+  "sql": "SELECT 1 AS probe", "expected_rows": 1,
+  "expected_result": {
+    "columns": [{"label": "probe", "jdbc_type": 4}],
+    "rows": [["1"]], "ordered": true
+  }
+}
+```
+
+这里的 JDBC type 是 `java.sql.Types` 整数，须按实际驱动和独立 fixture 模型事先固定；示例不证明某一
+FE版本必然返回该类型。所有值按 JDBC `getString` 的精确字符串填写，SQL NULL 使用 JSON null。
+每次请求核对全部列标签、JDBC类型、全部行和值，比较计入延迟；`ordered=false` 比较完整多重集，保留重复行次数。
+SUM、SHOW、DESC、SELECT 1 都需独立正确结果来源，不以被测FE输出自我证明。编码使用带长度的UTF-8和
+独立NULL标记，SHA-256绑定实际oracle；静态oracle最大16MiB，不向客户端引入JSON依赖。
+
+`driver-worker-N.json` 保存实际driver/connection/statement类、各query创建句柄数、预热/测量execute次数和
+同一Statement实例复用结果。当前容量核对要求prepared使用冻结MariaDB驱动的真实 `ServerPreparedStatement`，
+不接受客户端预编译回退。该回执证明驱动和客户端复用；FE快路径还须独立计时外分支证据，回执明确保留
+`fe_fast_path_proven=false`。失败按SQL错误、SQL超时、连接错误和结果不匹配分类，失败延迟独立统计；
+首个预热失败保留code/state/时间回执，不写服务器错误正文。客户端不自动重试；不据此推断驱动内部是否有重试。
+
+`timeout_seconds` 保持既有含义：JDBC执行超时和socket读取超时，connect超时固定10秒；它不是计划到达后的总截止。
+`timeout_contract` 显式记录这一边界。正确结果即使在客户端排队很久仍计为SQL成功，**SQL成功不等于SLO合格**；
+排队全部计入端到端P95/P99、另报client queue/service分位数与drain，超出预声明P99/drain SLO不能通过容量校准。
+不以事后增加总截止改写旧记录；A/A、A/B必须固定同一超时语义。
+
+当前工具只内置CPU/RSS窗口计数；资源观察复用 `resource_observer.py`，由外部controller以一致日程启停。
+已有namespace网络、部分RPC和GC日志具有其说明文档中的范围限制，不能当成进程网络、全部RPC或精确窗口GC覆盖。
 
 
 ## 百万键基线与容量校准
