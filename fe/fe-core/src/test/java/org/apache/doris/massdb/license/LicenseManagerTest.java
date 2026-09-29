@@ -114,6 +114,134 @@ class LicenseManagerTest {
     }
 
     @Test
+    void expiredRenewalCanLowerBothLimitsOnlyAfterMembershipShrinksAndPersistsTheNewBase() throws Exception {
+        start();
+        String old = certificate(1, 900, 1100);
+        run(LicenseManager.Action.IMPORT, old);
+        manager.runMembershipMutation(2, 5, () -> host.changeMembers(3, 5));
+        String lower = certificateWithLimits(2, 1000, 2000, 2, 3);
+        manager.runMembershipMutation(0, 0, () -> host.changeMembers(2, 3));
+        assertCapacityImportRejected(lower);
+        manager.runMembershipMutation(1, 2, () -> host.changeMembers(3, 5));
+        time.advance(100_000);
+        Assertions.assertEquals(LicenseQueryStatus.EXPIRED, manager.queryStatus());
+        assertCapacityImportRejected(lower);
+        manager.runMembershipMutation(0, 0, () -> host.changeMembers(2, 5));
+        assertCapacityImportRejected(lower);
+        manager.runMembershipMutation(0, 0, () -> host.changeMembers(2, 3));
+        Assertions.assertEquals("APPLIED", run(LicenseManager.Action.IMPORT, lower)
+                .getBody().get("submission_status"));
+        Assertions.assertTrue(manager.queryStatus().permitsNewQuery());
+        Assertions.assertEquals(2, manager.getSnapshot().getBaseMaxFeNodes());
+        Assertions.assertEquals(3, manager.getSnapshot().getBaseMaxBeNodes());
+        assertAdditionalNodesRejected(manager);
+        long version = manager.getAppliedVersion();
+        run(LicenseManager.Action.IMPORT, old);
+        Assertions.assertEquals(version, manager.getAppliedVersion());
+        Assertions.assertEquals(3, manager.getSnapshot().getBaseMaxBeNodes());
+
+        try (LicenseManager restored = new LicenseManager(host, false, time)) {
+            restored.loadImage(input(image(manager)));
+            restored.onReplayComplete();
+            restored.onMasterStart(false);
+            awaitMaintenance();
+            Assertions.assertTrue(restored.queryStatus().permitsNewQuery());
+            Assertions.assertEquals(2, restored.getSnapshot().getBaseMaxFeNodes());
+            Assertions.assertEquals(3, restored.getSnapshot().getBaseMaxBeNodes());
+            assertAdditionalNodesRejected(restored);
+        }
+    }
+
+    @Test
+    void smallerPendingCapsAddsBeforeAndAfterRestartUntilLowerBaseCommitIsApplied() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 1100));
+        manager.runMembershipMutation(1, 3, () -> host.changeMembers(2, 3));
+        time.advance(100_000);
+        run(LicenseManager.Action.IMPORT, certificateWithLimits(2, 1200, 2000, 2, 3));
+        Assertions.assertEquals(LicenseQueryStatus.EXPIRED, manager.queryStatus());
+        Assertions.assertEquals(5, manager.getSnapshot().getBaseMaxBeNodes());
+        assertAdditionalNodesRejected(manager);
+        byte[] pendingImage = image(manager);
+        try (LicenseManager restored = new LicenseManager(host, false, time)) {
+            restored.loadImage(input(pendingImage));
+            restored.onReplayComplete();
+            restored.onMasterStart(false);
+            awaitMaintenance();
+            Assertions.assertEquals(5, restored.getSnapshot().getBaseMaxBeNodes());
+            assertAdditionalNodesRejected(restored);
+        }
+        time.advance(100_000);
+        Assertions.assertTrue(manager.queryStatus().permitsNewQuery());
+        assertAdditionalNodesRejected(manager);
+        host.throwAfterWrite = true;
+        manager.maintenance();
+        Assertions.assertEquals(LicenseQueryStatus.LICENSE_NOT_READY, manager.queryStatus());
+        host.throwAfterWrite = false;
+        LicensePersistRecord base = host.records.get(host.records.size() - 1);
+        Assertions.assertEquals(LicensePersistRecord.BASE, base.getOperation());
+        manager.replay(base);
+        manager.replay(base);
+        Assertions.assertEquals(2, manager.getSnapshot().getBaseMaxFeNodes());
+        Assertions.assertEquals(3, manager.getSnapshot().getBaseMaxBeNodes());
+        Assertions.assertNull(run(LicenseManager.Action.STATUS, null).getBody().get("pending"));
+        assertAdditionalNodesRejected(manager);
+    }
+
+    @Test
+    void memberGrowthBeforeLowerRenewalCommitRejectsTheStaleDecision() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 1100));
+        manager.runMembershipMutation(1, 2, () -> host.changeMembers(2, 2));
+        time.advance(100_000);
+        String lower = certificateWithLimits(2, 1100, 2000, 2, 3);
+        host.frontendVersion++;
+        host.probeEntered = new CountDownLatch(1);
+        host.probeRelease = new CountDownLatch(1);
+        ExecutorService client = Executors.newSingleThreadExecutor();
+        try {
+            Future<Integer> imported = client.submit(() -> importStatus(lower, "lower-membership-race"));
+            Assertions.assertTrue(host.probeEntered.await(5, TimeUnit.SECONDS));
+            manager.runMembershipMutation(0, 2, () -> host.changeMembers(2, 4));
+            host.probeRelease.countDown();
+            Assertions.assertEquals(409, imported.get(5, TimeUnit.SECONDS));
+            Assertions.assertEquals(5, manager.getSnapshot().getBaseMaxBeNodes());
+            Assertions.assertEquals(1L, run(LicenseManager.Action.STATUS, null).getBody().get("highest_sequence"));
+            assertCapacityImportRejected(lower);
+        } finally {
+            host.probeRelease.countDown();
+            client.shutdownNow();
+        }
+    }
+
+    private void assertCapacityImportRejected(String certificate) throws Exception {
+        byte[] before = image(manager);
+        int records = host.records.size();
+        for (LicenseManager.Action action : new LicenseManager.Action[] {
+                LicenseManager.Action.VALIDATE, LicenseManager.Action.IMPORT}) {
+            LicenseManagementException failure = Assertions.assertThrows(LicenseManagementException.class,
+                    () -> run(action, certificate));
+            Assertions.assertEquals("LICENSE_NODE_LIMIT_TOO_SMALL", failure.getReason());
+            Assertions.assertEquals(400, failure.getHttpStatus());
+            Assertions.assertEquals(6201, failure.getSqlErrorCode());
+            Assertions.assertEquals("45000", failure.getSqlState());
+            Assertions.assertEquals("NOT_SUBMITTED", failure.getBody().get("submission_status"));
+            Assertions.assertEquals(false, failure.getBody().get("retryable"));
+            Assertions.assertArrayEquals(before, image(manager));
+            Assertions.assertEquals(records, host.records.size());
+        }
+    }
+
+    private static void assertAdditionalNodesRejected(LicenseManager target) {
+        AtomicBoolean changed = new AtomicBoolean();
+        Assertions.assertEquals("LICENSE_FE_LIMIT_EXCEEDED", Assertions.assertThrows(DdlException.class,
+                () -> target.runMembershipMutation(1, 0, () -> changed.set(true))).getDetailMessage());
+        Assertions.assertEquals("LICENSE_BE_LIMIT_EXCEEDED", Assertions.assertThrows(DdlException.class,
+                () -> target.runMembershipMutation(0, 1, () -> changed.set(true))).getDetailMessage());
+        Assertions.assertFalse(changed.get());
+    }
+
+    @Test
     void batchAdmissionRejectsBeforeAnyMemberSideEffectAndConcurrentAddsShareOneSlot() throws Exception {
         start();
         run(LicenseManager.Action.IMPORT, certificate(1, 900, 2000));
@@ -1033,6 +1161,14 @@ class LicenseManagerTest {
     private String certificate(long sequence, long notBefore, long expiresAt) throws Exception {
         String deployment = run(LicenseManager.Action.DEPLOYMENT, null).getBody().get("deployment_id").toString();
         return sign(claims(deployment, sequence, notBefore, expiresAt), "issuer", "massdb-license+jws", issuer);
+    }
+
+    private String certificateWithLimits(long sequence, long notBefore, long expiresAt, int maxFe, int maxBe)
+            throws Exception {
+        String deployment = run(LicenseManager.Action.DEPLOYMENT, null).getBody().get("deployment_id").toString();
+        ObjectNode value = claims(deployment, sequence, notBefore, expiresAt);
+        ((ObjectNode) value.get("limits")).put("max_fe_nodes", maxFe).put("max_be_nodes", maxBe);
+        return sign(value, "issuer", "massdb-license+jws", issuer);
     }
 
     private static ObjectNode claims(String deployment, long sequence, long notBefore, long expiresAt) {

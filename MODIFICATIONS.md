@@ -4,6 +4,41 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License renewal after quota reduction (2026-09-30)
+
+- Revise the execution plan, P0 contract, management instructions, current
+  progress, and import-core contract for renewal after expired coverage: allow
+  lower FE/BE limits after safe, committed node removal brings full registered/reserved usage within
+  the new limits. An expired historical base quota is no longer a permanent
+  renewal floor; unexpired active/pending/base commitments remain protected.
+- Preserve offline-member accounting, existing DROP safety checks, sequence
+  and deployment binding, failure atomicity, and the existing
+  `LICENSE_NODE_LIMIT_TOO_SMALL` error mapping. Expiry alone does not remove
+  the last committed ADD limit or create unlimited node capacity.
+- Set future-pending ADD limits to the per-role minimum of committed base and
+  accepted pending limits. Recheck usage before persistent activation; higher
+  pending quotas do not grant capacity early. Apply immediate renewal quotas
+  in the certificate commit. Preserve the existing wire/storage format and
+  strict FE package-digest gate; all registered FEs must use the same updated
+  package before quota reduction. Recovery permits only nonoverlapping
+  active/base-to-pending reductions and retains base-to-active validation.
+- Limit FE product changes to `LicenseImportPolicy`, `LicenseImportState`, and
+  the member ADD path in `LicenseManager`; preserve query admission and BE
+  behavior. Add regression coverage for expiry boundaries, lower immediate and
+  future renewals, actual/reserved usage, failed commits, recovery, and renewal
+  idempotence; update the independent Python issuer to match the renewed rules.
+- Pass all 279 tests in 31 FE suites on Temurin 17.0.4+8, with zero failures,
+  errors, or skips, plus FE Maven packaging, Checkstyle, and 28 Python issuer
+  tests. Verify the updated JAR in one real FE over JDBC/HTTP: expiry, removal
+  of offline registered test identities, lower-quota import, ADD denials,
+  original-receipt idempotence, and restart recovery. Extra identities have no
+  FE/BE process or tablet; this does not validate live BE migration, real
+  multi-FE failover, or new performance. Keep controlled pending/recovery and
+  package-gate results distinct from that runtime scope.
+- Preserve all earlier fixture failures and the original P1/P2/P3/P4 and HTTP
+  supplement evidence. Record this change's source/package bindings, actual
+  results, and limits in `docs/license-expired-renewal-20260930.md`.
+
 ## License external HTTP read admission (2026-09-29)
 
 - Add the existing protected-read license guard to

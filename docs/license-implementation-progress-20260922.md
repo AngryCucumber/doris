@@ -9,6 +9,10 @@ Upstream and third-party components retain their respective licenses.
 
 # 授权证书 P0/P1/P2/P3/P2U/P4 实施记录
 
+> **2026-09-30 到期后缩容续期已实现，并完成本轮分层验证。** 用户要求旧证到期后可以先安全缩容 FE/BE，再导入较低额度续期证书；不再将已经过期的历史基础额度作为续期永久下限。未过期 active/pending/base 额度承诺及完整已注册+预留用量仍保护，离线不释放，成功 DROP 才释放，原安全约束不改。用量仍超限时保持 SQL 6201/45000、HTTP 400 和 `LICENSE_NODE_LIMIT_TOO_SMALL`，拒绝候选并保留旧事实。立即生效导入同步更新 base；未来 pending 等待期 ADD 分别取 base/pending 较小上限，到点复核用量后持久切换，较高 pending 不提前扩额。保留原格式及严格 FE 包摘要门禁，降额前全部注册 FE 须同新包；恢复仅放宽不重叠 active/base→pending，不放宽 base→active。
+>
+> Temurin 17.0.4+8 的 31 个 FE 测试套件共 279 项全部通过，零失败/错误/跳过，FE Maven 构建和 Checkstyle 通过，验证期间源码无变化；Python 签发工具 28 项通过。真实单 FE 用最终 JAR 经 JDBC/HTTP 验证有效旧证拒绝降额、自然到期但未缩容仍拒绝、删除自建离线 Observer/BE 身份后成功导入低额度、SQL/API 当前及基础额度一致、FE/BE 超额 ADD 拒绝、旧证原回执幂等与重启恢复。最终续跑 `runtime-v4-followup3` 真实退出码 0，测试 FE 及其进程组已停止。额外身份没有 FE/BE 进程、业务表或 tablet，不宣称线上 BE 迁移、真实多 FE 切主或新性能通过；pending/混包等按受控层级记录。早期 mkdir、原版 DROP 安全拒绝、限流、全局 applied_version 误断与紧邻重启 bind 探测失败均保留。详细包/源码绑定和分段证据见[本轮验收记录](license-expired-renewal-20260930.md)，不重写旧 P1/P2/P3/P4 或 HTTP 补充结论。
+
 > **2026-09-29 两个 HTTP 入口补充已实现，定向测试及 FE 构建通过。** 用户授权为原五出口之外的 ES search 和 file_review 增加许可限制。 两个 POST 入口分别为 `/rest/v2/api/es_catalog/search`、`/rest/v2/api/import/file_review`；原认证/重定向处理后、外部初始化或文件枚举/读取前复用共享守卫。拒绝返回真实 HTTP 403 及 `reason/message/retryable`，许可检查独立于 `enable_all_http_auth`；正常索引/别名/逗号/`*` 的 `get_mapping` 元数据及导入写入保留。复核发现原 `table` 拼接可被 `_search#` 等 URL 片段改变目标，因此另加单路径段选择器校验，在 catalog 初始化前拒绝空值、斜杠/反斜杠、`?/#/%`、空白及控制字符；该校验不把合法元数据改成许可受限业务。测试为 `LicenseExternalHttpAdmissionTest`，最终 v3 在 Temurin 17.0.4+8 上执行 42 项测试全部通过：新增控制器 12 项、原守卫/快照/取计划 30 项，零失败/错误/跳过；FE Maven 构建及 Checkstyle 通过，验证期间源码无变化。证据见[本轮补充记录](/data/project/massdb-sql/docs/license-http-read-admission-20260929.md)和[v3 构建与测试回执](/data/project/massdb-sql/.build-records/license-http-admission-20260929/checks-v3/completion.json)。v1 商业测试头未登记导致的 Checkstyle 失败原样保留，修正后的 v2 40 项通过亦保留，不与 v3 相加。当前验证使用真实 guard 与模拟外部依赖，没有真实 HTTP 网络、ES/broker 集成或新性能数据。
 >
 > 原 P4 快速验收、自用包及其哈希仍只代表原五出口版本，不含此次两个新挂点；既有 FAIL、短测结论和包身份均保留。非查询 SET 字典、过程文件/进程能力、UDF 外发仍未封堵，本轮不扩大治理。原 Parquet reader 未关闭 FAIL 也不因新增许可守卫变为修复通过。
@@ -17,7 +21,7 @@ Upstream and third-party components retain their respective licenses.
 
 > **2026-09-24 范围收敛：当时工作以[五出口执行计划](/data/project/massdb-sql/docs/license-certificate-execution-plan-20260922.md)为准。** 用户明确允许窄式 `SELECT 1 FROM t LIMIT 1`；保留可证明最终零行的空计划。旧全函数/FE 出口审计、零规划外部访问和全部 26 项基线前置要求已移出当前任务。下文历史阶段编号、强制矩阵与待办不自动恢复为新要求；核心/发行、导入、持久化、额度、页面和正式性能数值继续保留。范围收敛当时仅修订文档，未接入运行时、未重启基准，也未删除旧代码或证据；后续 P2 进展以本节更新为准。
 
-初始日期：2026-09-22；更新：2026-09-29。分支：`2.0.5-license`；初始基线：`23e39e63295fd730523da8d916c898c28b903216`；P0/P1 交付提交：`77e367e422a0df2843e4dee52873ab8d2249a51c`。
+初始日期：2026-09-22；更新：2026-09-30。分支：`2.0.5-license`；初始基线：`23e39e63295fd730523da8d916c898c28b903216`；P0/P1 交付提交：`77e367e422a0df2843e4dee52873ab8d2249a51c`。
 
 **最新使用范围：用户明确本版本先供自己使用，麒麟/openEuler 及目标架构矩阵暂不列为目标、剩余工作或验收前置条件。P1 证书核心按已完成记录；后续聚焦 P2 管理持久化、P3 五出口与额度、P2U 页面和 P4 实际自用环境的集成/性能验证。** JDK 17.0.4 兼容、实际公钥信任配置及原性能要求保留。下文历史“目标平台待验证”“发行矩阵未完成”不再作为当前任务阻塞项；原始测试和失败证据不改变。
 
@@ -90,6 +94,8 @@ LP026 各入口已有分轮实际前提证据，Parquet 原版 reader 未关闭�
 只改 FE、FE 页面和独立离线签发工具，BE 源码、协议、端口和执行流程保持原状。10:59 从 FE 拿到的计划在 11:00 到期后仍可能在 BE 执行或重新打开；下一次向 FE 申请新业务查询或新计划必须受限，这是原五出口已接入规则的验收边界；本轮两 HTTP 入口结果仍单列，验证层级见本文顶部。用户已接受这一边界，实际发生概率未测量。
 
 FE 仍按权威成员表管理 FE/BE 注册额度；离线不释放，实际 DROP 提交才释放。旧 BE 进程是否还能使用原接口不属于额度释放保证。原 BE 身份、内部执行凭证、租约、撤权和传输改造均退出本版。
+
+2026-09-30 新规则允许旧授权覆盖结束后，在完整已注册/预留用量不超过新额度时降额续期；有效及已接受未结束的未来授权承诺继续保护。到期本身不会清空基础额度或开放无限 ADD，新额度须经过成功持久提交。新规则的实现与验证状态以本文顶部补充为准，不重写历史永久下限的旧测试结论。
 
 ## 2. P0 设计与原版路径
 

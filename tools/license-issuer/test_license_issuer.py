@@ -323,7 +323,8 @@ class LicenseIssuerTest(unittest.TestCase):
         with self.assertRaises(issuer.IssuerError):
             issuer.prepare_claims(*args)
         output.unlink()
-        for field, value in [("registered_be_nodes", 11), ("registered_be_nodes", True),
+        for field, value in [("registered_fe_nodes", 4), ("registered_be_nodes", 11),
+                             ("registered_be_nodes", True),
                              ("deployment_id", None), ("schema_version", 2), ("secret", "bad")]:
             invalid = dict(request)
             invalid[field] = value
@@ -398,7 +399,7 @@ class LicenseIssuerTest(unittest.TestCase):
                                self.certificate, self.public, "test-key", 1700000100)
         self.assertEqual(10, with_gap["coverage_gap_seconds"])
 
-    def test_renewal_pending_coverage_and_expired_base_caps(self):
+    def test_renewal_pending_coverage_and_expired_features(self):
         old = claims()
         old["not_before"] = 1750000000
         candidate = claims()
@@ -409,9 +410,61 @@ class LicenseIssuerTest(unittest.TestCase):
         issuer.check_renewal(candidate, old, 1700000100)
         candidate.update(features=[], not_before=1800000001)
         issuer.check_renewal(candidate, old, 1800000000)
-        candidate["limits"]["max_be_nodes"] = 9
+
+    def test_renewal_node_reduction_requires_previous_expiry(self):
+        old = claims()
+        for limits in ({"max_fe_nodes": 2, "max_be_nodes": 10},
+                       {"max_fe_nodes": 3, "max_be_nodes": 5},
+                       {"max_fe_nodes": 2, "max_be_nodes": 5}):
+            candidate = claims()
+            candidate.update(sequence=2, license_id="smaller-renewal", expires_at=1900000000,
+                             limits=limits)
+            for at in (old["not_before"] - 1, old["expires_at"] - 1):
+                with self.subTest(limits=limits, at=at), self.assertRaises(issuer.IssuerError):
+                    issuer.check_renewal(candidate, old, at)
+            for at in (old["expires_at"], old["expires_at"] + 1):
+                with self.subTest(limits=limits, at=at):
+                    self.assertEqual(0, issuer.check_renewal(candidate, old, at))
+
+    def test_expired_renewal_keeps_identity_and_sequence_checks(self):
+        old = claims()
+        for field, value in [("product", "other"), ("deployment_id", "00000000-0000-0000-0000-000000000000"),
+                             ("customer_id", "Other"), ("sequence", 1), ("license_id", old["license_id"])]:
+            candidate = claims()
+            candidate.update(sequence=2, license_id="smaller-renewal", expires_at=1900000000,
+                             limits={"max_fe_nodes": 2, "max_be_nodes": 5})
+            candidate[field] = value
+            with self.subTest(field=field), self.assertRaises(issuer.IssuerError):
+                issuer.check_renewal(candidate, old, old["expires_at"])
+
+    def test_authenticated_reduced_renewal_and_following_renewal(self):
+        self.sign()
+        smaller = claims()
+        smaller.update(sequence=2, license_id="smaller-renewal", not_before=1800000000,
+                       expires_at=1900000000, limits={"max_fe_nodes": 2, "max_be_nodes": 5})
+        self.claims_file.write_text(json.dumps(smaller), encoding="utf-8")
+        output = self.root / "smaller.license"
         with self.assertRaises(issuer.IssuerError):
-            issuer.check_renewal(candidate, old, 1800000000)
+            issuer.sign(self.openssl, self.claims_file, self.private, "test-key", output,
+                        self.certificate, self.public, "test-key", 1799999999)
+        self.assertFalse(output.exists())
+        result = issuer.sign(self.openssl, self.claims_file, self.private, "test-key", output,
+                             self.certificate, self.public, "test-key", 1800000000)
+        self.assertEqual("SIGNED", result["status"])
+        self.assertEqual(0, result["coverage_gap_seconds"])
+        verified = issuer.verify(self.openssl, output, self.public, "test-key", 1800000000,
+                                 smaller["deployment_id"])
+        self.assertTrue(verified["signature_valid"])
+        self.assertEqual("VALID", verified["time_status"])
+        self.assertEqual(smaller, issuer.parse_certificate(output.read_bytes(), "test-key")[0])
+        following = dict(smaller)
+        following.update(sequence=3, license_id="following-renewal", expires_at=2000000000)
+        self.claims_file.write_text(json.dumps(following), encoding="utf-8")
+        following_output = self.root / "following.license"
+        issuer.sign(self.openssl, self.claims_file, self.private, "test-key", following_output,
+                    output, self.public, "test-key", 1850000000)
+        self.assertEqual("VALID", issuer.verify(self.openssl, following_output, self.public,
+                                               "test-key", 1950000000)["time_status"])
 
     def test_renewal_rejects_unverified_previous_and_partial_arguments(self):
         self.sign()

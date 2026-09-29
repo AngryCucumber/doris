@@ -406,12 +406,11 @@ def check_renewal(candidate, previous, at):
         raise IssuerError("Renewal sequence must strictly increase")
     if candidate["license_id"] == previous["license_id"]:
         raise IssuerError("Renewal must use a new license_id")
-    if any(candidate["limits"][key] < value for key, value in previous["limits"].items()):
-        raise IssuerError("Renewal must preserve committed base node limits even after expiry")
     if previous["expires_at"] > at:
         if (candidate["expires_at"] < previous["expires_at"]
                 or (previous["not_before"] > at and candidate["not_before"] > previous["not_before"])
-                or not set(previous["features"]).issubset(candidate["features"])):
+                or not set(previous["features"]).issubset(candidate["features"])
+                or any(candidate["limits"][key] < value for key, value in previous["limits"].items())):
             raise IssuerError("Renewal must preserve unexpired coverage, features and node limits")
     return max(0, candidate["not_before"] - previous["expires_at"])
 

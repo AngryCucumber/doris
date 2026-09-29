@@ -9,9 +9,11 @@ Upstream and third-party components retain their respective licenses.
 
 # MassDB SQL 授权证书执行计划
 
-初稿：2026-09-22；范围收敛：2026-09-24；P0/P1/P2/P3 核对：2026-09-25；P2U 页面验收及 P4 快速验收范围调整、独立 HTTP 读取补充：2026-09-29。源码基线：`2.0.5-license` / `23e39e63295`。
+初稿：2026-09-22；范围收敛：2026-09-24；P0/P1/P2/P3 核对：2026-09-25；P2U 页面验收及 P4 快速验收范围调整、独立 HTTP 读取补充：2026-09-29；到期后缩容续期规则修订：2026-09-30。源码基线：`2.0.5-license` / `23e39e63295`。
 
 **当前方案：只改 FE、FE 管理页面和独立签发工具，围绕原五类出口，并补充 ES search 和 file_review 两个独立 FE HTTP 入口，限制新的业务读取。保留入库、更新、元数据、节点额度、证书导入及详情页面；不改 BE，不改内部通信协议，不新增连接安全配置要求。** 用户最新确认：另允许窄式 `SELECT 1 FROM t LIMIT 1` 探测。
+
+**2026-09-30 到期后缩容续期已实现，并完成本轮分层验证：** 旧授权覆盖已经结束后，允许按正常安全流程缩容 FE/BE，再导入较低节点额度的新证书续期。新额度必须覆盖当时完整的已注册+预留用量；离线未 DROP 的节点仍计数，未过期的 active、pending、base 额度承诺仍受保护。过期基础额度不再是续期的永久下限；立即生效的新证在导入提交时更新基础额度。较低额度未来 pending 在等待期即约束 ADD，到点复核用量后才持久切换；较高额度 pending 不提前扩额。全部注册 FE 须先升级到相同新包，沿用既有严格包摘要门禁及元数据格式。JDK 17.0.4 上 279 项 FE 测试、Checkstyle/构建及 28 项 Python 签发测试通过；真实单 FE 经 JDBC/HTTP 完成注册身份缩容、降额续期、超额 ADD 拒绝、旧回执幂等与重启。未来 pending/混包门禁等按受控测试层级记录，未验证线上 BE 数据迁移、真实多 FE 切主或新性能；原始夹具失败保留，详见[本轮验收记录](license-expired-renewal-20260930.md)。
 
 **2026-09-29 补充已实现，定向测试及 FE 构建通过：** 用户已授权给 `POST /rest/v2/api/es_catalog/search` 和 `POST /rest/v2/api/import/file_review` 增加许可限制。复用现有守卫，在原认证/重定向处理后、外部初始化或文件读取前判断；拒绝返回真实 HTTP 403 及 `reason/message/retryable`，与 `enable_all_http_auth` 开关独立。合法索引选择器的 `get_mapping` 元数据和导入写入保留；`get_mapping` 另补最小参数校验，阻止 URL 路径/查询/片段改变元数据目标。原 P4 验收包及其证据不包含这两个新挂点，本轮在 Temurin 17.0.4+8 上通过 42 项定向测试（新增控制器 12 项、原守卫/快照/取计划 30 项），零失败/错误/跳过，FE Maven 构建及 Checkstyle 通过，见[本轮补充记录](/data/project/massdb-sql/docs/license-http-read-admission-20260929.md)。这些是控制器/模拟 HTTP 测试及 FE 构建，不是实际 ES/broker 集成或新性能验收，不追认旧包已包含该修改。
 
@@ -120,7 +122,7 @@ MySQL/JDBC、HTTP Query、Flight 和过程内 SELECT 已汇入现有 SQL 执行�
 
 ## 4. 证书、时间与运行依赖
 
-复用已实现的 14 个 Java 核心文件；不因收敛出口重写格式、验签或续期模型。接口与不变量见[导入核心](/data/project/massdb-sql/docs/license-import-core-20260922.md)和[时间核心](/data/project/massdb-sql/docs/license-clock-core-20260922.md)。
+复用已实现的 Java 核心；保留格式与验签，仅按 2026-09-30 新要求调整到期后的额度续期策略。接口与不变量见[导入核心](/data/project/massdb-sql/docs/license-import-core-20260922.md)和[时间核心](/data/project/massdb-sql/docs/license-clock-core-20260922.md)。
 
 | 项目 | 保留口径 |
 | --- | --- |
@@ -129,7 +131,7 @@ MySQL/JDBC、HTTP Query、Flight 和过程内 SELECT 已汇入现有 SQL 执行�
 | 关键声明 | schema_version、policy_version、license_id、issuer、customer_id、product、deployment_id、issued_at/not_before/expires_at、sequence、edition/features、max_fe_nodes/max_be_nodes |
 | 集群绑定 | Master 持久生成一次 deployment_id UUID；不绑定 IP/MAC，不由 Follower 或状态查询生成临时身份 |
 | 严格输入 | 原文最多 64 KiB，严格 UTF-8/JSON/字段类型/重复键/base64url，按原始签名字节验证；未知版本/算法/公钥拒绝 |
-| 续期 | active + 至多一个 pending，sequence 单调递增；保护已接受覆盖及基础额度，失败不替换旧证；指纹幂等，至多 1,024 条成功回执 |
+| 续期 | active + 至多一个 pending，sequence 单调递增；保护未结束的已接受覆盖与额度承诺；旧覆盖到期且实际用量已缩至新额度内时允许降额续期，失败不替换旧证；指纹幂等，至多 1,024 条成功回执 |
 | 时间 | UTC Unix 秒，`not_before <= now < expires_at`；到期等号即失效，无默认宽限；不改变 SQL 会话/JVM 时区 |
 | 防回拨 | 复用墙钟、单调推进及持久时间水位；回拨容差 5 秒、显著前跳阈值 300 秒、水位保存 60 秒，不逐查询写日志 |
 | 修复 | 独立 time_repair 公钥用途与签名票据，24 小时单调挑战期限，绑定部署/任期/nonce/epoch；提交后生效，不延长原证书 |
@@ -155,11 +157,14 @@ LicenseManager 挂到 Env，复用 journal/image。持久化部署身份、原�
 | 离线/重启/心跳恢复/切主 | 不释放也不重复占额，不按在线节点数计算 |
 | ADD | 在 Env.addFrontend / SystemInfoService.addBackends 等权威变更处检查；批量预检、并发新增和证书切换统一串行提交，额度拒绝不留下半注册成员；原成员提交中途故障沿既有恢复机制处理，仍按实际已提交成员计额 |
 | 缩容 | DECOMMISSION 期间仍计数；实际 DROP 成员提交后才释放。保留原副本、WAL、quorum 检查，不自动踢节点 |
-| 到期 | 读取许可与已提交基础额度分开；保留最后可信基础额度约束，不因到期变为无限扩容 |
-| pending | 生效时间可改变查询状态；新增节点依据的基础额度提升必须另行持久提交，不能仅凭到点推断 |
-| 引导/降额 | 无可信额度仅允许已证明的新集群首 FE 引导；增加 BE 需要证书。新证不接受低于已占用/预留或已接受基础额度的降额 |
+| 到期 | 读取许可与已提交基础额度分开；到期不自动清空 ADD 额度，也不永久阻止合规降额续期。立即生效的新证导入提交时同步替换基础额度 |
+| pending | 等待期 ADD 的 FE/BE 上限分别取已提交 base 与已接受 pending 的较小值，防止缩容后重新扩至未来证书无法覆盖的数量；较高 pending 不提前扩额。到点复核注册+预留用量后持久切换基础额度，不能仅凭到点推断提交 |
+| 引导 | 无可信额度仅允许已证明的新集群首 FE 引导；增加 BE 需要证书 |
+| 到期后降额续期 | 允许先成功 DROP，再导入覆盖现有完整已注册+预留用量的新额度；不再要求新额度覆盖已经到期的历史基础额度。仍拒绝低于实际用量或未过期 active/pending/base 额度承诺的候选，失败保旧；SQL 6201/45000、HTTP 400、`LICENSE_NODE_LIMIT_TOO_SMALL`。FE/BE 分别校验，不自动移除节点 |
 
 节点数由成员变更/恢复路径维护并发布，查询与页面读取快照；不在查询路径遍历成员或同步询问所有 FE。
+
+本轮不变更证书和 FE 持久化外壳格式。降额前，全部已注册 FE 必须通过同一新包摘要与信任集的原有能力门禁。恢复只允许授权时间不重叠的 active/base→pending 降额，不放宽 base→active 的原校验；不能使用旧 FE 二进制恢复含较低 pending 的新元数据。
 
 ### 5.2 SQL、HTTP 与页面
 

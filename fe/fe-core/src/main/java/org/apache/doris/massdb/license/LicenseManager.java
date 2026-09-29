@@ -633,7 +633,8 @@ public final class LicenseManager implements AutoCloseable {
             throw new DdlException("LICENSE_NOT_READY", ErrorCode.ERR_LICENSE_NOT_READY);
         }
         Membership members = host.membership();
-        LicenseSnapshot current = snapshot(imports, members, true, invalidSlots);
+        LicenseImportState currentImports = imports;
+        LicenseSnapshot current = snapshot(currentImports, members, true, invalidSlots);
         int maxFe;
         int maxBe;
         if (current.hasTrustedBaseCapacity()) {
@@ -645,6 +646,13 @@ public final class LicenseManager implements AutoCloseable {
             maxBe = 0;
         } else {
             throw new DdlException("LICENSE_BASE_CAPACITY_UNAVAILABLE", ErrorCode.ERR_LICENSE_NOT_READY);
+        }
+        // An accepted smaller renewal reserves its ceiling until activation commits the new base.
+        // Larger pending limits never grant capacity early. This is only on the member ADD path.
+        if (currentImports.getPending() != null) {
+            LicenseDocument pending = currentImports.getPending().getDocument();
+            maxFe = Math.min(maxFe, pending.getMaxFeNodes());
+            maxBe = Math.min(maxBe, pending.getMaxBeNodes());
         }
         if ((long) members.feNodes + additionalFe > maxFe) {
             throw new DdlException("LICENSE_FE_LIMIT_EXCEEDED", ErrorCode.ERR_LICENSE_CONFLICT);

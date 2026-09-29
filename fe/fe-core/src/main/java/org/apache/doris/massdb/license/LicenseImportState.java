@@ -135,8 +135,8 @@ public final class LicenseImportState {
             throw new IllegalArgumentException("Base marker does not match active and pending order");
         }
         requireNondecreasingCapacity(effectiveBase, active);
-        requireNondecreasingCapacity(active, pending);
-        requireNondecreasingCapacity(effectiveBase, pending);
+        requirePendingCapacity(active, pending);
+        requirePendingCapacity(effectiveBase, pending);
         for (int first = 0; first < slots.length; first++) {
             for (int second = first + 1; second < slots.length; second++) {
                 if (slots[first] != null && slots[second] != null) {
@@ -177,6 +177,15 @@ public final class LicenseImportState {
         if (older != null && newer != null && (older.document.getMaxFeNodes() > newer.document.getMaxFeNodes()
                 || older.document.getMaxBeNodes() > newer.document.getMaxBeNodes())) {
             throw new IllegalArgumentException("Restored license capacity decreases across accepted slots");
+        }
+    }
+
+    private static void requirePendingCapacity(Slot older, Slot pending) {
+        // A lower future renewal is committed only after the older promise has expired.
+        // Its signed start must therefore follow that expiry; overlapping promises still cannot shrink.
+        if (older != null && pending != null
+                && older.document.getExpiresAt() > pending.document.getNotBefore()) {
+            requireNondecreasingCapacity(older, pending);
         }
     }
 

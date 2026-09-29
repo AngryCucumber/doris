@@ -11,7 +11,9 @@ Upstream and third-party components retain their respective licenses.
 
 当前范围冻结：2026-09-25（保留原文件名）；源码基线：`23e39e63295fd730523da8d916c898c28b903216`。本文落实[执行计划](/data/project/massdb-sql/docs/license-certificate-execution-plan-20260922.md)，以原五类出口、用户允许的窄式表非空探测及自用部署为基础；2026-09-29 用户另授权补充 ES search/file_review 两个 FE HTTP 读取入口。
 
-**本轮状态：补充已实现，42 项定向测试及 FE 构建通过。** H01/H02 在原认证/重定向之后、ES 初始化或文件枚举/读取之前复用许可守卫；异常许可为真实 HTTP 403 和 `reason/message/retryable`，不依赖 `enable_all_http_auth` 是否开启。`get_mapping` 的正常索引/别名/逗号/通配选择器继续享有元数据例外，URL 控制参数另在外部初始化前拒绝；原 P4 已验收包不含此次新挂点；历史 46 组及原 FAIL/INCONCLUSIVE 不回写为新范围通过。本轮新增控制器 12 项与原守卫/快照/取计划 30 项测试零失败/错误/跳过，使用真实 guard 与模拟外部依赖；Temurin 17.0.4+8 FE 构建及 Checkstyle 通过，实际层级和证据见[本轮补充记录](/data/project/massdb-sql/docs/license-http-read-admission-20260929.md)。未执行真实 HTTP 网络、ES/broker 集成或新性能测试。当前 P2/P3/P2U/P4 已完成范围以各验收记录及[实施记录](/data/project/massdb-sql/docs/license-implementation-progress-20260922.md)为准，下文最初冻结时的将来时措辞不表示这些旧阶段仍未实现。
+**2026-09-30 续期契约调整已实现并完成分层验证：** 旧授权覆盖到期后，允许安全缩容至新额度以内，再导入较低额度续期证书；历史过期基础额度不再永久阻止降额。未过期 active/pending/base 额度承诺及当前完整注册+预留用量仍保护。等待低额度 pending 生效期间 ADD 提前采用较小上限，基础额度切换仍须持久提交；全部注册 FE 须先通过相同新包摘要的原有能力门禁，格式不变。279 项 FE 回归、Checkstyle/构建和 28 项签发测试通过；真实单 FE 注册身份缩容、SQL/HTTP 导入、ADD 拒绝、幂等与重启通过。M15/M16 的真实及受控范围、失败夹具和未执行边界见[本轮验收记录](license-expired-renewal-20260930.md)，不将旧 P1/P2/P3/P4 记录改写为此次新规则通过。
+
+**2026-09-29 HTTP 补充已实现，42 项定向测试及 FE 构建通过。** H01/H02 在原认证/重定向之后、ES 初始化或文件枚举/读取之前复用许可守卫；异常许可为真实 HTTP 403 和 `reason/message/retryable`，不依赖 `enable_all_http_auth` 是否开启。`get_mapping` 的正常索引/别名/逗号/通配选择器继续享有元数据例外，URL 控制参数另在外部初始化前拒绝；原 P4 已验收包不含此次新挂点；历史 46 组及原 FAIL/INCONCLUSIVE 不回写为新范围通过。本轮新增控制器 12 项与原守卫/快照/取计划 30 项测试零失败/错误/跳过，使用真实 guard 与模拟外部依赖；Temurin 17.0.4+8 FE 构建及 Checkstyle 通过，实际层级和证据见[本轮补充记录](/data/project/massdb-sql/docs/license-http-read-admission-20260929.md)。未执行真实 HTTP 网络、ES/broker 集成或新性能测试。当前 P2/P3/P2U/P4 已完成范围以各验收记录及[实施记录](/data/project/massdb-sql/docs/license-implementation-progress-20260922.md)为准，下文最初冻结时的将来时措辞不表示这些旧阶段仍未实现。
 
 **P0 交付的是源码挂点、接口/状态协议、具体正反用例及性能适用范围；运行测试由 P2/P3/P2U/P4 执行。** 下文 `specified_not_executed` 保留 P0 冻结当时的状态；后续 P2 的 M01–M08、M12–M14 管理部分结果逐项记录在[P2 验收记录](license-p2-acceptance-20260925.md)，分别注明单测、受控故障和真实 FE 范围。查询、ADD/DROP 额度和页面不因管理测试通过而视为已生效。
 
@@ -36,11 +38,11 @@ Upstream and third-party components retain their respective licenses.
 
 证书保护头固定 `alg=Ed25519`、`typ=massdb-license+jws`、可信 `kid`，JDK 17 JCA 验签原始 compact signing input。`schema_version=1`、`policy_version=1`，固定产品 `MassDB SQL`，UTC 整数秒，`not_before <= now < expires_at`。64 KiB 原始证书上限；严格 JSON、base64url、UTF-8、字段类型及数值范围由 P1 验证器实现。
 
-active、pending、基础额度来源分别验签，逐槽隔离。坏 pending 不使可信 active 失效；坏 base 关闭 ADD，不单独拒绝满足当前查询额度的可信 active/pending。查询按当前时间选择有效证书；ADD 只使用已提交基础额度来源。未来 pending 到点可用于读取，但基础额度提升须另行提交，不能从时间推导提交事实。
+active、pending、基础额度来源分别验签，逐槽隔离。坏 pending 不使可信 active 失效；坏 base 关闭 ADD，不单独拒绝满足当前查询额度的可信 active/pending。查询按当前时间选择有效证书。ADD 以已提交 base 为基础；存在已接受 pending 时，FE/BE 分别取 base 与 pending 额度的较小值，低额度立即约束新增，高额度不提前开放。未来 pending 到点可用于读取，但基础额度切换须再次核对注册+预留数量并持久提交，不能从时间推导提交事实。立即生效的新证在成功导入提交时同步更新 base。
 
 同 deployment 的最高接受序号单调增长；先按原始字节 SHA-256 指纹查当前槽/成功回执。已提交的相同指纹返回原结果，不能重应用历史证书；当前或已保留序号/ID 的不同内容冲突。回执最多 1,024 条，超出保留区间且不在槽位时返回历史不可确认，不虚构曾成功。失败候选不占回执。
 
-续期须保护 active 和已接受 pending 的授权时间覆盖并集以及已提交基础额度，不缩短现有未结束覆盖、不在已承诺覆盖中制造新间隙、不削减查询能力或额度。原本未承诺覆盖的旧 active 结束至新 pending 开始之间可有空档；空档内查询仍按 EXPIRED 受限。最多 active+一个 pending；替换 pending 同样要求更高 sequence。候选验签/时间/序号/部署/覆盖失败保持旧事实不变，validate 与 import 使用同一纯策略；真正提交时再次核对状态版本和成员版本。
+续期须保护 active 和已接受 pending 尚未结束的授权时间覆盖并集，不缩短现有未结束覆盖、不在已承诺覆盖中制造新间隙、不削减该覆盖中的查询能力或节点额度；尚未过期的 base 同样保留额度下限。已经到期的历史基础额度不作为续期永久下限：旧覆盖结束后，只要新证的 FE/BE 额度分别覆盖当前完整已注册+预留用量，就允许缩容后降额续期。ADD 按前述 base/pending 较小上限处理，不能因旧证到期而无限扩容。原本未承诺覆盖的旧 active 结束至新 pending 开始之间可有空档；空档内查询仍按 EXPIRED 受限。最多 active+一个 pending；替换 pending 同样要求更高 sequence。候选验签/时间/序号/部署/覆盖或实际用量校验失败保持旧事实不变，validate 与 import 使用同一纯策略；真正提交时再次核对状态版本和成员版本。
 
 可信时间默认值冻结为：回拨容差 5,000 ms、显著前跳阈值 300,000 ms、周期水位保存 60 s、修复挑战单调有效期 24 h。可信 UTC 由墙钟及单调推进下界决定，向前校正提升下界；回拨不能降低已观测 UTC、冻结正常时间推进或复活过期授权。容差从不加到 expires_at。显著异常进入粘滞 CLOCK_SUSPECT；合法写入/安全元数据保留。管理read()返回同epoch不可变时间元组；热路径按epoch→UTC→suspect→epoch一致性复核，遇修复并发变化重试或保守拒绝，不能任意拼接跨epoch的UTC与异常标志。
 
@@ -81,6 +83,8 @@ P2 持久化使用 FE 全局 Env 独立对象；外壳 `format_version=1`、模�
 Checkpoint使用独立Env的历史截面，不能读线上静态快照；不生成UUID、不追加journal、不启动daemon，不按当前时间把pending永久晋升。在线Env完整回放后发布不可变快照；回放的历史过期证书派生EXPIRED，不因过期阻塞恢复。
 
 升级分三步：先使全部提供SQL/HTTP/Flight/转发/计划服务的注册FE具备新格式能力；在受控发行窗口验证全部FE包及信任集；然后提交唯一deployment/首证书并单向激活。旧FE缺能力、未知版本、离线未验证FE不得被默认为可服务新规则。验证使用FE管理能力/发行清单，不改BE心跳协议。激活后，不支持把旧二进制直接加入服务或无备份格式迁移地降级；缺证、普通配置、skip journal不能取消激活。混合期不能宣称全FE读取许可已覆盖。
+
+2026-09-30 降额续期补充沿用原证书、journal/image 外壳格式和严格 FE 包摘要门禁：降额前必须使全部已注册 FE 使用相同新包。恢复仅对授权时间不重叠的 active/base→pending 放宽额度下降，base→active 保持原校验；旧二进制不能恢复带较低 pending 的新元数据。该兼容边界在本轮受控恢复和门禁测试中单列记录，不将旧 P2 混合版本测试直接计为通过，也不宣称重新完成真实多 FE 混包部署或切主。
 
 上述升级/格式是 P0 冻结输入。真实 mixed-FE、checkpoint、坏槽、skip、切主和丢响应恢复测试属于 P2/P4；本轮只冻结设计，不冒充运行时通过。
 
@@ -181,7 +185,7 @@ Checkpoint使用独立Env的历史截面，不能读线上静态快照；不生�
 | --- | --- | --- | --- |
 | M01 / P2 | 新空 Env；Master/Follower 同时 GET deployment；Master 重复初始化，再重启/切主 | 只有 Master 提交一个稳定 UUID；GET/Follower 不生成身份；初始化失败为未就绪，不能凭缺槽获得免费额度；新集群用例不预建业务表或证书 | K1 |
 | M02 / P2 | ADMIN 分别用 SQL IMPORT 与 HTTP import 导入 VALID；同内容 VALIDATE；READER/匿名重复请求 | 两入口共用候选策略，提交后才发布版本；validate 不写 journal/UUID/回执；非 ADMIN/未认证按原权限拒绝且无状态改变 | K2、K3 |
-| M03 / P2 | 已有 A 后提交：篡改字节、错误 kid/用途、跨 deployment、低 sequence、破坏已接受覆盖的间隙、降额、65 KiB 原文、超过 96 KiB HTTP body | 分别明确拒绝原因，A/最高序号/回执/基础额度保持不变；超限早于排队验签，日志无证书原文；不能用语法错误冒充验签拒绝 | K2、K3；P1 Import/Verifier |
+| M03 / P2 | 已有 A 后提交：篡改字节、错误 kid/用途、跨 deployment、低 sequence、破坏已接受覆盖的间隙、削减未结束承诺或低于实际用量的降额、65 KiB 原文、超过 96 KiB HTTP body | 分别明确拒绝原因，A/最高序号/回执/基础额度保持不变；超限早于排队验签，日志无证书原文；不能用语法错误冒充验签拒绝。旧覆盖到期后的合规降额另按 M15，不沿用历史永久下限 | K2、K3；P1 Import/Verifier |
 | M04 / P2 | 导入 A 响应丢失后重试；导入 B 后再查 A；相同序号不同字节；两请求并发提交；超过 1,024 回执 | 指纹重试确认原提交而不回退 B；冲突保留旧状态；提交时重查版本，回执淘汰后返回历史不可确认；UNKNOWN 不作未提交，释放验签队列 | K1、K3 |
 | M05 / P2 | 保存 image 后追加 journal，恢复及新 FE 加入；active 已过期、坏 pending、坏 base 各独立变体；checkpoint 独立 Env | 恢复同一已提交事实及原证书字节；过期正常派生 EXPIRED；坏 pending 不拖垮 active，坏 base 禁 ADD；checkpoint 不读在线静态快照、不造 UUID/新日志 | K1 |
 | M06 / P2 | 跳过相关 journal、忽略新模块、未知外壳版本/超限载荷；混合新旧 FE；激活后尝试加入旧 FE | 不把不完整恢复当作未激活/免费集群；保留 NOT_READY 和原恢复错误语义；所有可服务 FE 格式兼容后才激活，旧格式不得加入已激活服务；BE 不升级 | K1 |
@@ -193,6 +197,8 @@ Checkpoint使用独立Env的历史截面，不能读线上静态快照；不生�
 | M12 / P2/P3 | 导入未来更高额度 pending，推进到 not_before，基础额度提交暂停/失败后恢复；另测新 pending 晚于旧 active 结束且中间从未承诺授权 | 查询可按有效 pending 判断；ADD 在基础额度提交前仍用旧值，提交后用新值；不从墙钟生效推断已提交；恢复/重放不重复激活；未承诺的空档允许导入，空档内查询仍为 EXPIRED | K1、K4；P1 Import/Snapshot |
 | M13 / P2 | Follower 上 validate/import/clock repair；Master 权限撤销/切换、HTTP 超时、5 秒未应用、原认证失败 | 原主体到 Master 重验；保留 HTTP 状态和 reason/receipt/version；已提交待应用为 202，未确认是 UNKNOWN；认证错误独立保留，不变成功或空结果 | K3 |
 | M14 / P2 | 两验签 worker 忙、32 项队列满、单用户每分钟第 11 次/突发第 4 次；含证书的多语句、PREPARE、语法错误/失败日志 | 管理资源有界，429/Retry-After 或准确 SQL 映射；不长期持有业务全局锁；原文不出现在审计/Profile/HTTP/debug/error 可见记录中；失败/取消归还资源 | K2、K3 |
+| M15 / 2026-09-30 降额续期补充 | 旧证 FE/BE 额度较高，在 expires_at 前后分别导入较低额新证；含成功 DROP、仅离线、仍预留、未过期 active/pending/base 承诺、validate 后成员变化、提交失败及重试 | 只有旧承诺已到期且新额覆盖完整注册+预留时允许降额；立即生效导入同步更新 base，超额 ADD 按新额拒绝。其他降额返回 `LICENSE_NODE_LIMIT_TOO_SMALL`（SQL 6201/45000、HTTP 400）且保旧；幂等重试不复活旧高额度，DROP 安全条件不变 | K1、K2、K3、K4；Import/Manager/Store |
+| M16 / 2026-09-30 未来降额与恢复补充 | 旧覆盖到期后导入低额度未来 pending，在等待期 ADD、到点激活、并发成员变化、journal/image 恢复；较高 pending 对照；旧包/混包门禁 | 等待期 FE/BE ADD 各取 base/pending 较小值；较高 pending 不提前扩额，激活重新核对用量后提交。仅不重叠 active/base→pending 降额允许恢复，base→active 不放宽；全部注册 FE 相同新包才通过门禁，旧版本不能承接新低 pending 状态；独立记录测试层级 | K1、K4；Import/Snapshot/Store |
 | U01 / P2U | 登录后其他 Tab、直达 /License、刷新、前进/后退、反向代理前缀、中英切换 | 其他 Tab 零新增许可请求；证书页加载一次，页面/资源/API 路径正确，Tab 选中与权限一致 | K5 |
 | U02 / P2U | ADMIN 文件与文本导入、validate 后确认；普通已具 Web 登录资格用户看状态并直接 POST；超大输入/坏证 | 前后端都做权限和大小校验，旧许可保持；输入只在临时内存，关闭/成功/注销清空，URL/storage/日志无原文；不为该功能扩大原 Web 登录资格 | K3、K5 |
 | U03 / P2U | 导入已提交待同步/响应丢失，进入回执查询；隐藏/离开页面/注销/网络失败 | 2/4/8/16/30 秒退避、单请求串行、总预算 120 秒；停止后不再自动发新请求，可手动查回执；不重复自动提交证书 | K3、K5 |

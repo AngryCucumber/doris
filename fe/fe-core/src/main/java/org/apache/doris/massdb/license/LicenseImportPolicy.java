@@ -140,7 +140,7 @@ public final class LicenseImportPolicy {
         Slot base = state.getEffectiveBase();
         if (normalizedPending != null && now >= normalizedPending.getDocument().getNotBefore()) {
             normalizedActive = normalizedPending;
-            base = promotedBase(base, normalizedPending);
+            base = promotedBase(base, normalizedPending, now);
         }
         Slot accepted = new Slot(candidate, compact, version);
         Slot active;
@@ -148,7 +148,7 @@ public final class LicenseImportPolicy {
         if (candidate.getNotBefore() <= now) {
             active = accepted;
             pending = null;
-            base = promotedBase(base, accepted);
+            base = promotedBase(base, accepted, now);
         } else {
             active = normalizedActive;
             pending = accepted;
@@ -197,19 +197,21 @@ public final class LicenseImportPolicy {
         if (pending == null || context.trustedNowSeconds < pending.getDocument().getNotBefore()) {
             return new Prepared(state, context, state, null, true, null, 0);
         }
-        Slot base = promotedBase(state.getEffectiveBase(), pending);
+        requireCapacity(pending.getDocument(), state, context);
+        Slot base = promotedBase(state.getEffectiveBase(), pending, context.trustedNowSeconds);
         LicenseImportState proposed = LicenseImportState.restore(state.getDeploymentId(), pending, null, base,
                 state.getHighestSequence(), nextVersion(state), state.getReceipts());
         return new Prepared(state, context, proposed, null, false, null, 0);
     }
 
-    private static Slot promotedBase(Slot base, Slot candidate) throws LicenseException {
+    private static Slot promotedBase(Slot base, Slot candidate, long now) throws LicenseException {
         if (base == null) {
             return candidate;
         }
         LicenseDocument previous = base.getDocument();
         LicenseDocument next = candidate.getDocument();
-        if (next.getMaxFeNodes() < previous.getMaxFeNodes() || next.getMaxBeNodes() < previous.getMaxBeNodes()) {
+        if (previous.getExpiresAt() > now && (next.getMaxFeNodes() < previous.getMaxFeNodes()
+                || next.getMaxBeNodes() < previous.getMaxBeNodes())) {
             reject(LicenseErrorCode.NODE_LIMIT_TOO_SMALL);
         }
         return next.getSequence() > previous.getSequence() ? candidate : base;
@@ -237,7 +239,9 @@ public final class LicenseImportPolicy {
         long requiredFe = (long) context.registeredFe + context.reservedFe;
         long requiredBe = (long) context.registeredBe + context.reservedBe;
         for (Slot old : new Slot[] {state.getActive(), state.getPending(), state.getEffectiveBase()}) {
-            if (old != null) {
+            // An expired promise must not prevent renewal after the registered membership has shrunk.
+            // Unexpired active and future promises still protect their full accepted capacity.
+            if (old != null && old.getDocument().getExpiresAt() > context.trustedNowSeconds) {
                 requiredFe = Math.max(requiredFe, old.getDocument().getMaxFeNodes());
                 requiredBe = Math.max(requiredBe, old.getDocument().getMaxBeNodes());
             }
