@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.httpv2.restv2;
 
@@ -24,6 +25,8 @@ import org.apache.doris.datasource.CatalogIf;
 import org.apache.doris.datasource.es.EsExternalCatalog;
 import org.apache.doris.httpv2.entity.ResponseEntityBuilder;
 import org.apache.doris.httpv2.rest.RestBaseController;
+import org.apache.doris.massdb.license.LicenseQueryGuard;
+import org.apache.doris.massdb.license.LicenseSqlException;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.collect.Maps;
@@ -31,6 +34,9 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.json.simple.JSONValue;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
@@ -50,7 +56,7 @@ public class ESCatalogAction extends RestBaseController {
     private static final String TABLE = "table";
 
     private Object handleRequest(HttpServletRequest request, HttpServletResponse response,
-            BiFunction<EsExternalCatalog, String, String> action) {
+            boolean protectedRead, BiFunction<EsExternalCatalog, String, String> action) {
         if (Config.enable_all_http_auth) {
             executeCheckPassword(request, response);
         }
@@ -59,10 +65,23 @@ public class ESCatalogAction extends RestBaseController {
             return redirectToHttps(request);
         }
 
+        String tableName = request.getParameter(TABLE);
+        if (!protectedRead && !isMappingIndexSelector(tableName)) {
+            return ResponseEntityBuilder.badRequest("invalid ES index selector");
+        }
+
+        if (protectedRead) {
+            try {
+                // Catalog initialization can already contact ES; admit the request before it starts.
+                LicenseQueryGuard.checkProtectedRead();
+            } catch (LicenseSqlException e) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN).body(JSONValue.parse(e.getMessage()));
+            }
+        }
+
         Map<String, Object> resultMap = Maps.newHashMap();
         Env env = Env.getCurrentEnv();
         String catalogName = request.getParameter(CATALOG);
-        String tableName = request.getParameter(TABLE);
         CatalogIf catalog = env.getCatalogMgr().getCatalog(catalogName);
         if (!(catalog instanceof EsExternalCatalog)) {
             return ResponseEntityBuilder.badRequest("unknown ES Catalog: " + catalogName);
@@ -79,9 +98,25 @@ public class ESCatalogAction extends RestBaseController {
         return ResponseEntityBuilder.ok(resultMap);
     }
 
+    private static boolean isMappingIndexSelector(String selector) {
+        if (selector == null || selector.isEmpty()) {
+            return false;
+        }
+        // The client appends /_mapping to this value. Keep it within one URL path segment,
+        // so metadata requests cannot become searches through a query, fragment or encoded separator.
+        for (int i = 0; i < selector.length(); i++) {
+            char ch = selector.charAt(i);
+            if (ch == '/' || ch == '\\' || ch == '?' || ch == '#' || ch == '%'
+                    || Character.isWhitespace(ch) || Character.isSpaceChar(ch) || Character.isISOControl(ch)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     @RequestMapping(path = "/get_mapping", method = RequestMethod.GET)
     public Object getMapping(HttpServletRequest request, HttpServletResponse response) {
-        return handleRequest(request, response, (esExternalCatalog, tableName) ->
+        return handleRequest(request, response, false, (esExternalCatalog, tableName) ->
             esExternalCatalog.getEsRestClient().getMapping(tableName));
     }
 
@@ -93,7 +128,7 @@ public class ESCatalogAction extends RestBaseController {
         } catch (IOException e) {
             return ResponseEntityBuilder.okWithCommonError(e.getMessage());
         }
-        return handleRequest(request, response, (esExternalCatalog, tableName) ->
+        return handleRequest(request, response, true, (esExternalCatalog, tableName) ->
             esExternalCatalog.getEsRestClient().searchIndex(tableName, body));
     }
 

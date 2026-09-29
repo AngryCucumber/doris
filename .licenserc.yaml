@@ -6,6 +6,7 @@ header:
   paths-ignore:
     # Commercial and independent Apache files are validated by check-source-headers.py.
     # BEGIN MassDB separately checked headers
+    - "fe/fe-core/src/test/java/org/apache/doris/httpv2/restv2/LicenseExternalHttpAdmissionTest.java"
     - "build-support/check-source-headers.py"
     - "build-support/prepare-product-notices.py"
     - "build-support/test_product_notices.py"

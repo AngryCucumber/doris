@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.httpv2.restv2;
 
@@ -24,6 +25,8 @@ import org.apache.doris.common.parquet.ParquetReader;
 import org.apache.doris.common.util.BrokerUtil;
 import org.apache.doris.httpv2.entity.ResponseEntityBuilder;
 import org.apache.doris.httpv2.rest.RestBaseController;
+import org.apache.doris.massdb.license.LicenseQueryGuard;
+import org.apache.doris.massdb.license.LicenseSqlException;
 import org.apache.doris.thrift.TBrokerFileStatus;
 
 import com.google.common.collect.Lists;
@@ -33,6 +36,9 @@ import lombok.Getter;
 import lombok.Setter;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.json.simple.JSONValue;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
@@ -82,6 +88,13 @@ public class ImportAction extends RestBaseController {
 
         if (Config.enable_all_http_auth) {
             executeCheckPassword(request, response);
+        }
+
+        try {
+            // Preview returns data, so reject before listing files or opening a broker reader.
+            LicenseQueryGuard.checkProtectedRead();
+        } catch (LicenseSqlException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(JSONValue.parse(e.getMessage()));
         }
 
         FileInfo fileInfo = body.getFileInfo();

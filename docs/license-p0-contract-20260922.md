@@ -7,9 +7,11 @@ Use is governed by LICENSE-MASSDB.txt and a separate agreement with the company.
 Upstream and third-party components retain their respective licenses.
 -->
 
-# P0：五类出口实施契约与验收输入
+# P0：五类出口及补充 HTTP 入口实施契约与验收输入
 
-当前范围冻结：2026-09-25（保留原文件名）；源码基线：`23e39e63295fd730523da8d916c898c28b903216`。本文落实[执行计划](/data/project/massdb-sql/docs/license-certificate-execution-plan-20260922.md)，以五类出口、用户允许的窄式表非空探测及自用部署为准。
+当前范围冻结：2026-09-25（保留原文件名）；源码基线：`23e39e63295fd730523da8d916c898c28b903216`。本文落实[执行计划](/data/project/massdb-sql/docs/license-certificate-execution-plan-20260922.md)，以原五类出口、用户允许的窄式表非空探测及自用部署为基础；2026-09-29 用户另授权补充 ES search/file_review 两个 FE HTTP 读取入口。
+
+**本轮状态：补充已实现，42 项定向测试及 FE 构建通过。** H01/H02 在原认证/重定向之后、ES 初始化或文件枚举/读取之前复用许可守卫；异常许可为真实 HTTP 403 和 `reason/message/retryable`，不依赖 `enable_all_http_auth` 是否开启。`get_mapping` 的正常索引/别名/逗号/通配选择器继续享有元数据例外，URL 控制参数另在外部初始化前拒绝；原 P4 已验收包不含此次新挂点；历史 46 组及原 FAIL/INCONCLUSIVE 不回写为新范围通过。本轮新增控制器 12 项与原守卫/快照/取计划 30 项测试零失败/错误/跳过，使用真实 guard 与模拟外部依赖；Temurin 17.0.4+8 FE 构建及 Checkstyle 通过，实际层级和证据见[本轮补充记录](/data/project/massdb-sql/docs/license-http-read-admission-20260929.md)。未执行真实 HTTP 网络、ES/broker 集成或新性能测试。当前 P2/P3/P2U/P4 已完成范围以各验收记录及[实施记录](/data/project/massdb-sql/docs/license-implementation-progress-20260922.md)为准，下文最初冻结时的将来时措辞不表示这些旧阶段仍未实现。
 
 **P0 交付的是源码挂点、接口/状态协议、具体正反用例及性能适用范围；运行测试由 P2/P3/P2U/P4 执行。** 下文 `specified_not_executed` 保留 P0 冻结当时的状态；后续 P2 的 M01–M08、M12–M14 管理部分结果逐项记录在[P2 验收记录](license-p2-acceptance-20260925.md)，分别注明单测、受控故障和真实 FE 范围。查询、ADD/DROP 额度和页面不因管理测试通过而视为已生效。
 
@@ -17,10 +19,10 @@ Upstream and third-party components retain their respective licenses.
 
 ## 1. 冻结范围及阶段边界
 
-- 只在 FE 的普通 SQL 结果、预编译点查、外部表写入、EXPORT、新 `_query_plan` 五类出口施加新的业务读取限制；共用决策，覆盖缓存、过程子句、两种 coordinator 出队及转发。
+- 原 FE 普通 SQL 结果、预编译点查、外部表写入、EXPORT、新 `_query_plan` 五类出口保持原契约，覆盖缓存、过程子句、两种 coordinator 出队及转发；本轮只增加 ES search/file_review 两个独立 FE HTTP 入口，共用现有许可决策。
 - 真实内部数据表、外部 catalog、文件/远端 SQL TVF、SELECT 中的已知字典取值受保护。内部写入、元数据、维护、普通 EXPLAIN 保持原能力。
 - `SELECT 1 FROM t LIMIT 1` 限单真实表、整数字面量 1、无 OFFSET 或 OFFSET 0；无条件/关联/子查询/CTE/聚合/窗口/DISTINCT/排序/函数/OUTFILE。不把视图或 TVF 混入这个例外。完整最终零行计划可放行；估计零行、空输入 COUNT 或没有扫描节点不构成证明。
-- 不新增 BE 校验、跨节点凭证/内部认证或通信要求。旧 BE 计划跨期与重新打开已获用户接受；主计划列明的其他非查询/独立 FE 通道仍是方案限制，不声称都已封堵或获得逐项确认。
+- 不新增 BE 校验、跨节点凭证/内部认证或通信要求。旧 BE 计划跨期与重新打开已获用户接受；除本轮 ES search/file_review 以外，主计划列明的其他非查询/独立 FE 通道仍是方案限制，不声称都已封堵或获得逐项确认。
 - 正常态读取不可变快照及可信时间；异常态展开必要语义判断。状态不缓存成永久 VALID，节点统计不放入查询热路径；保留正常缓存和原超时/重试语义。
 - 真实服务端入口提供元数据改写、内部落表或维护用途；普通会话变量、Hint、用户名/root、过程标志和通用 internal 位不能自授豁免。仅已实际开始的同次内部重试可沿用既有上下文；新 EXECUTE、下一条语句、跨 FE 新执行重新判断。
 - 本轮为自用版本，麒麟/openEuler 和多架构发行矩阵退出目标；JDK 17.0.4 兼容、真实签名/公钥用途和实际部署验证仍保留，实际公钥配置在 P2 接入处理。
@@ -88,7 +90,7 @@ Checkpoint使用独立Env的历史截面，不能读线上静态快照；不生�
 
 - 使用独占前缀 `lic_q_<runid>`；内部表 `t(k INT, v STRING, dt DATE)` 含至少三行不同 k，点查夹具采用原版支持的 unique-key/点查配置；另有空表 `empty_t`、两分区表 `pt`（仅 2026-01、2026-02）、视图 `v_t`、已刷新物化视图 `mv_t`、字典 `d`。表结构、创建语句、行摘要写入回执。示例 SQL 中省略前缀，执行器必须替换为夹具实际限定名。
 - `V` = 有效且有 DATA_QUERY、节点未超额；`E` = 已到期；`D` = 无证书、尚未生效、非法签名、缺 DATA_QUERY、CLOCK_SUSPECT、LICENSE_NOT_READY、实际节点超额之一。Q01 的核心决策分别注入每种 D；其余以 E 为主并用 V 对照。时间边界用受控核心时钟/隔离 FE 测试注入，不修改共享主机时钟。通过真实导入路径制造的状态与单元注入状态分开记录，不能把后者当成 P2 集成通过。
-- `R` 观测：客户端正确的许可证错误码/状态、无业务结果行；不能只匹配错误文案，也不能把语法/权限/环境失败算授权拒绝。V 对照先证明输入、权限、依赖可用。SQL/HTTP Query/Flight 保留各自协议错误映射；仅 Q27 要求真实 HTTP 403。
+- `R` 观测：客户端正确的许可证错误码/状态、无业务结果行；不能只匹配错误文案，也不能把语法/权限/环境失败算授权拒绝。V 对照先证明输入、权限、依赖可用。SQL/HTTP Query/Flight 保留各自协议错误映射；Q27 及本轮 H01/H02 要求真实 HTTP 403。
 - `S` 观测：首次执行派发/结果发送与许可证检查的顺序；优先用 FE 单元 spy 或测试专用 latch、现有 query/profile/job 记录。不为测试增加 BE 授权代码，不从“结果为空”倒推“未派发”。正常规划可能访问 schema/远端 prepare，本轮不要求规划零外部 I/O。
 - `C` 清理：finally 关闭结果集、statement、prepared handle、Flight stream、HTTP 会话；取消仍活动的本次 query/job，核查完成后删除本次表/视图/字典、外部路径、过程、workload group；恢复会话变量与测试时钟；许可状态变体使用新的独占 Env 或合法更高序号续期，不通过降序号/reset 开关回退。保留前后对象/任务/队列计数和实际返回码。只删除独占夹具，清理失败单独 FAIL；不以清理掩盖用例失败。
 - 外部 JDBC/Hive/Iceberg/TVF 输入须先有 V 下成功样本和绑定对象/目标类型证据；缺依赖时记 `not_executed_missing_fixture`，不记 PASS。用例文件保存脱敏的实际 SQL 和对象/文件摘要，密钥不写回执。`TVF_X` 为下列固定六类须先在 V 下验证的完整关系表达式：`s3("uri"=...,"format"="csv",...)`、`hdfs("uri"=...,"format"="csv",...)`、`local("file_path"=...,"backend_id"=...,"format"="csv")`、`file("uri"="<owned_http_uri>","format"="csv","column_separator"=",","fs.http.support"="true")`、`http("uri"="<owned_http_uri>","format"="csv","column_separator"=",")`、`query("catalog"=...,"query"="SELECT k,v,dt FROM <remote_t>")`。file/http 模板对应 [现有 HTTP TVF 回归](/data/project/massdb-sql/regression-test/suites/external_table_p0/tvf/test_http_tvf.groovy:30)，实际端点/参数在执行回执固定；不能用构造失败充当许可证拒绝。
@@ -129,7 +131,7 @@ Checkpoint使用独立Env的历史截面，不能读线上静态快照；不生�
 | Q27 / 5 连接器新计划 | V、E 各 HTTP GET/POST `/api/<db>/t/_query_plan` body `{"sql":"SELECT k FROM <db>.t"}`；V 保存 opaque plan 后 E 再请求；错误权限/畸形 body 对照 | V 返回可用计划；E **真实 HTTP status=403** 且不返回 opaque plan/tablet 执行参数；不能是 200 body.status=403；保存旧 BE plan 仍按已接受边界，不要求 BE 撤权 | 用原始 HTTP client 断言 status line+body，handleQuery 返回前状态复核；不执行/修改 BE 通道；关闭 client C | A23 / P3→P4 |
 | Q28 / 兼容写入及真实内部用途 | E 下内部 INSERT VALUES/SELECT（含 TVF→内部）、UPDATE/DELETE（含业务子查询）、内部 OVERWRITE/CTAS、事务；Stream/Routine/Broker Load、Group Commit 用既有成功最小夹具；统计收集和 MV 刷新 | 保持原权限与功能；用户普通 SELECT 不能因复用连接/context 继承写入/维护豁免；服务端真实用途传递且请求结束清理；不增加 compaction/BE 授权修改 | 每写入恢复 V 后比对行/校验和或事务结果；后台任务到终态与资源原值；紧接同连接新 SELECT 应 R；C | A18、A19、A20、A02；各 load/维护现有入口只作兼容回归，不新增独立守卫 / P3→P4 |
 
-### 源码锚点（尚未增加运行守卫）
+### 原 P0 源码锚点（基线行号，后续 P3 已接入）
 
 - A01：[ConnectProcessor.java](/data/project/massdb-sql/fe/fe-core/src/main/java/org/apache/doris/qe/ConnectProcessor.java:209) `executeQuery`（每条建立 StmtExecutor）、cache 解析、`proxyExecute`；[MysqlConnectProcessor.java](/data/project/massdb-sql/fe/fe-core/src/main/java/org/apache/doris/qe/MysqlConnectProcessor.java:169) prepared 入口。
 - A02：[StmtExecutor.java](/data/project/massdb-sql/fe/fe-core/src/main/java/org/apache/doris/qe/StmtExecutor.java:1189) `handleQueryStmt`；同文件 `handleCacheStmt`、`executeAndSendResult`(:1264)、`outfileWriteSuccess`。守卫须先于 FE 结果/PhysicalSqlCache/旧缓存返回。
@@ -153,8 +155,23 @@ Checkpoint使用独立Env的历史截面，不能读线上静态快照；不生�
 - A20：[CreateTableCommand.java](/data/project/massdb-sql/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/CreateTableCommand.java:83) `run`，`validateCreateTableAsSelect` :133、实际 createTable :102、委派 INSERT :113；不能等后者才首次拒绝外部 CTAS。
 - A21：[ExportCommand.java](/data/project/massdb-sql/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/ExportCommand.java:128) `run`；[ExportMgr.java](/data/project/massdb-sql/fe/fe-core/src/main/java/org/apache/doris/load/ExportMgr.java:98) `addExportJobAndRegisterTask` 先记 job/journal，再 delete_existing_files，再注册任务。
 - A22：[ExportTaskExecutor.java](/data/project/massdb-sql/fe/fe-core/src/main/java/org/apache/doris/load/ExportTaskExecutor.java:84) `execute`，:153 建立 StmtExecutor 后执行 OUTFILE。
-- A23：[TableQueryPlanAction.java](/data/project/massdb-sql/fe/fe-core/src/main/java/org/apache/doris/httpv2/rest/TableQueryPlanAction.java:108) `query_plan`、`handleQuery`；当前 catch DorisHttpException 最终仍 ResponseEntityBuilder.ok，必须专门验证真实 status。
+- A23：[TableQueryPlanAction.java](/data/project/massdb-sql/fe/fe-core/src/main/java/org/apache/doris/httpv2/rest/TableQueryPlanAction.java:108) `query_plan`、`handleQuery`；原 P0 基线 catch DorisHttpException 最终仍 ResponseEntityBuilder.ok，该问题后来由 P3 修复并验证真实 status，不能把基线描述当作当前实现。
 
+
+### H01/H02：2026-09-29 独立 HTTP 读取补充
+
+这两组独立于原 Q01–Q28/M01–M14/U01–U04，不改写原 46 组或历史 JSON。共同状态为“已实现，控制器定向测试及 FE 构建通过”，测试文件为 [LicenseExternalHttpAdmissionTest.java](/data/project/massdb-sql/fe/fe-core/src/test/java/org/apache/doris/httpv2/restv2/LicenseExternalHttpAdmissionTest.java)。本轮是控制器单测和模拟 HTTP 状态映射，真实 guard 配模拟外部依赖；12 项新测试与 30 项原回归均通过，见[v3 构建与测试回执](/data/project/massdb-sql/.build-records/license-http-admission-20260929/checks-v3/completion.json)。没有实际运行 HTTP/ES/broker 服务，不混用验证层级。
+
+| ID | 输入和顺序 | 预期与观测 | 兼容与清理 |
+| --- | --- | --- | --- |
+| H01 / ES search | POST `/rest/v2/api/es_catalog/search`，使用可用请求体和 catalog/table；有效及过期等异常许可，分别开启/关闭 `enable_all_http_auth`；原认证失败和 HTTPS 重定向对照 | 原认证/重定向先处理；许可拒绝为真实 HTTP 403，JSON 包含 `reason/message/retryable`；不得返回 HTTP 200 错误外壳。拒绝时 catalog 初始化与 `searchIndex` 均不执行；有效态沿用原搜索结果与错误处理 | GET `/rest/v2/api/es_catalog/get_mapping` 保留正常索引/别名/逗号/`*` 元数据能力与原认证；空值、分隔符、查询/片段、百分号编码、空白/控制字符须在初始化前拒绝；关闭 HTTP 认证不关闭许可限制。清理模拟状态、响应及请求上下文，不改 BE |
+| H02 / file_review | POST `/rest/v2/api/import/file_review`，使用有效 FileReviewRequestVo；有效及过期等异常许可，认证开关两态、认证失败和重定向对照 | 原认证/重定向先处理；许可拒绝为真实 HTTP 403 及相同结构字段，在文件枚举、broker reader/格式读取器创建及样本读取前返回。有效态沿用 CSV/Parquet 预览逻辑 | 原导入写入不新增许可限制；不扩大到所有文件/过程功能。原 Parquet reader 未关闭 FAIL 保留，本补充不修复或追认其关闭通过；恢复测试配置并释放本轮自有夹具 |
+
+`get_mapping` 的元数据例外只接受保持在单个 URL 路径段内的索引选择器：拒绝空值、`/`、反斜杠、`?`、`#`、`%`、空白及控制字符；保留普通索引名、别名、逗号列表和 `*`。参数检查早于 catalog 初始化，防止 `_search#` 等输入把 `/_mapping` 变成 fragment 而转为业务搜索；非法选择器沿用参数错误响应，不冒充许可 HTTP 403。
+
+两个控制器只调用 `LicenseQueryGuard.checkProtectedRead()`，不解析/重新验签证书，也不增加查询 RPC。`ESCatalogAction` 的搜索用途与 `get_mapping` 显式区分；`ImportAction` 只在 `fileReview` 的外部访问前补守卫。既有账号认证、连接重定向及受限读取判断各自保留，不用关闭认证来改变许可结论。
+
+非查询 `SET @v=dict_get(...)`、过程文件/进程能力、UDF 外发仍是未封堵边界；本轮不恢复全函数/插件审计或零规划外部访问要求。
 
 ## 4. 管理、恢复、额度和页面的接入用例
 
@@ -230,7 +247,7 @@ K1–K5 只定位现有接入点，尚不存在的 LicenseManager/命令/页面�
 | LP023 | 仅观察 | 已实现核心成本诊断可复用；无新的全函数分类微基准框架，不代替端到端证据。 |
 | LP024 | 部分 → G5/G6 | 实际新增查询上下文/回执/分类状态的结束回收和上限验证；旧 4 小时 × 所有负载不作固定前置。 |
 | LP025 | 保留 → G5 | 注入测试 Clock 检查异常/签名修复，背景业务对照；不修改宿主时间、不检查 BE epoch。 |
-| LP026 | 部分 / 历史退出 | 保留统计、MV、字典维护兼容与 SELECT dict_get 拦截功能；ES/file_review、全表达式外发治理退出。Parquet reader FAIL 仍留档。 |
+| LP026 | 部分 / 历史映射 | 保留统计、MV、字典维护兼容与 SELECT dict_get 拦截。ES/file_review 在原五出口收敛时退出，现仅按 H01/H02 补充许可守卫，不复活旧全量负载；全表达式外发仍退出，Parquet reader FAIL 仍留档。 |
 
 ### 历史 P4 代表负载与判据
 
@@ -267,15 +284,15 @@ G1/G2 的窄探测、空计划、外部数据表与字典函数，各 G3 外部�
 - LP010：`.build-records/license-p0-p1-20260924/lp010-flight-be4g-v5/report.json` 状态 FAIL；1024/8192 可达，65535 字符串错误为用户已接受保留的原版 BE 缺陷。不能从当前范围删除失败或补写 PASS。
 - LP012：`.../lp012-sustained-actual-v3/root-completion-audit.json` 功能窗通过，600 秒内 10,000 批 / 1,000 万行、实际请求峰值 8；仍无独立 A/A 精度或候选 A/B。LP013 的 `.../lp013-sustained-actual-v1-control/root-completion-recheck.json` 为 FULL_INPUT_WINDOW_COMPLETE_NOT_QUALIFIED，13M 总输入内容核对通过，但生产请求实际峰值 1，不能写成 8 并发完成。
 - LP021：`.build-records/license-p0-p1-20260924/lp021-ui-concurrent-actual-v4-control/terminal-receipt.json` 已真实 wait exit 2、TERMINAL_FAILED_CLEANED_RELEASED；1/10 contexts 功能窗通过，50 contexts 在准备阶段 RSS 6963.9375 MiB 超 6144 MiB、尚未进入测量，51 窗未跑。旧 results.json 的 RUNNING 索引已过时，不能沿用作活动状态。
-- LP026：`.build-records/license-p0-p1-20260924/lp026-background-http-actual-v7/report.json` 状态 FAILED，Parquet FE 预览遗留一个 reader，用户已接受保留；此治理已退出本次范围，仍不能把原版关闭行为记为通过。LP016–020/022/025 的候选语义尚未实现，LP023 只有局部成本诊断，LP024 不存在完成四小时候选证据。
-- 新范围的 EXPORT、真实外部目标 INSERT/OVERWRITE/CTAS 性能 fixture，以及真许可 Tab/API 尚未接入；它们的构建/运行属于 P2/P3/P4 后续项，不能因旧 26 LP 没单列就遗漏。
+- LP026：`.build-records/license-p0-p1-20260924/lp026-background-http-actual-v7/report.json` 状态 FAILED，Parquet FE 预览遗留一个 reader，用户已接受保留；该 reader 关闭治理仍不属于本轮两入口许可补充，不能把原版关闭行为记为通过。后续关于 LP016–020/022/025 候选语义未实现、LP023 局部诊断及 LP024 无四小时证据的描述保留原冻结时点；当前阶段结果应看 P2/P3/P2U/P4 验收记录。
+- 原冻结时 EXPORT、真实外部目标 INSERT/OVERWRITE/CTAS 性能 fixture 及许可 Tab/API 尚未接入；后续已实施范围见各阶段验收，不能把此历史待办当作当前缺项，也不能用原 P4 包证明本轮 H01/H02 已包含。
 
 冻结结论：可据上述数据、矩阵、oracle、证据要求继续实现；性能零退化尚未证明。P0 完成只能表述为“适用范围和可执行验收契约已冻结”，不得表述为“上述负载均已通过”。
 
 ## 6. P0/P1 完成核对及后续责任
 
-P0 的完成证据是本文的协议、不变量、Q01–Q28 / M01–M14 / U01–U04 共 46 组具体输入与源码挂点，以及 LP001–026 到七组当前负载的明确适用映射。运行用例全部保持 `specified_not_executed`；没有将任何旧 FAIL、INCONCLUSIVE 或未运行项升级为当前通过。新范围不要求完整旧 26 项基线、多平台验收或全函数框架先于功能开发完成。
+P0 的完成证据是本文的协议、不变量、Q01–Q28 / M01–M14 / U01–U04 共 46 组具体输入与源码挂点，以及 LP001–026 到七组当前负载的明确适用映射。P0 冻结时的原运行用例状态保留为 `specified_not_executed`，后续实际结果见阶段验收；H01/H02 按本轮新增记录单独验证；没有将任何旧 FAIL、INCONCLUSIVE 或未运行项升级为当前通过。新范围不要求完整旧 26 项基线、多平台验收或全函数框架先于功能开发完成。
 
 P1 当前证据见[核心审计](/data/project/massdb-sql/.build-records/license-p0-p1-current-scope-20260924/p1-audit/report.json)：本轮独立断网编译 14 个当前核心源码，39 个 class 与实际 FE JAR 逐字一致；重新编译现有 8 个测试类并在同一实际 JAR、Temurin 17.0.4+8 上通过 104 项，零失败/跳过；历史签发工具 25 项和实际 JDK 互通 42 项的原始日志、依赖和源码绑定也已复核。历史 Maven target 内 8 份 XML 已不存在，原日志及汇总保留，本轮重新执行补足当前测试证明；不假装历史 XML 仍在。
 
-核对只证明 P0 设计输入和 P1 证书核心，不证明 P2 的真实持久化/管理接口、P3 的查询及额度、P2U 页面或 P4 的性能已经完成。实际自用环境的信任配置随 P2 接入验证，不安装默认测试根。当前归档、来源哈希和逐项完成判定保存在[本轮核对目录](/data/project/massdb-sql/.build-records/license-p0-p1-current-scope-20260924)。
+该历史核对只证明当时的 P0 设计输入和 P1 证书核心，不包含后来 P2/P3/P2U/P4 的验收，也不包含本轮 H01/H02。实际自用环境的信任配置随 P2 接入验证，不安装默认测试根。当前归档、来源哈希和逐项完成判定保存在[本轮核对目录](/data/project/massdb-sql/.build-records/license-p0-p1-current-scope-20260924)。

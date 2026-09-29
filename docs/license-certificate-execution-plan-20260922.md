@@ -9,19 +9,21 @@ Upstream and third-party components retain their respective licenses.
 
 # MassDB SQL 授权证书执行计划
 
-初稿：2026-09-22；范围收敛：2026-09-24；P0/P1/P2/P3 核对：2026-09-25；P2U 页面验收及 P4 快速验收范围调整：2026-09-29。源码基线：`2.0.5-license` / `23e39e63295`。
+初稿：2026-09-22；范围收敛：2026-09-24；P0/P1/P2/P3 核对：2026-09-25；P2U 页面验收及 P4 快速验收范围调整、独立 HTTP 读取补充：2026-09-29。源码基线：`2.0.5-license` / `23e39e63295`。
 
-**当前方案：只改 FE、FE 管理页面和独立签发工具，围绕五类出口限制新的业务读取。保留入库、更新、元数据、节点额度、证书导入及详情页面；不改 BE，不改内部通信协议，不要求启用 SSL 或 mTLS。** 用户最新确认：另允许窄式 `SELECT 1 FROM t LIMIT 1` 探测。
+**当前方案：只改 FE、FE 管理页面和独立签发工具，围绕原五类出口，并补充 ES search 和 file_review 两个独立 FE HTTP 入口，限制新的业务读取。保留入库、更新、元数据、节点额度、证书导入及详情页面；不改 BE，不改内部通信协议，不新增连接安全配置要求。** 用户最新确认：另允许窄式 `SELECT 1 FROM t LIMIT 1` 探测。
+
+**2026-09-29 补充已实现，定向测试及 FE 构建通过：** 用户已授权给 `POST /rest/v2/api/es_catalog/search` 和 `POST /rest/v2/api/import/file_review` 增加许可限制。复用现有守卫，在原认证/重定向处理后、外部初始化或文件读取前判断；拒绝返回真实 HTTP 403 及 `reason/message/retryable`，与 `enable_all_http_auth` 开关独立。合法索引选择器的 `get_mapping` 元数据和导入写入保留；`get_mapping` 另补最小参数校验，阻止 URL 路径/查询/片段改变元数据目标。原 P4 验收包及其证据不包含这两个新挂点，本轮在 Temurin 17.0.4+8 上通过 42 项定向测试（新增控制器 12 项、原守卫/快照/取计划 30 项），零失败/错误/跳过，FE Maven 构建及 Checkstyle 通过，见[本轮补充记录](/data/project/massdb-sql/docs/license-http-read-admission-20260929.md)。这些是控制器/模拟 HTTP 测试及 FE 构建，不是实际 ES/broker 集成或新性能验收，不追认旧包已包含该修改。
 
 这是收敛后的实施计划，不是整个授权功能已完成声明。P0 的具体用例/挂点与性能适用映射已补齐，P1 核心已交付；P2 的 Env/journal/image、SQL/HTTP 管理闭环已完成，183 项授权相关测试通过，并完成真实多 FE 导入、续期、恢复、切主、转发、旧版拒绝和新 FE 加入验证。各变体的单测/受控故障/真实 FE 范围见[P2 验收记录](license-p2-acceptance-20260925.md)。P3 五出口与节点额度已完成约定范围实现及分层功能验收，具体通过记录、包身份和保留限制见[P3 验收记录](license-p3-acceptance-20260925.md)。P2U 页面已完成，最终 40 个浏览器功能组、构建检查及真实双 FE 导入/续期/到期和权限验证见[P2U 验收记录](license-p2u-acceptance-20260929.md)。P4 已按下文快速范围完成运行验收、自用包交付验证及最终清理；实际结果、保留失败与性能限制见[P4 验收记录](license-p4-acceptance-20260929.md)。实现状态见[实施记录](/data/project/massdb-sql/docs/license-implementation-progress-20260922.md)。
 
-本文替代旧版的全面 FE 出口治理要求。[当前 P0 契约](/data/project/massdb-sql/docs/license-p0-contract-20260922.md)定义 46 组具体运行用例、源码挂点及旧 LP001–026 到七组负载的适用映射。旧[协议说明](/data/project/massdb-sql/docs/license-protocol-v1-20260922.md)、[源码清单](/data/project/massdb-sql/docs/license-code-coverage-20260922.md)及旧 P0/性能/覆盖 JSON 保留为历史扩展范围参考；其中 H/C/LC 全量覆盖、全函数审计、规划零外部访问、全部 26 项基线前置要求和旧机器门槛不再定义当前任务。历史 FAIL、未执行和精度不足记录不能因此改为通过。证书核心契约继续有效；2026-09-29 用户明确要求“完全实现 P4，不需要长时间测试，需要快速验收”，原长测时长、容量和统计精度门槛不再是本次完成前置条件，按第 6、7 节执行。
+本文替代旧版的全面 FE 出口治理要求。[当前 P0 契约](/data/project/massdb-sql/docs/license-p0-contract-20260922.md)保留原 46 组具体运行用例、源码挂点及旧 LP001–026 到七组负载的适用映射，并另列本轮 H01/H02 两组 HTTP 补充用例；它们不修改历史机器 JSON 或原 P4 验收结论。旧[协议说明](/data/project/massdb-sql/docs/license-protocol-v1-20260922.md)、[源码清单](/data/project/massdb-sql/docs/license-code-coverage-20260922.md)及旧 P0/性能/覆盖 JSON 保留为历史扩展范围参考；其中 H/C/LC 全量覆盖、全函数审计、规划零外部访问、全部 26 项基线前置要求和旧机器门槛不再定义当前任务。历史 FAIL、未执行和精度不足记录不能因此改为通过。证书核心契约继续有效；2026-09-29 用户明确要求“完全实现 P4，不需要长时间测试，需要快速验收”，原长测时长、容量和统计精度门槛不再是本次完成前置条件，按第 6、7 节执行。
 
 ## 1. 保留功能与明确边界
 
 - 离线签名证书支持导入、验证、查看、续期、自动到期、集群绑定和 FE/BE 注册节点上限。
 - SQL 与 HTTP 共用管理逻辑；FE 顶部新增“授权证书”Tab，提供详情和文件/文本导入。
-- 无证书、过期、验签失败、缺少 DATA_QUERY、时钟异常、未就绪或实际节点超额时，限制下述五类新业务读取；有效授权正常工作。
+- 无证书、过期、验签失败、缺少 DATA_QUERY、时钟异常、未就绪或实际节点超额时，限制下述五类新业务读取及两个补充 HTTP 入口；有效授权正常工作。
 - 所有操作保留既有数据库权限。root/ADMIN 也受业务读取限制，普通 SET/Hint 或客户端自报 internal 不能绕过。
 - 保留现有已启动查询的超时、取消和内部重试机制；到期不主动取消在途查询。新的 EXECUTE、多语句下一条、过程内下一条查询需重新检查。
 - 已下发的 BE 扫描计划、结果票据可以跨到期继续使用或重新打开；下一次向 FE 请求新计划再检查。该边界已获用户接受，不宣称其发生概率经过测量。
@@ -29,7 +31,7 @@ Upstream and third-party components retain their respective licenses.
 
 这里是产品使用授权控制。允许更新条件、影响行数、统计 min/max 和表非空探测，本身可能透露数据；不承诺数据保密隔离或封堵一切数据外传。
 
-## 2. 五类出口及统一规则
+## 2. 五类出口、补充 HTTP 入口及统一规则
 
 下表仅描述授权不可用时新增的限制；有效证书下不改变原查询语义。
 
@@ -40,6 +42,10 @@ Upstream and third-party components retain their respective licenses.
 | 3. 向外部表写入 | 目标为外部表，来源需要受保护数据 | JDBC/Hive/Iceberg 等按实际目标判断；覆盖 INSERT SELECT、OVERWRITE 及分支实际支持的外部 CTAS；纯 VALUES 放行，内部落表放行 |
 | 4. EXPORT | 新导出受保护表数据 | 提交前及异步任务实际开始前检查；提交时已无效须在登记作业、删除旧导出目录等副作用前拒绝 |
 | 5. Spark/Flink 连接器取计划 | 新请求 `/api/{db}/{table}/_query_plan` 读取受保护数据 | 返回可执行计划前检查；拒绝为真正 HTTP 403，不能只是 HTTP 200 body 中写 403；旧 BE 计划不改 |
+| H01. ES 独立搜索 | `POST /rest/v2/api/es_catalog/search` 请求业务数据 | 原认证/重定向处理后，在 catalog 初始化及 `searchIndex` 前调用共享守卫；拒绝为真实 HTTP 403，`get_mapping` 仅对合法索引选择器保留元数据例外，不允许参数将请求改写为 `_search` |
+| H02. 文件内容预览 | `POST /rest/v2/api/import/file_review` 返回文件业务样本 | 原认证/重定向处理后，在文件枚举、broker reader 或格式读取器创建前调用共享守卫；拒绝为真实 HTTP 403，原导入写入路径保留 |
+
+`get_mapping` 的元数据例外只接受保持在单个 URL 路径段内的索引选择器：拒绝空值、`/`、反斜杠、`?`、`#`、`%`、空白及控制字符；保留普通索引名、别名、逗号列表和 `*`。参数检查早于 catalog 初始化，防止 `_search#` 等输入把 `/_mapping` 变成 fragment 而转为业务搜索；非法选择器沿用参数错误响应，不冒充许可 HTTP 403。
 
 ### 2.1 受保护来源
 
@@ -71,7 +77,7 @@ Upstream and third-party components retain their respective licenses.
 - 元数据：SHOW DATABASES/TABLES/COLUMNS/CREATE TABLE/PARTITIONS、DESC、SHOW TABLE STATUS、纯 information_schema 和元数据 TVF。SHOW COLUMN STATS 的真实 min/max 保留，移除旧计划中的统计值裁剪工程。
 - 管理：普通 EXPLAIN、用户权限管理、KILL、证书管理和原有运维命令。ALTER SYSTEM 保留，但 ADD 必须检查注册额度。
 - 内部维护：统计收集、物化视图刷新、compaction、副本修复等；复用真实服务端调用用途，不按用户名或通用 internal 布尔值给予所有用户 SQL 豁免。
-- `SELECT @@massdb_license` 当前不是已实现的系统变量，本轮不额外引入；状态统一通过拟新增 SHOW LICENSE 和管理 API 提供。
+- `SELECT @@massdb_license` 当前不是已实现的系统变量，本轮不额外引入；状态统一通过已实现的 SHOW LICENSE 和管理 API 提供。
 
 “内部 CTAS 放行”不等于全部 CTAS 放行：实际外部目标遵循出口 3，必须在建外部表或提交写事务前判断。用途从顶层操作和实际 sink 获取，不能因内部写入计划包含 ResultSink/SELECT 子树而误拦。
 
@@ -87,9 +93,10 @@ Upstream and third-party components retain their respective licenses.
 | [InsertIntoTableCommand](/data/project/massdb-sql/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/insert/InsertIntoTableCommand.java:238)、[InsertOverwriteTableCommand](/data/project/massdb-sql/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/insert/InsertOverwriteTableCommand.java:127)、[CreateTableCommand](/data/project/massdb-sql/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/CreateTableCommand.java:102) | 共用源/目标判断；外部输出在 beginTransaction、overwrite 任务登记、createTable 之前拒绝；内部写入直接保留 |
 | [ExportCommand](/data/project/massdb-sql/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/ExportCommand.java:128)、[ExportMgr](/data/project/massdb-sql/fe/fe-core/src/main/java/org/apache/doris/load/ExportMgr.java:98) | 提交前守卫覆盖目录副作用；后台 EXPORT 经 StmtExecutor 执行 OUTFILE 时复核，不创建通用后台作业治理体系 |
 | [TableQueryPlanAction](/data/project/massdb-sql/fe/fe-core/src/main/java/org/apache/doris/httpv2/rest/TableQueryPlanAction.java:108) | 独立取计划路径调用同一决策，返回前复核；显式生成 HTTP 403 响应 |
+| [ESCatalogAction.java](/data/project/massdb-sql/fe/fe-core/src/main/java/org/apache/doris/httpv2/restv2/ESCatalogAction.java)、[ImportAction.java](/data/project/massdb-sql/fe/fe-core/src/main/java/org/apache/doris/httpv2/restv2/ImportAction.java) | 只补 `search`/`file_review` 两个已确认业务读取入口，复用 `LicenseQueryGuard.checkProtectedRead()`；保留原认证/重定向顺序，许可检查不置于 HTTP 认证开关内；错误体保留结构字段，不以 HTTP 200 包装拒绝 |
 | 现有 Nereids 绑定/优化、缓存上下文 | 仅补实际需要的来源/空计划/探测信息，以及已知字典函数折叠前标记；优先复用 usedTables/usedViews 和现有 schema 失效机制 |
 
-五类出口不等于只改五个文件。共享执行器、必要快路径、队列、持久化、额度及页面仍需少量配套改动；开发时以实际调用链确定文件，不预先承诺固定文件数。
+原五类出口加本轮两个 HTTP 入口不等于只改七个文件。共享执行器、必要快路径、队列、持久化、额度及页面仍需少量配套改动；开发时以实际调用链确定文件，不预先承诺固定文件数。
 
 缓存命中发生在授权异常之后也必须拦截普通业务查询。若旧缓存缺少可靠分类信息，在异常态重新规划或拒绝该业务读取，不能把“没有扫描节点”当作放行依据；不因到期全局清空缓存，也不在每次有效态查询重新完整分析 SQL。
 
@@ -101,13 +108,13 @@ MySQL/JDBC、HTTP Query、Flight 和过程内 SELECT 已汇入现有 SQL 执行�
 
 ### 3.1 本次移出的扩展治理
 
-移出全函数/插件能力登记、对所有新增注册项的专用 CI、HPLSQL HOST/INCLUDE/UTL_FILE、远程 EXECUTE_STMT 方言分析、内部写语句 AI/RPC/UDF 外发检测、Profile/Minidump/统计值全面裁剪、备份/CDC 全生命周期治理、隐藏管理命令治理及所有 FE 独立读取接口改造。
+移出全函数/插件能力登记、对所有新增注册项的专用 CI、HPLSQL HOST/INCLUDE/UTL_FILE、远程 EXECUTE_STMT 方言分析、内部写语句 AI/RPC/UDF 外发检测、Profile/Minidump/统计值全面裁剪、备份/CDC 全生命周期治理、隐藏管理命令治理及本轮两个明确入口之外的独立 FE 读取接口治理。
 
-按五出口方案，以下通道保留现状，不宣称被新许可封堵：
+按原五出口加两个 HTTP 入口方案，以下通道继续保留现状，不宣称被新许可封堵：
 
 - 用户已列明的 BACKUP/RESTORE、CCR、BE HTTP 下载、旧 BE 计划、导入错误日志样本。
-- 本次源码复核补充披露的 FE ES search、文件预览 `file_review`、非查询表达式赋值（例如 `SET @v=dict_get(...)`）、过程文件/进程能力及自定义函数的外发副作用。这些新增边界尚未由用户逐项确认接受；列为收敛方案的明确限制，不能写成已封堵或用户已确认。
-- EXPLAIN、TVF/外部表 schema 推断和 JDBC prepare/getMetaData 可能访问外部系统，部分文件格式还会读取文件字节。当前约束是五类出口的新业务读取/输出受限，**不承诺规划阶段零外部访问**；不为这个承诺给每种 TVF 增加构造前拦截。
+- 非查询表达式赋值（例如 `SET @v=dict_get(...)`）、过程文件/进程能力及自定义函数的外发副作用仍未封堵；本轮授权补充仅针对 ES search/file_review，不扩大到这些渠道，也不将它们写成用户已逐项确认接受。
+- EXPLAIN、TVF/外部表 schema 推断和 JDBC prepare/getMetaData 可能访问外部系统，部分文件格式还会读取文件字节。当前约束是五类出口和两个补充 HTTP 入口的新业务读取/输出受限，**不承诺规划阶段零外部访问**；不为这个承诺给每种 TVF 增加构造前拦截。
 
 若后续要求上述渠道也全面受限，应单独增加范围与测试；不能又把它们隐含塞回本轮的“小范围查询拦截”。
 
@@ -178,6 +185,8 @@ SQL 字面量是证书正文，不是服务器文件路径，不引入 LOCAL INF
 
 ## 6. 性能设计与快速验收
 
+本轮两个 HTTP 补充入口已通过 42 项定向测试及 FE 构建，覆盖 HTTP 403 状态映射、结构化原因、有效/异常许可、原认证/重定向优先级、认证开关关闭仍受限，以及拒绝后无外部初始化/读取、正常 `get_mapping`/索引通配兼容，并验证非法元数据选择器在初始化前拒绝。实际使用真实许可守卫与模拟外部依赖，未运行真实 HTTP 网络、ES/broker 集成，也未新增写入或性能压测；层级与源码/FE JAR 绑定见[本轮补充记录](/data/project/massdb-sql/docs/license-http-read-admission-20260929.md)。以下 P4 快速记录仍绑定原验收包，不重新宣布其覆盖新挂点。
+
 **2026-09-29 按用户最新要求改为快速验收：完成代表查询的实际 A/B 短窗、候选功能联调和独立自用包交付。** 短测报告本机、本负载下的实际成本与正确性，不证明物理零开销、长期稳定性或 1%/2% 无回退。
 
 1. 有效态走快照/可信时间和少量分支；不逐查询验签、解析证书、扫描规则表/成员表、写 journal 或发许可 RPC。异常态才展开需要的语义限制判断。
@@ -211,6 +220,7 @@ A/B 使用同一原版 BE、硬件、百万行数据模型、JDK/GC、资源及�
 | P3 五出口/额度 | 已完成一个守卫、必要旁路/出队检查、小范围分类、ADD/DROP 配额 | Q01–Q28、M09–M12 分层证据及实际清理见 P3 验收记录；副作用前拒绝、缓存/排队/重试、写入/元数据兼容及额度均验证，受控故障不冒称真实集群故障 |
 | P2U 页面 | 已完成顶部 Tab、详情、导入、权限、路由及有限轮询 | 最终 40 个浏览器功能组和模型组通过；构建、notices/legal、真实双 FE 联调及清理见 P2U 验收记录，保留失败与验证层级分别列示 |
 | P4 快速验收/交付 | 已完成第 6 节快速范围：六项 A/B、候选五出口/写入/状态/额度与页面、独立包启动重启、复用证据及最终清理 | 结果、包/公钥身份、原始失败与恢复以及所属服务/对象清理均见 P4 验收记录。短测不证明零回退或 1%/2% 精度，不要求历史长测或跨平台矩阵 |
+| 本轮 HTTP 补充 | 原五出口外补 `ESCatalogAction.search` 和 `ImportAction.fileReview`；复用许可守卫，不动 BE/协议/其他范围外通道 | 已实现；新测试 12 项和原相关测试 30 项通过，FE 构建/Checkstyle 通过；真实外部集成和新性能测试未执行，实际构建与原 P4 包身份分开记录 |
 
 不以开发前的全部长测代替功能实现，也不以单元测试或文档静态检查代替最终集成与性能验收。实际改动后按需要运行 Java Checkstyle、针对性 FE 测试、源码头检查及 UI 检查；纯文档修改不要求重新构建 FE/BE 或启动基准。
 

@@ -4,7 +4,47 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
-## License P4 measurement tooling (2026-09-29, in progress)
+## License external HTTP read admission (2026-09-29)
+
+- Add the existing protected-read license guard to
+  `fe/fe-core/src/main/java/org/apache/doris/httpv2/restv2/ESCatalogAction.java`
+  for `POST /rest/v2/api/es_catalog/search`, before catalog initialization and
+  search. Preserve metadata access through `get_mapping` for ordinary indices,
+  aliases, comma-separated selectors, and `*`. Reject empty selectors, path
+  separators, query/fragment/percent characters, whitespace, and controls before
+  catalog initialization, preventing inputs such as `_search#` from changing
+  the mapping URL into a data-search request.
+- Add the same guard to
+  `fe/fe-core/src/main/java/org/apache/doris/httpv2/restv2/ImportAction.java`
+  for `POST /rest/v2/api/import/file_review`, before file listing and preview
+  readers. Preserve existing authentication and redirect ordering, and keep
+  license enforcement independent of `enable_all_http_auth`.
+- Return actual HTTP 403 responses with structured `reason`, `message`, and
+  `retryable` fields for license denials. Preserve ingestion writes and the
+  existing behavior of valid requests; do not change BE or internal protocols.
+- Add
+  `fe/fe-core/src/test/java/org/apache/doris/httpv2/restv2/LicenseExternalHttpAdmissionTest.java`
+  for controller admission, authentication/redirect precedence, side-effect
+  ordering, metadata compatibility, and mapping-selector validation. On
+  Temurin 17.0.4+8, v3 passed all 42 tests (12 new controller tests and 30 existing
+  guard/snapshot/query-plan tests), FE Maven packaging, and Checkstyle, with
+  zero failures, errors, or skips and no source changes during verification.
+  Preserve the v1 header-registration Checkstyle failure and the v2 40-test
+  success separately. These tests use the real guard with mocked external
+  dependencies; no live HTTP/ES/broker integration or new performance result is
+  claimed. See `docs/license-http-read-admission-20260929.md` for evidence.
+- Update the execution plan, P0 contract, and implementation progress for this
+  two-endpoint supplement. Preserve the original P4 package identity and its
+  acceptance evidence, historical failures, and the remaining excluded
+  SET/dictionary, procedure file/process, and UDF outbound paths. The historical
+  Parquet reader cleanup failure is not fixed by these admission checks.
+
+## License P4 measurement tooling (2026-09-29, historical tooling stage)
+
+The following notes preserve the tooling-stage state. The original five-outlet
+P4 quick acceptance and package verification were subsequently completed as
+recorded in `docs/license-p4-acceptance-20260929.md`; that accepted package does
+not include the later two-endpoint HTTP admission supplement above.
 
 - Update the execution documents for the user's quick-acceptance scope and add
   `docs/license-p4-acceptance-20260929.md` with actual six-case JDBC A/B and
@@ -78,7 +118,7 @@ This inventory describes distribution changes, not a claim that all changes are 
   files and complete source-container cgroup observations. Preserve native
   PostgreSQL address and FE session-autocommit semantics in external-write
   diagnostics without changing product protocol behavior.
-  P4 performance and deployment acceptance remain incomplete; these tooling
+  At this historical tooling stage, P4 acceptance remained incomplete; the tooling
   changes do not modify FE/BE product behavior or transport protocols.
 
 ## License P2U management page (2026-09-29)

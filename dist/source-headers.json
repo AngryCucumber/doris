@@ -192,7 +192,8 @@
     "ui/src/pages/license/index.less",
     "ui/src/pages/license/model.ts",
     "ui/src/utils/session-events.ts",
-    "ui/scripts/license.test.cjs"
+    "ui/scripts/license.test.cjs",
+    "fe/fe-core/src/test/java/org/apache/doris/httpv2/restv2/LicenseExternalHttpAdmissionTest.java"
   ],
   "apache": [
     "docker-compose/docker-compose.be-host.yml",
@@ -588,6 +589,14 @@
     "fe/fe-core/src/test/java/org/apache/doris/qe/OldCoordinatorTest.java": {
       "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
       "notice": "MassDB modification: give the existing fragment-assignment test an explicit valid license fixture."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/httpv2/restv2/ESCatalogAction.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/httpv2/restv2/ImportAction.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
     }
   }
 }
