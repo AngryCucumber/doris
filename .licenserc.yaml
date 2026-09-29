@@ -163,6 +163,12 @@ header:
     - "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicensePreparedAdmissionTest.java"
     - "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseMembershipSqlTest.java"
     - "fe/fe-core/src/test/java/org/apache/doris/qe/LicenseQueryRetryTest.java"
+    - "ui/src/api/license.ts"
+    - "ui/src/pages/license/index.tsx"
+    - "ui/src/pages/license/index.less"
+    - "ui/src/pages/license/model.ts"
+    - "ui/src/utils/session-events.ts"
+    - "ui/scripts/license.test.cjs"
     # END MassDB separately checked headers
     # License texts; their contents and npm references are checked separately.
     - "LICENSE-MASSDB.txt"

@@ -38,6 +38,7 @@ npm run build               # production assets and legal/ in dist/
 npm run check:notices       # versions, content and bundle hashes
 npx playwright install chromium
 npm run test:legal          # browser checks; screenshots in ../.build-records/ui/screenshots/
+npm run test:license        # license-page browser/contract checks with controlled API responses
 ```
 
 The browser tests use a local static server and mock the login API. They cover
@@ -49,6 +50,20 @@ Playground checks also cover aligned panels/toolbars, a visible footer, search a
 refresh, independent tree scrolling, sidebar resizing and narrow-window stacking.
 They do not replace tests against a running FE. No `npm run lint` script is
 currently defined.
+
+The License tab uses the existing `/api/license` management service. The page
+loads status on entry and on manual refresh; other tabs make no license requests.
+Administrators can validate a file or pasted certificate, confirm its import,
+and query the original fingerprint receipt after an uncertain response. Receipt
+polling is serial, stops after a 120-second budget or page/identity changes, and
+never automatically resubmits a certificate. The server determines license
+status; browser-local time is only a display format. Certificate text is not
+saved in browser storage.
+
+License tests distinguish controlled browser timing/error cases from actual FE
+Cookie authentication, permission and import integration. The current evidence
+and remaining work are listed in
+[the P2U acceptance record](../docs/license-p2u-acceptance-20260929.md).
 
 From the repository root, test artifact validation with:
 

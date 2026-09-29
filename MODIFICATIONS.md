@@ -4,6 +4,27 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License P2U management page (2026-09-29)
+
+- Add a lazy License tab after Configuration with server-authoritative status,
+  active and pending certificate details, UTC/local expiry display and registered
+  FE/BE usage. Preserve existing Web login eligibility and administrator checks.
+- Support bounded file/text input, validation and explicit import confirmation.
+  Keep certificate text in transient form memory and clear it on lifecycle or
+  identity changes. Use a dedicated adapter that preserves management HTTP and
+  receipt semantics without exposing submitted certificate text in errors.
+- Query the original receipt after an uncertain submission instead of retrying
+  imports. Bound serial polling with backoff and a monotonic deadline; stop on
+  hidden pages, navigation, logout or network failure and allow manual recovery.
+- Clear completion state when changing receipt targets or starting another
+  operation, and preserve exact 64-bit versions without JavaScript rounding.
+- Complete 40 browser feature groups plus independent model oracles on the final
+  UI bundle. Record build, notices/legal and final-JAR two-FE integration by
+  evidence layer, including natural renewal/expiry, response-loss recovery,
+  permissions and cleanup. Retain initial failures, the existing TypeScript
+  dependency parse failure and the original account-audit password issue.
+  P4 performance acceptance remains separate; no BE or protocol changes are made.
+
 ## License P3 admission integration (2026-09-25)
 
 - Add controlled tests of the actual statement RPC and replan retry loops with

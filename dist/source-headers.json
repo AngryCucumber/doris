@@ -153,7 +153,13 @@
     "fe/fe-core/src/test/java/org/apache/doris/nereids/trees/plans/commands/insert/LicenseInsertAdmissionTest.java",
     "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicensePreparedAdmissionTest.java",
     "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseMembershipSqlTest.java",
-    "fe/fe-core/src/test/java/org/apache/doris/qe/LicenseQueryRetryTest.java"
+    "fe/fe-core/src/test/java/org/apache/doris/qe/LicenseQueryRetryTest.java",
+    "ui/src/api/license.ts",
+    "ui/src/pages/license/index.tsx",
+    "ui/src/pages/license/index.less",
+    "ui/src/pages/license/model.ts",
+    "ui/src/utils/session-events.ts",
+    "ui/scripts/license.test.cjs"
   ],
   "apache": [
     "docker-compose/docker-compose.be-host.yml",

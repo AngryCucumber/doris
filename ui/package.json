@@ -13,7 +13,8 @@
     "dev": "cross-env NODE_ENV=dev webpack-dev-server --progress --profile --process.env.PRODUCT_MODEL='DEVELOP' ",
     "build": "cross-env NODE_ENV=prod webpack",
     "check:notices": "python3 ../build-support/prepare-product-notices.py --check-ui dist",
-    "test:legal": "node --test scripts/legal-notices.test.cjs"
+    "test:legal": "node --test scripts/legal-notices.test.cjs",
+    "test:license": "node --test scripts/license.test.cjs"
   },
   "lint-staged": {
     "src/**/*.js": [

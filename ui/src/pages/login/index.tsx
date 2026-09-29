@@ -24,6 +24,7 @@ import request from 'Utils/request';
 import {useHistory} from 'react-router-dom';
 import {useTranslation} from 'react-i18next';
 import {login} from 'Src/api/api';
+import {announceSessionChange} from 'Src/utils/session-events';
 import styles from './index.less';
 import LegalFooter from 'Components/legal-footer';
 import './cover.less';
@@ -50,6 +51,7 @@ function Login(){
     const onFinish = values => {
         login(values).then(res=>{
             if(res.code===200){
+                announceSessionChange();
                 localStorage.setItem('username', values.username);
                 history.push('/home');
             } 

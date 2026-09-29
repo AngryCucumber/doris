@@ -1,0 +1,43 @@
+/*
+ * Copyright (c) 2026
+ * 厦门市美亚柏科信息安全研究所有限公司
+ * Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+ * SPDX-License-Identifier: LicenseRef-MassDB-Commercial
+ * Use is governed by LICENSE-MASSDB.txt and a separate agreement with the company.
+ * Upstream and third-party components retain their respective licenses.
+ */
+.page { max-width: 1200px; padding: 28px 32px 40px; margin: 0 auto; color: #263445; }
+.heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; margin-bottom: 20px; }
+.heading h1 { margin: 0 0 8px; font-size: 26px; }
+.heading p, .muted { color: #657386; }
+.actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.card { padding: 22px 24px; margin-bottom: 20px; border: 1px solid #e2e8ee; border-radius: 6px; background: #fff; overflow-wrap: anywhere; }
+.card h2 { margin: 0 0 16px; font-size: 18px; }
+.columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
+.fields { display: grid; grid-template-columns: minmax(110px, max-content) minmax(0, 1fr); gap: 10px 20px; margin: 16px 0; }
+.fields dt { color: #657386; font-weight: normal; }
+.fields dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.fields small { display: block; color: #657386; }
+.statusLine { display: flex; gap: 16px; align-items: baseline; }
+.usage { display: flex; gap: 20px; margin: 20px 0 12px; }
+.usage > div { min-width: 160px; display: flex; justify-content: space-between; gap: 24px; background: #f2f6fa; padding: 14px 20px; border-radius: 4px; }
+.usage span { font-size: 20px; }
+.alert { margin-bottom: 16px; }
+.receiptActions { display: flex; gap: 12px; margin: 8px 0 16px; }
+.validation { margin: 20px 0; }
+:global([data-testid='license-import-dialog']) label { display: block; margin: 16px 0 8px; }
+:global([data-testid='license-certificate-file']) { max-width: 100%; }
+:global([data-testid='license-certificate-input']) { font-family: monospace; }
+@media (max-width: 800px) {
+    .page { padding: 24px 16px; }
+    .heading { flex-direction: column; }
+    .columns { grid-template-columns: 1fr; gap: 0; }
+    .card { padding: 18px; }
+    .fields { grid-template-columns: minmax(100px, 40%) minmax(0, 1fr); gap: 10px 12px; }
+    .usage { flex-wrap: wrap; }
+    .receiptActions { flex-wrap: wrap; }
+}
+
+@media (max-width: 600px) {
+    .page { padding-top: 80px; }
+}

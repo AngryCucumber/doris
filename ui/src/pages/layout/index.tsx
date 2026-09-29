@@ -23,7 +23,7 @@
  * @author lpx
  * @since 2020/08/19
  */
-import React, { useState } from 'react';
+import React from 'react';
 import { Layout, Menu, Dropdown, notification, Button } from 'antd';
 import { CaretDownOutlined, LogoutOutlined } from '@ant-design/icons';
 import { renderRoutes } from 'react-router-config';
@@ -31,6 +31,7 @@ import { useHistory } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import LegalFooter from 'Components/legal-footer';
 import { logOut } from 'Src/api/api';
+import { announceSessionChange } from 'Src/utils/session-events';
 import './index.css';
 import styles from './index.less';
 const { Header, Content } = Layout;
@@ -39,11 +40,10 @@ function Layouts(props: any) {
     const route = props.route.routes;
     const isPlayground = /^\/Playground(?:\/|$)/.test(props.location.pathname)
         && !/^\/Playground\/import(?:\/|$)/.test(props.location.pathname);
-    const [current, setCurrent] = useState(props.location.pathname);
+    const current = '/' + props.location.pathname.split('/')[1];
     const history = useHistory();
     //Jump page
     function handleClick(e) {
-        setCurrent(e.key);
         if (e.key.includes('/System')) {
             history.push(`${e.key}?path=/`);
             return;
@@ -69,6 +69,7 @@ function Layouts(props: any) {
         }
     }
     function onLogout() {
+        announceSessionChange();
         logOut().then((res) => {
             localStorage.removeItem('username');
             clearAllCookie();
@@ -103,7 +104,6 @@ function Layouts(props: any) {
                     className={styles['logo']}
                     onClick={() => {
                         history.replace('/home');
-                        setCurrent('');
                     }}
                 ></div>
                 <span className="userSet">
@@ -134,8 +134,8 @@ function Layouts(props: any) {
                     {route.map((item) => {
                         if (item.title && item.title !== 'Login' && item.title !== 'Home') {
                             return (
-                                <Menu.Item key={item.path}>
-                                    {item.title}
+                                <Menu.Item key={item.path} data-testid={item.title === 'License' ? 'license-tab' : undefined}>
+                                    {item.title === 'License' ? t('license.title') : item.title}
                                 </Menu.Item>
                             );
                         }
