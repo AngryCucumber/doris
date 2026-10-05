@@ -1474,7 +1474,7 @@ public class EditLog {
                 LOG.error("replay Operation Type {}, log id: {}", opCode, logId, e);
                 System.exit(-1);
             } else {
-                if (OperationType.isMassdbLicenseOperation(opCode)) {
+                if (OperationType.isMassdbLicenseRecoveryRelevant(opCode)) {
                     env.markLicenseRecoveryIncomplete();
                 }
                 LOG.warn("Skip replay Operation Type {} due to exception, log id: {}", opCode, logId, e);

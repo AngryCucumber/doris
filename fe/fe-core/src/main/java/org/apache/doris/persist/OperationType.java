@@ -439,6 +439,26 @@ public class OperationType {
         return opCode >= OP_MASSDB_LICENSE_INITIALIZE && opCode <= OP_MASSDB_LICENSE_INTEGRITY;
     }
 
+    /** License facts and registered identities must both be complete for quota/FE compatibility decisions. */
+    public static boolean isMassdbLicenseRecoveryRelevant(short opCode) {
+        if (isMassdbLicenseOperation(opCode)) {
+            return true;
+        }
+        switch (opCode) {
+            case OP_ADD_BACKEND:
+            case OP_DROP_BACKEND:
+            case OP_MODIFY_BACKEND:
+            case OP_BACKEND_STATE_CHANGE:
+            case OP_ADD_FRONTEND:
+            case OP_ADD_FIRST_FRONTEND:
+            case OP_MODIFY_FRONTEND:
+            case OP_REMOVE_FRONTEND:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     /**
      * Get opcode name by op code.
      **/

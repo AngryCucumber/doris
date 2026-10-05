@@ -10,6 +10,9 @@ package org.apache.doris.massdb.license;
 import org.apache.doris.common.DdlException;
 import org.apache.doris.common.ErrorCode;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 import java.io.ByteArrayOutputStream;
 import java.io.DataInput;
 import java.io.DataOutput;
@@ -40,6 +43,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /** FE-owned management service. Query consumers only read published snapshots and the trusted clock. */
 public final class LicenseManager implements AutoCloseable {
+    private static final Logger LOG = LogManager.getLogger(LicenseManager.class);
+
     public enum Action {
         STATUS, DEPLOYMENT, VALIDATE, IMPORT, IMPORT_RECEIPT,
         CLOCK_CHALLENGE, CLOCK_REPAIR, CLOCK_REPAIR_RECEIPT
@@ -94,6 +99,7 @@ public final class LicenseManager implements AutoCloseable {
     private final ThreadPoolExecutor mutations;
     private final Map<String, Bucket> rates = new LinkedHashMap<>();
     private final AtomicBoolean maintenancePending = new AtomicBoolean();
+    private final AtomicInteger leadershipGeneration = new AtomicInteger();
     private volatile LicensePersistRecord committed;
     // Only the latest successfully applied state is retained; no historical or cross-trust cache.
     private LicensePersistRecord.Restored verifiedState;
@@ -115,6 +121,7 @@ public final class LicenseManager implements AutoCloseable {
     private volatile LicensePersistRecord uncertainCommit;
     private volatile LicensePersistRecord committedPendingApply;
     private ScheduledExecutorService scheduler;
+    private long lastMaintenanceWarningNanos = Long.MIN_VALUE;
 
     public LicenseManager(Host host, boolean checkpoint) {
         this(host, checkpoint, LicenseClock.SYSTEM);
@@ -905,15 +912,26 @@ public final class LicenseManager implements AutoCloseable {
         }
     }
 
-    public void markRecoveryIncomplete() {
+    public synchronized void markRecoveryIncomplete() {
         recoveryIncomplete = true;
-        publish();
+        publishUnavailable();
     }
 
     public void onReplayComplete() {
-        loadTrust();
-        recoveryComplete = true;
-        publish();
+        if (!recoveryComplete) {
+            synchronized (this) {
+                if (!recoveryComplete) {
+                    loadTrust();
+                    recoveryComplete = true;
+                    try {
+                        publish();
+                    } catch (RuntimeException e) {
+                        recoveryComplete = false;
+                        throw e;
+                    }
+                }
+            }
+        }
     }
 
     public void onMasterStart(boolean pristineBootstrap) {
@@ -921,6 +939,7 @@ public final class LicenseManager implements AutoCloseable {
             return;
         }
         loadTrust();
+        leadershipGeneration.incrementAndGet();
         leader = true;
         bootstrapEligible = pristineBootstrap;
         recoveryComplete = true;
@@ -931,6 +950,7 @@ public final class LicenseManager implements AutoCloseable {
     }
 
     public void onNonMaster() {
+        leadershipGeneration.incrementAndGet();
         leader = false;
         if (repair != null) {
             repair.endLeadership();
@@ -948,10 +968,33 @@ public final class LicenseManager implements AutoCloseable {
         if (checkpoint || closed || !maintenancePending.compareAndSet(false, true)) {
             return;
         }
+        if (needsInitialization()) {
+            try {
+                // All-FE HTTP probes may take seconds. Never occupy the durable member/import queue with them.
+                verification.execute(() -> {
+                    InitializationProof proof;
+                    try {
+                        proof = probeInitialization();
+                    } catch (RuntimeException e) {
+                        warnMaintenance(e);
+                        maintenancePending.set(false);
+                        return;
+                    }
+                    enqueueMaintenance(proof);
+                });
+            } catch (RejectedExecutionException e) {
+                maintenancePending.set(false);
+            }
+        } else {
+            enqueueMaintenance(null);
+        }
+    }
+
+    private void enqueueMaintenance(InitializationProof proof) {
         try {
             mutations.execute(() -> {
                 try {
-                    maintenance();
+                    maintenance(proof);
                 } finally {
                     maintenancePending.set(false);
                 }
@@ -961,7 +1004,35 @@ public final class LicenseManager implements AutoCloseable {
         }
     }
 
+    private boolean needsInitialization() {
+        return !closed && committed == null && uncertainCommit == null && committedPendingApply == null
+                && leader && host.isMaster() && !recoveryIncomplete;
+    }
+
+    private InitializationProof probeInitialization() {
+        if (!needsInitialization()) {
+            return null;
+        }
+        int generation = leadershipGeneration.get();
+        long frontendVersion = host.frontendVersion();
+        return host.activationReady() ? new InitializationProof(generation, frontendVersion) : null;
+    }
+
+    private static final class InitializationProof {
+        private final int generation;
+        private final long frontendVersion;
+
+        private InitializationProof(int generation, long frontendVersion) {
+            this.generation = generation;
+            this.frontendVersion = frontendVersion;
+        }
+    }
+
     void maintenance() {
+        maintenance(probeInitialization());
+    }
+
+    private void maintenance(InitializationProof proof) {
         try {
             publish();
             if (!leader || !host.isMaster() || recoveryIncomplete || uncertainCommit != null) {
@@ -974,7 +1045,8 @@ public final class LicenseManager implements AutoCloseable {
                 }
             }
             if (committed == null) {
-                if (!host.activationReady()) {
+                if (proof == null || proof.generation != leadershipGeneration.get()
+                        || proof.frontendVersion != host.frontendVersion()) {
                     return;
                 }
                 long wall = time.wallTimeMillis();
@@ -994,7 +1066,18 @@ public final class LicenseManager implements AutoCloseable {
                 repair.checkpoint(60_000);
             }
         } catch (LicenseManagementException | LicenseException | LicenseRepairException | IOException e) {
-            // Retry only from current committed facts. Error details are exposed through safe status.
+            // Never log a certificate/provider message. Retry only from the current committed facts.
+            warnMaintenance(e);
+        }
+    }
+
+    private synchronized void warnMaintenance(Exception error) {
+        long now = System.nanoTime();
+        if (lastMaintenanceWarningNanos == Long.MIN_VALUE
+                || now - lastMaintenanceWarningNanos >= TimeUnit.MINUTES.toNanos(1)) {
+            lastMaintenanceWarningNanos = now;
+            LOG.warn("License maintenance failed ({}); retrying from committed state",
+                    error.getClass().getSimpleName());
         }
     }
 

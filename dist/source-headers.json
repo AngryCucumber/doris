@@ -597,6 +597,42 @@
     "fe/fe-core/src/main/java/org/apache/doris/httpv2/restv2/ImportAction.java": {
       "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/common/ErrorCode.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/journal/JournalCursor.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/journal/bdbje/BDBJournalCursor.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/nereids/parser/NereidsParser.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/insert/BaseExternalTableInsertExecutor.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/qe/ConnectProcessor.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd."
+    },
+    "fe/fe-core/src/test/java/org/apache/doris/journal/bdbje/BDBJournalCursorTest.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/persist/EditLog.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/persist/OperationType.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
     }
   }
 }

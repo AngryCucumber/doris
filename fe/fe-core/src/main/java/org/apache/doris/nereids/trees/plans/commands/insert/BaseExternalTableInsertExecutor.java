@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified by Xiamen Meiya Pico Information Security Research Institute Co., Ltd.
+// Preserve typed license rejection details while retaining external insert rollback.
+
 package org.apache.doris.nereids.trees.plans.commands.insert;
 
 import org.apache.doris.catalog.Env;
@@ -26,6 +29,7 @@ import org.apache.doris.common.profile.SummaryProfile;
 import org.apache.doris.common.util.DebugUtil;
 import org.apache.doris.common.util.Util;
 import org.apache.doris.datasource.ExternalTable;
+import org.apache.doris.massdb.license.LicenseSqlException;
 import org.apache.doris.nereids.NereidsPlanner;
 import org.apache.doris.nereids.exceptions.AnalysisException;
 import org.apache.doris.nereids.trees.plans.physical.PhysicalSink;
@@ -160,8 +164,13 @@ public abstract class BaseExternalTableInsertExecutor extends AbstractInsertExec
                 urlPart = coordinator.getTrackingUrl();
             }
         }
-        String finalErrorMsg = InsertUtils.getFinalErrorMsg(t.getMessage(), firstErrorMsgPart, urlPart);
-        ctx.getState().setError(ErrorCode.ERR_UNKNOWN_ERROR, finalErrorMsg);
+        LicenseSqlException licenseFailure = LicenseSqlException.find(t);
+        if (licenseFailure != null) {
+            ctx.getState().setError(licenseFailure.getMysqlErrorCode(), licenseFailure.getMessage());
+        } else {
+            String finalErrorMsg = InsertUtils.getFinalErrorMsg(t.getMessage(), firstErrorMsgPart, urlPart);
+            ctx.getState().setError(ErrorCode.ERR_UNKNOWN_ERROR, finalErrorMsg);
+        }
 
         if (table instanceof ExternalTable) {
             try {

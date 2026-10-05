@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
+
 package org.apache.doris.journal;
 
 import org.apache.doris.common.Pair;
@@ -24,6 +26,14 @@ public interface JournalCursor {
 
     // Return the next journal. return null when there is no more journals
     public Pair<Long, JournalEntity> next();
+
+    /**
+     * Return the opcode of the most recently force-skipped journal, if its header was readable.
+     * Null means unknown; it must never be interpreted as an ordinary non-license operation.
+     */
+    default Short getSkippedOperation(long journalId) {
+        return null;
+    }
 
     public void close();
 

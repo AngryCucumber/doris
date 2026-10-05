@@ -49,7 +49,7 @@ class LicenseMembershipSqlTest extends TestWithFeService {
                 new StmtExecutor(connectContext, sql).execute();
                 Assertions.assertEquals(QueryState.MysqlStateType.ERR, connectContext.getState().getStateType());
                 Assertions.assertEquals(code, connectContext.getState().getErrorCode());
-                Assertions.assertEquals(conflict ? "40001" : "HY000",
+                Assertions.assertEquals(conflict ? "45000" : "HY000",
                         new String(connectContext.getState().getErrorCode().getSqlState(), StandardCharsets.US_ASCII));
                 JsonObject body = JsonParser.parseString(connectContext.getState().getErrorMessage()).getAsJsonObject();
                 Assertions.assertEquals(reason, body.get("reason").getAsString());

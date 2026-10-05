@@ -22,7 +22,12 @@ class LicenseSqlRedactorTest {
     @Test
     void ordinarySqlIsUnchanged() {
         for (String sql : new String[] {"SELECT 1", "SELECT license FROM t", "SELECT admin_license FROM t",
-                "SHOW TABLES", "SELECT 'licensee admin'", "INSERT INTO t VALUES ('licensed')"}) {
+                "SHOW TABLES", "SELECT 'licensee admin'", "INSERT INTO t VALUES ('licensed')",
+                "SHOW CREATE TABLE license", "SHOW FULL COLUMNS FROM license",
+                "SELECT * FROM license WHERE creator='admin'", "SELECT license, admin FROM t",
+                "SELECT 1 /* admin show prepare license */", "PREPARE s FROM 'SELECT * FROM license'",
+                "SELECT show AS license", "SELECT `admin` AS `license`", "SELECT 'admin import licensee'",
+                "SELECT 'admin import licensé'", "SELECT 'admin import license\u00a0suffix'"}) {
             Assertions.assertSame(sql, LicenseSqlRedactor.redact(sql));
         }
         Assertions.assertNull(LicenseSqlRedactor.redact(null));
@@ -56,12 +61,48 @@ class LicenseSqlRedactorTest {
                 "/* before */ ADMIN /* inside */ VALIDATE LICENSE 'a.b.c'",
                 "SELECT 'semi;colon'; -- comment\n ADMIN REPAIR LICENSE CLOCK 'a.b.c'",
                 "SHOW LICENSE", "ADMIN LICENSE CLOCK CHALLENGE",
+                "PREPARE s FROM 'SELECT 1; ADMIN IMPORT LICENSE ''a.b.c'''",
                 "PREPARE s FROM 'ADMIN IMPORT LICENSE \\'a.b.c\\''"}) {
             Assertions.assertTrue(LicenseSqlRedactor.requiresNativeParser(sql), sql);
         }
         String modeSensitive = "SELECT 'value\\'; ADMIN IMPORT LICENSE 'a.b.c'";
         Assertions.assertTrue(LicenseSqlRedactor.requiresNativeParser(modeSensitive, true));
         Assertions.assertFalse(LicenseSqlRedactor.requiresNativeParser(modeSensitive, false));
+    }
+
+    @Test
+    void diagnosticPrefixesProtectMalformedAndNestedContentsWithoutWordCooccurrence() {
+        for (String sql : new String[] {
+                "SELECT 'unterminated; ADMIN IMPORT LICENSE 'private.payload.signature'",
+                "SELECT 'ADMIN IMPORT LICENSE private.payload.signature'",
+                "SELECT 1 /* ADMIN /* nested */ IMPORT LICENSE 'private.payload.signature' */",
+                "ADMIN /* outer /* nested */ tail */ IMPORT LICENSE 'private.payload.signature'",
+                "ADMIN -- comment\\\n still comment\n IMPORT LICENSE 'private.payload.signature'",
+                "/* ADMIN /* ADMIN /* ADMIN IMPORT LICENSE 'private.payload.signature'",
+                "SELECT `x\\`; ADMIN IMPORT LICENSE 'private.payload.signature'",
+                "SELECT 'value\\'; ADMIN REPAIR LICENSE CLOCK 'private.payload.signature'"}) {
+            Assertions.assertEquals(LicenseSqlRedactor.REDACTED, LicenseSqlRedactor.redact(sql), sql);
+        }
+    }
+
+    @Test
+    void nativeRoutingMatchesNestedCommentsLineContinuationsAndQuotedIdentifiers() {
+        for (boolean noBackslashEscapes : new boolean[] {false, true}) {
+            for (String sql : new String[] {
+                    "/* outer /* inner */ tail */ ADMIN IMPORT LICENSE 'a.b.c'",
+                    "ADMIN /* outer /* inner */ tail */ IMPORT LICENSE 'a.b.c'",
+                    "-- continued\\\n SELECT 1;\n ADMIN IMPORT LICENSE 'a.b.c'",
+                    "SELECT `value\\`; ADMIN IMPORT LICENSE 'a.b.c'",
+                    "SELECT `semi;``colon`; ADMIN IMPORT LICENSE 'a.b.c'"}) {
+                Assertions.assertTrue(LicenseSqlRedactor.requiresNativeParser(sql, noBackslashEscapes), sql);
+            }
+            for (String sql : new String[] {
+                    "SELECT 1 -- continued\\\n ; ADMIN IMPORT LICENSE 'a.b.c'",
+                    "SELECT 1 /* outer /* inner */ ; ADMIN IMPORT LICENSE 'a.b.c' */",
+                    "SELECT `a; ADMIN IMPORT LICENSE secret`", "SHOW license_suffix", "SHOW license\u00a0suffix"}) {
+                Assertions.assertFalse(LicenseSqlRedactor.requiresNativeParser(sql, noBackslashEscapes), sql);
+            }
+        }
     }
 
     @Test

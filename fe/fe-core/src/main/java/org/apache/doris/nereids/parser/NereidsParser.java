@@ -423,14 +423,13 @@ public class NereidsParser {
                 String hintSql = sql.substring(hintToken.getStartIndex() + 3, hintToken.getStopIndex() + 1);
                 DorisLexer newHintLexer = new DorisLexer(new CaseInsensitiveStream(CharStreams.fromString(hintSql)));
                 if (sensitiveSql) {
+                    // Keep upstream hint error recovery, but never print certificate-bearing tokens.
                     newHintLexer.removeErrorListeners();
-                    newHintLexer.addErrorListener(PARSE_ERROR_LISTENER);
                 }
                 CommonTokenStream newHintTokenStream = new CommonTokenStream(newHintLexer);
                 DorisParser hintParser = new DorisParser(newHintTokenStream);
                 if (sensitiveSql) {
                     hintParser.removeErrorListeners();
-                    hintParser.addErrorListener(PARSE_ERROR_LISTENER);
                 }
                 ParserRuleContext hintContext = parseFunction.apply(hintParser);
                 selectHintMap.put(hintToken.getStartIndex(), hintContext);

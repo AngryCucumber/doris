@@ -4,6 +4,39 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License review corrections (2026-10-04)
+
+- Publish recovery completion once instead of rebuilding membership on every
+  idle replay poll. Keep actual replay and membership publication intact.
+  Run initialization HTTP probes outside the durable mutation queue and reject
+  proofs invalidated by leadership or FE membership changes. Rate-limit safe
+  maintenance warnings without logging certificate or provider messages.
+- Correct wall/monotonic sampling around scheduler pauses and concurrent clock
+  corrections. Bound initial/repair anchor pairing and fail closed if no tight
+  sample is available. Preserve cumulative skew tolerances and repair epochs.
+- Recognize license command prefixes without hiding ordinary license-named
+  tables, preserve upstream hint recovery, and retain complete sensitive SQL
+  packets to prevent independent statement splitting from leaking credentials.
+  Restore ordinary forwarded errors, retain typed external-insert denials and
+  rollback, and use SQLSTATE 45000 for 6202 with explicit retry semantics.
+- Keep forced journal skipping free of faulty-record reads by default. Add an
+  opt-in committed-header probe for physically readable application failures;
+  known operations unrelated to licensing or membership need not set a new
+  incomplete-license flag. Unknown, license and membership skips stay fail
+  closed, including member replay exceptions that are explicitly skipped.
+  Preserve registered-member counts and FE compatibility coverage; no arbitrary
+  recovery reset is added.
+- Preserve BE, protocols, persisted formats, admission scope and quota policy.
+  Record focused validation and the remaining upgrade, trust-reload and metadata
+  recovery limits in `docs/license-review-remediation-20261004.md`.
+- Pass 319 tests across 32 FE suites on JDK 17.0.4, FE Maven packaging,
+  Checkstyle, source-header release checks and whitespace validation. Preserve
+  failed preparation runs and distinguish controlled tests from runtime checks.
+  Verify the final JARs in one isolated FE over SQL/HTTP, including diagnostic
+  visibility, quota SQLSTATE, receipt retry flags and restart recovery; stop all
+  owned tasks and remove test metadata. No BE process or new performance
+  equivalence result is claimed.
+
 ## License diagnostic and recovery cost reduction (2026-09-30)
 
 - Cache the safe diagnostic representation of an immutable `OriginStatement`

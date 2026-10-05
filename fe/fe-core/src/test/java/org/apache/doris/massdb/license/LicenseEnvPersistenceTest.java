@@ -8,9 +8,14 @@
 package org.apache.doris.massdb.license;
 
 import org.apache.doris.catalog.Env;
+import org.apache.doris.common.Config;
 import org.apache.doris.common.FeConstants;
 import org.apache.doris.common.FeMetaVersion;
+import org.apache.doris.common.Pair;
 import org.apache.doris.common.io.CountingDataOutputStream;
+import org.apache.doris.common.io.Text;
+import org.apache.doris.common.jmockit.Deencapsulation;
+import org.apache.doris.journal.JournalCursor;
 import org.apache.doris.journal.JournalEntity;
 import org.apache.doris.meta.MetaContext;
 import org.apache.doris.persist.EditLog;
@@ -26,6 +31,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -36,6 +42,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 import java.util.zip.CRC32;
@@ -139,6 +146,95 @@ class LicenseEnvPersistenceTest {
         Assertions.assertEquals(LicenseQueryStatus.LICENSE_NOT_READY,
                 recovered.getLicenseManager().getSnapshot().queryStatus(System.currentTimeMillis() / 1000));
         Assertions.assertTrue(module(recovered)[0] != 0);
+    }
+
+    @Test
+    void knownOrdinaryForceSkipDoesNotInvalidateLicenseRecovery() throws Exception {
+        for (short opcode : new short[] {OperationType.OP_SAVE_NEXTID, OperationType.OP_TIMESTAMP,
+                OperationType.OP_CREATE_TABLE}) {
+            Env recovered = skipping(opcode);
+            recovered.replayJournal(1);
+            Assertions.assertEquals(0, module(recovered)[0]);
+            Assertions.assertEquals(1, recovered.getLicenseManager().getAppliedVersion());
+        }
+    }
+
+    @Test
+    void unknownLicenseAndMembershipForceSkipsStillInvalidateLicenseRecovery() throws Exception {
+        for (Short opcode : new Short[] {null, OperationType.OP_LOCAL_EOF, Short.MAX_VALUE,
+                OperationType.OP_MASSDB_LICENSE_INITIALIZE, OperationType.OP_MASSDB_LICENSE_ACCEPT,
+                OperationType.OP_MASSDB_LICENSE_BASE_CAPACITY, OperationType.OP_MASSDB_LICENSE_WATERMARK,
+                OperationType.OP_MASSDB_LICENSE_CLOCK_REPAIR, OperationType.OP_MASSDB_LICENSE_INTEGRITY,
+                OperationType.OP_ADD_BACKEND, OperationType.OP_DROP_BACKEND, OperationType.OP_MODIFY_BACKEND,
+                OperationType.OP_BACKEND_STATE_CHANGE, OperationType.OP_ADD_FRONTEND,
+                OperationType.OP_ADD_FIRST_FRONTEND, OperationType.OP_MODIFY_FRONTEND,
+                OperationType.OP_REMOVE_FRONTEND}) {
+            Env recovered = skipping(opcode);
+            recovered.replayJournal(1);
+            Assertions.assertTrue(module(recovered)[0] != 0, String.valueOf(opcode));
+        }
+    }
+
+    @Test
+    void explicitlySkippedMembershipReplayErrorsStillInvalidateLicenseRecovery() throws Exception {
+        short[] previous = Config.skip_operation_types_on_replay_exception;
+        short[] members = {OperationType.OP_ADD_BACKEND, OperationType.OP_DROP_BACKEND,
+                OperationType.OP_MODIFY_BACKEND, OperationType.OP_BACKEND_STATE_CHANGE,
+                OperationType.OP_ADD_FRONTEND, OperationType.OP_ADD_FIRST_FRONTEND,
+                OperationType.OP_MODIFY_FRONTEND, OperationType.OP_REMOVE_FRONTEND};
+        try {
+            Config.skip_operation_types_on_replay_exception = members;
+            for (short opcode : members) {
+                Env recovered = new Env(true);
+                recovered.getLicenseManager().replay(initial());
+                JournalEntity malformed = new JournalEntity();
+                malformed.setOpCode(opcode);
+                malformed.setData(new Text("Invalid member payload"));
+                EditLog.loadJournal(recovered, 1L, malformed);
+                Assertions.assertTrue(module(recovered)[0] != 0, String.valueOf(opcode));
+            }
+            Config.skip_operation_types_on_replay_exception = new short[] {OperationType.OP_SAVE_NEXTID};
+            Env ordinary = new Env(true);
+            ordinary.getLicenseManager().replay(initial());
+            JournalEntity malformed = new JournalEntity();
+            malformed.setOpCode(OperationType.OP_SAVE_NEXTID);
+            malformed.setData(new Text("Invalid numeric ID"));
+            EditLog.loadJournal(ordinary, 1L, malformed);
+            Assertions.assertEquals(0, module(ordinary)[0]);
+        } finally {
+            Config.skip_operation_types_on_replay_exception = previous;
+        }
+    }
+
+    @Test
+    void ordinaryForceSkipCannotClearAnEarlierIncompleteRecovery() throws Exception {
+        Env recovered = skipping(OperationType.OP_TIMESTAMP);
+        recovered.markLicenseRecoveryIncomplete();
+        recovered.replayJournal(1);
+        Assertions.assertTrue(module(recovered)[0] != 0);
+        Assertions.assertNull(new JournalCursor() {
+            @Override
+            public Pair<Long, JournalEntity> next() {
+                return null;
+            }
+
+            @Override
+            public void close() {
+            }
+        }.getSkippedOperation(1));
+    }
+
+    private static Env skipping(Short opcode) throws IOException {
+        Env recovered = new Env(true);
+        recovered.getLicenseManager().replay(initial());
+        EditLog log = Mockito.mock(EditLog.class);
+        JournalCursor cursor = Mockito.mock(JournalCursor.class);
+        Mockito.when(cursor.next()).thenReturn(Pair.of(1L, null)).thenReturn(null);
+        Mockito.when(cursor.getSkippedOperation(1)).thenReturn(opcode);
+        Mockito.when(log.read(1, 1)).thenReturn(cursor);
+        Deencapsulation.setField(recovered, "editLog", log);
+        Deencapsulation.setField(recovered, "forceSkipJournalIds", Collections.singletonList("1"));
+        return recovered;
     }
 
     @Test

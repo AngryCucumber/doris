@@ -23,6 +23,8 @@ public final class LicenseClock {
     public static final long DEFAULT_ROLLBACK_TOLERANCE_MILLIS = 5_000L;
     public static final long DEFAULT_FORWARD_TOLERANCE_MILLIS = 300_000L;
     private static final long NANOS_PER_MILLI = 1_000_000L;
+    private static final int MAX_ANCHOR_SAMPLE_ATTEMPTS = 32;
+    private static final long MAX_ANCHOR_SAMPLE_NANOS = NANOS_PER_MILLI;
 
     public interface TimeSource {
         long wallTimeMillis();
@@ -113,13 +115,16 @@ public final class LicenseClock {
         private final AtomicLong trustedOffsetMillis;
         private final long wallMillis;
         private final long monotonicNanos;
+        private final long wallSampleStartNanos;
         private final AtomicBoolean suspect;
 
-        private Anchor(Facts facts, long trustedMillis, long wallMillis, long monotonicNanos, boolean suspect) {
+        private Anchor(Facts facts, long trustedMillis, long wallMillis, long monotonicNanos,
+                long wallSampleStartNanos, boolean suspect) {
             this.facts = facts;
             this.trustedOffsetMillis = new AtomicLong(trustedMillis);
             this.wallMillis = wallMillis;
             this.monotonicNanos = monotonicNanos;
+            this.wallSampleStartNanos = wallSampleStartNanos;
             this.suspect = new AtomicBoolean(suspect);
         }
 
@@ -128,6 +133,7 @@ public final class LicenseClock {
             this.trustedOffsetMillis = prior.trustedOffsetMillis;
             this.wallMillis = prior.wallMillis;
             this.monotonicNanos = prior.monotonicNanos;
+            this.wallSampleStartNanos = prior.wallSampleStartNanos;
             this.suspect = prior.suspect;
         }
     }
@@ -156,7 +162,7 @@ public final class LicenseClock {
     /** Allocation-free hot path; small wall-clock corrections never move this clock backwards. */
     public long trustedNowMillis() {
         Anchor current = anchor;
-        return read(current, source.monotonicNanos(), source.wallTimeMillis());
+        return read(current);
     }
 
     public long trustedNowSeconds() {
@@ -190,7 +196,7 @@ public final class LicenseClock {
 
     public Reading read() {
         Anchor current = anchor;
-        long trusted = read(current, source.monotonicNanos(), source.wallTimeMillis());
+        long trusted = read(current);
         return new Reading(trusted, current.facts.clockEpoch, current.suspect.get());
     }
 
@@ -203,7 +209,7 @@ public final class LicenseClock {
             throw new IllegalArgumentException("Checkpoint interval must be positive");
         }
         Anchor current = anchor;
-        long now = read(current, source.monotonicNanos(), source.wallTimeMillis());
+        long now = read(current);
         if (current.suspect.get() || now - current.facts.highWaterMillis < minimumAdvanceMillis) {
             return null;
         }
@@ -242,13 +248,14 @@ public final class LicenseClock {
         if (committed.clockEpoch > old.facts.clockEpoch) {
             anchor = freshAnchor(committed);
         } else {
-            long monotonic = source.monotonicNanos();
-            long elapsed = elapsedMillis(old, monotonic);
+            read(old);
             long wall = source.wallTimeMillis();
-            read(old, monotonic, wall);
             if (wall < 0 || wall > MAX_MILLIS || committed.highWaterMillis - wall > rollbackToleranceMillis) {
                 old.suspect.set(true);
             }
+            // The wall read (or the read above) may have been descheduled. Pair the fixed
+            // watermark with the latest monotonic sample, never the stale pre-wall sample.
+            long elapsed = elapsedMillis(old, source.monotonicNanos());
             increaseOffset(old, committed.highWaterMillis - elapsed);
             // Preserve the atomic progress object: readers of the preceding metadata view must
             // not lose an observed forward movement when a checkpoint is applied concurrently.
@@ -266,24 +273,54 @@ public final class LicenseClock {
     }
 
     private Anchor freshAnchor(Facts facts) {
-        long monotonic = source.monotonicNanos();
-        long wall = source.wallTimeMillis();
-        boolean invalid = wall < 0 || wall > MAX_MILLIS;
+        long before = 0;
+        long wall = 0;
+        long after = 0;
+        boolean invalid = false;
+        for (int attempt = 0; attempt < MAX_ANCHOR_SAMPLE_ATTEMPTS; attempt++) {
+            before = source.monotonicNanos();
+            wall = source.wallTimeMillis();
+            after = source.monotonicNanos();
+            invalid = wall < 0 || wall > MAX_MILLIS || after - before < 0;
+            if (invalid || after - before <= MAX_ANCHOR_SAMPLE_NANOS) {
+                break;
+            }
+        }
+        boolean paired = !invalid && after - before <= MAX_ANCHOR_SAMPLE_NANOS;
         long bounded = Math.max(0, Math.min(MAX_MILLIS, wall));
-        return new Anchor(facts, Math.max(bounded, facts.highWaterMillis), bounded, monotonic,
-                invalid || facts.highWaterMillis - bounded > rollbackToleranceMillis);
+        // Retry a descheduled management sample instead of retaining its entire pause as
+        // permanent forward-jump tolerance. Only a tightly paired interval may be retained.
+        // If every bounded attempt is unreliable, fail closed without throwing into replay.
+        return new Anchor(facts, Math.max(bounded, facts.highWaterMillis), bounded, after,
+                paired ? before : after,
+                !paired || facts.highWaterMillis - bounded > rollbackToleranceMillis);
     }
 
-    private long read(Anchor current, long monotonic, long wall) {
-        long elapsed = elapsedMillis(current, monotonic);
-        long expectedWall = addBounded(current.wallMillis, elapsed);
+    private long read(Anchor current) {
+        // Capture progress first: a concurrent correction after our wall sample must not
+        // make that older sample look like a rollback.
         long offset = current.trustedOffsetMillis.get();
+        long monotonic = source.monotonicNanos();
+        long wall = source.wallTimeMillis();
+        long elapsed = elapsedMillis(current, monotonic);
         long expectedTrusted = addBounded(offset, elapsed);
-        if (wall < 0 || wall > MAX_MILLIS || expectedTrusted - wall > rollbackToleranceMillis
-                || wall - expectedWall > forwardToleranceMillis) {
+        if (wall < 0 || wall > MAX_MILLIS || expectedTrusted - wall > rollbackToleranceMillis) {
             current.suspect.set(true);
         }
         if (wall >= 0 && wall <= MAX_MILLIS && wall - elapsed > offset) {
+            // Only a candidate forward correction needs a second monotonic read. A pause
+            // between the first read and the wall read is elapsed time, not a correction.
+            // A pause after the wall read likewise must not advance the trusted offset.
+            long after = source.monotonicNanos();
+            if (after - monotonic < 0) {
+                current.suspect.set(true);
+            }
+            elapsed = elapsedMillis(current, after);
+            long wallElapsed = (after - current.wallSampleStartNanos) / NANOS_PER_MILLI;
+            long expectedWall = addBounded(current.wallMillis, wallElapsed);
+            if (wall - expectedWall > forwardToleranceMillis) {
+                current.suspect.set(true);
+            }
             offset = increaseOffset(current, wall - elapsed);
         }
         long trusted = addBounded(offset, elapsed);

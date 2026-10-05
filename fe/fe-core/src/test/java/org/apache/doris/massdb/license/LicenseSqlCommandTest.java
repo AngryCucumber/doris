@@ -146,11 +146,61 @@ class LicenseSqlCommandTest {
             LicenseSqlException error = Assertions.assertThrows(LicenseSqlException.class,
                     () -> new LicenseCommand(Action.IMPORT, "a.b.c").doRun(context, null));
             Assertions.assertEquals(6202, error.getMysqlErrorCode().getCode());
-            Assertions.assertEquals("40001", new String(error.getMysqlErrorCode().getSqlState(),
+            Assertions.assertEquals("45000", new String(error.getMysqlErrorCode().getSqlState(),
                     StandardCharsets.US_ASCII));
             Assertions.assertTrue(error.getMessage().contains("LICENSE_VERSION_CONFLICT"));
             Assertions.assertSame(error, LicenseSqlException.find(new NereidsException(error)));
         }
+    }
+
+    @Test
+    void retryAdviceDistinguishesTransientRejectionFromConflictsAndUnknownSubmissions() {
+        for (String reason : new String[] {"LICENSE_IMPORT_CONFLICT", "LICENSE_REPAIR_CONFLICT",
+                "LICENSE_BE_LIMIT_EXCEEDED", "LICENSE_FE_LIMIT_EXCEEDED"}) {
+            LicenseManagementException failure = new LicenseManagementException(reason, 409,
+                    "NOT_SUBMITTED", "fingerprint", 0, 7);
+            Assertions.assertEquals(false, failure.getBody().get("retryable"), reason);
+            Assertions.assertEquals("45000", failure.getSqlState());
+            Assertions.assertEquals("45000", new String(
+                    new LicenseSqlException(failure).getMysqlErrorCode().getSqlState(), StandardCharsets.US_ASCII));
+        }
+        for (String reason : new String[] {"LICENSE_FE_UPGRADE_REQUIRED", "LICENSE_CLOCK_REPAIR_REQUIRED",
+                "LICENSE_IMPORT_HISTORY_UNAVAILABLE", "LICENSE_REPAIR_HISTORY_UNAVAILABLE",
+                "LICENSE_VERIFICATION_UNAVAILABLE"}) {
+            LicenseManagementException failure = new LicenseManagementException(reason, 503,
+                    "NOT_SUBMITTED", "fingerprint", 0, 7);
+            Assertions.assertEquals(false, failure.getBody().get("retryable"), reason);
+        }
+        for (String reason : new String[] {"LICENSE_NOT_READY", "LICENSE_NOT_LEADER",
+                "LICENSE_COMMIT_UNCERTAIN", "LICENSE_MANAGEMENT_UNAVAILABLE"}) {
+            LicenseManagementException failure = new LicenseManagementException(reason, 503,
+                    "UNKNOWN", "fingerprint", 0, 7);
+            Assertions.assertEquals(false, failure.getBody().get("retryable"), reason);
+            Assertions.assertEquals("UNKNOWN", failure.getBody().get("submission_status"));
+            Assertions.assertEquals("fingerprint", failure.getBody().get("fingerprint"));
+        }
+        for (String reason : new String[] {"LICENSE_NOT_READY", "LICENSE_NOT_LEADER",
+                "LICENSE_IMPORT_NOT_READY", "LICENSE_METADATA_UNAVAILABLE", "LICENSE_STORE_UNAVAILABLE"}) {
+            LicenseManagementException failure = new LicenseManagementException(reason, 503,
+                    "NOT_SUBMITTED", "fingerprint", 0, 7);
+            Assertions.assertEquals(true, failure.getBody().get("retryable"), reason);
+        }
+        LicenseManagementException stale = new LicenseManagementException("LICENSE_STALE_IMPORT_DECISION", 409,
+                "NOT_SUBMITTED", "fingerprint", 0, 7);
+        Assertions.assertEquals(true, stale.getBody().get("retryable"));
+        Assertions.assertEquals("45000", stale.getSqlState());
+        for (String reason : new String[] {"LICENSE_RATE_LIMITED", "LICENSE_MANAGEMENT_BUSY"}) {
+            LicenseManagementException failure = new LicenseManagementException(reason, 429,
+                    "NOT_SUBMITTED", "fingerprint", 0, 7);
+            Assertions.assertEquals(true, failure.getBody().get("retryable"), reason);
+            Assertions.assertEquals(6, failure.getRetryAfterSeconds());
+        }
+        LicenseManagementException committed = new LicenseManagementException("LICENSE_COMMITTED_PENDING_APPLY", 202,
+                "COMMITTED", "fingerprint", 8, 7);
+        Assertions.assertEquals(true, committed.getBody().get("retryable"));
+        Assertions.assertEquals("COMMITTED", committed.getBody().get("submission_status"));
+        Assertions.assertEquals(8L, committed.getBody().get("committed_version"));
+        Assertions.assertEquals(7L, committed.getBody().get("applied_version"));
     }
 
     @Test

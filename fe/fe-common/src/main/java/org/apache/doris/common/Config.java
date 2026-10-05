@@ -32,6 +32,13 @@ public class Config extends ConfigBase {
                     + "An empty value leaves trust unconfigured. Takes effect after restart."})
     public static String massdb_license_trust_store_file = "";
 
+    @ConfField(description = {"是否探测强制跳过日志的操作码；默认不读取故障记录，重启生效。"
+            + "仅在确认物理记录可读、因业务回放问题跳过时开启；不能修复已有授权恢复不完整标记",
+            "Probe the opcode of force-skipped journals. Disabled by default to avoid reading damaged records. "
+                    + "Enable only for physically readable records skipped due to application replay failures. "
+                    + "Does not clear existing incomplete license recovery. Takes effect after restart."})
+    public static boolean massdb_license_probe_skipped_journal_header = false;
+
     @ConfField(description = {"已注册 FE 的授权管理端口映射，格式 host:edit_log_port=management_port；重启生效",
             "Optional registered-FE license management ports: host:edit_log_port=management_port. "
                     + "Only the port may be overridden; protocol follows enable_https. Takes effect after restart."})

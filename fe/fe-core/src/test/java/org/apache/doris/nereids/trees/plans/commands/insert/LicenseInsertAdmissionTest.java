@@ -12,7 +12,12 @@ import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.OlapTable;
 import org.apache.doris.catalog.TableIf;
 import org.apache.doris.catalog.TableProperty;
+import org.apache.doris.common.ErrorCode;
+import org.apache.doris.common.NereidsException;
+import org.apache.doris.common.jmockit.Deencapsulation;
+import org.apache.doris.common.security.authentication.ExecutionAuthenticator;
 import org.apache.doris.datasource.InternalCatalog;
+import org.apache.doris.datasource.hive.HMSExternalCatalog;
 import org.apache.doris.datasource.hive.HMSExternalTable;
 import org.apache.doris.load.loadv2.LoadManager;
 import org.apache.doris.massdb.license.LicenseManager;
@@ -35,6 +40,7 @@ import org.apache.doris.qe.StmtExecutor;
 import org.apache.doris.system.SystemInfoService;
 import org.apache.doris.thrift.TQueryOptions;
 import org.apache.doris.thrift.TUniqueId;
+import org.apache.doris.transaction.TransactionManager;
 
 import mockit.Invocation;
 import mockit.Mock;
@@ -72,6 +78,47 @@ class LicenseInsertAdmissionTest {
     @Test
     void internalInsertWithProtectedSourceStillStartsItsWriteTransactionWhileExpired() throws Exception {
         verifyBoundary(false, true);
+    }
+
+    @Test
+    void postQueueLicenseRejectionKeepsItsSqlCodeAndRollsBackTheExternalTransaction() throws Exception {
+        LicenseSqlException denial = Assertions.assertThrows(LicenseSqlException.class,
+                () -> LicenseQueryGuard.check(LicenseQueryStatus.EXPIRED, null, true));
+        ConnectContext context = failExternalInsert(new NereidsException(denial));
+        Assertions.assertEquals(ErrorCode.ERR_LICENSE_QUERY_DENIED, context.getState().getErrorCode());
+        Assertions.assertEquals(denial.getMessage(), context.getState().getErrorMessage());
+    }
+
+    @Test
+    void ordinaryExternalInsertFailureKeepsTheOriginalCodeDetailsAndRollback() throws Exception {
+        IllegalStateException failure = new IllegalStateException("LICENSE_EXPIRED is ordinary exception text");
+        ConnectContext context = failExternalInsert(failure);
+        Assertions.assertEquals(ErrorCode.ERR_UNKNOWN_ERROR, context.getState().getErrorCode());
+        Assertions.assertEquals(InsertUtils.getFinalErrorMsg(failure.getMessage(), "backend detail", "tracking url"),
+                context.getState().getErrorMessage());
+    }
+
+    private static ConnectContext failExternalInsert(Throwable failure) throws Exception {
+        ConnectContext context = new ConnectContext();
+        context.setQueryId(new TUniqueId(1, 2));
+        HMSExternalTable table = Mockito.mock(HMSExternalTable.class);
+        HMSExternalCatalog catalog = Mockito.mock(HMSExternalCatalog.class);
+        Mockito.when(table.getCatalog()).thenReturn(catalog);
+        Mockito.when(catalog.getExecutionAuthenticator()).thenReturn(new ExecutionAuthenticator() {});
+        Coordinator coordinator = Mockito.mock(Coordinator.class);
+        Mockito.when(coordinator.getFirstErrorMsg()).thenReturn("backend detail");
+        Mockito.when(coordinator.getTrackingUrl()).thenReturn("tracking url");
+        TransactionManager transactions = Mockito.mock(TransactionManager.class);
+        BaseExternalTableInsertExecutor insert = Mockito.mock(BaseExternalTableInsertExecutor.class,
+                Mockito.CALLS_REAL_METHODS);
+        Deencapsulation.setField(insert, "ctx", context);
+        Deencapsulation.setField(insert, "table", table);
+        Deencapsulation.setField(insert, "coordinator", coordinator);
+        Deencapsulation.setField(insert, "transactionManager", transactions);
+        insert.txnId = 42;
+        insert.onFail(failure);
+        Mockito.verify(transactions).rollback(42);
+        return context;
     }
 
     private static void verifyBoundary(boolean external, boolean protectedSource) throws Exception {

@@ -36,13 +36,12 @@ public final class LicenseManagementException extends Exception {
         boolean history = reason.endsWith("HISTORY_UNAVAILABLE");
         sqlErrorCode = history ? 6204 : httpStatus == 409 ? 6202
                 : httpStatus == 429 || httpStatus == 503 ? 6203 : 6201;
-        sqlState = sqlErrorCode == 6202 ? "40001" : sqlErrorCode >= 6203 ? "HY000" : "45000";
+        sqlState = sqlErrorCode >= 6203 ? "HY000" : "45000";
         retryAfterSeconds = httpStatus == 429 ? 6 : 0;
         Map<String, Object> values = new LinkedHashMap<>();
         values.put("reason", reason);
         values.put("message", reason);
-        values.put("retryable", httpStatus == 409 || httpStatus == 429 || httpStatus == 503
-                || (httpStatus == 202 && "COMMITTED".equals(submissionStatus)));
+        values.put("retryable", retryable(reason, httpStatus, submissionStatus));
         values.put("submission_status", submissionStatus);
         values.put("fingerprint", fingerprint);
         if (repairId != null) {
@@ -51,6 +50,31 @@ public final class LicenseManagementException extends Exception {
         values.put("committed_version", committedVersion);
         values.put("applied_version", appliedVersion);
         body = Collections.unmodifiableMap(values);
+    }
+
+    private static boolean retryable(String reason, int httpStatus, String submissionStatus) {
+        if ("COMMITTED".equals(submissionStatus)) {
+            // This means polling the receipt for application, never resubmitting the mutation.
+            return httpStatus == 202;
+        }
+        if (!"NOT_SUBMITTED".equals(submissionStatus)) {
+            // UNKNOWN must be confirmed by fingerprint/repair_id; a transport status cannot
+            // establish that retrying a state-changing request is safe.
+            return false;
+        }
+        switch (reason) {
+            case "LICENSE_NOT_READY":
+            case "LICENSE_IMPORT_NOT_READY":
+            case "LICENSE_NOT_LEADER":
+            case "LICENSE_RATE_LIMITED":
+            case "LICENSE_MANAGEMENT_BUSY":
+            case "LICENSE_METADATA_UNAVAILABLE":
+            case "LICENSE_STORE_UNAVAILABLE":
+            case "LICENSE_STALE_IMPORT_DECISION":
+                return true;
+            default:
+                return false;
+        }
     }
 
     public String getReason() {

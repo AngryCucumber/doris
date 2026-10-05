@@ -76,6 +76,145 @@ class LicenseManagerTest {
     }
 
     @Test
+    void idleReplayCompletionDoesNotRebuildMembershipButActualChangesStillPublish() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 2000));
+        LicenseSnapshot published = manager.getSnapshot();
+        int reads = host.membershipReads.get();
+        for (int i = 0; i < 10000; i++) {
+            manager.onReplayComplete();
+        }
+        Assertions.assertSame(published, manager.getSnapshot());
+        Assertions.assertEquals(reads, host.membershipReads.get());
+        host.changeMembers(2, 3);
+        manager.onMembershipChanged();
+        Assertions.assertEquals(2, manager.getSnapshot().getRegisteredFe());
+        Assertions.assertEquals(3, manager.getSnapshot().getRegisteredBe());
+        Assertions.assertEquals(reads + 1, host.membershipReads.get());
+        manager.replay(host.records.get(host.records.size() - 1).withClockSuspect());
+        Assertions.assertEquals(LicenseQueryStatus.CLOCK_SUSPECT, manager.queryStatus());
+        Assertions.assertEquals(reads + 2, host.membershipReads.get());
+        manager.onReplayComplete();
+        Assertions.assertEquals(LicenseQueryStatus.CLOCK_SUSPECT, manager.queryStatus());
+        Assertions.assertEquals(reads + 2, host.membershipReads.get());
+    }
+
+    @Test
+    void failedInitialPublicationCanRetryAndIncompleteMarkDoesNotNeedMembers() throws Exception {
+        LicensePersistRecord initial = LicensePersistRecord.initial(UUID.randomUUID(), true, time.wall);
+        try (LicenseManager restored = new LicenseManager(host, false, time)) {
+            restored.replay(initial);
+            host.publicationFailure.set(true);
+            Assertions.assertThrows(IllegalStateException.class, restored::onReplayComplete);
+            Assertions.assertEquals(LicenseQueryStatus.LICENSE_NOT_READY, restored.queryStatus());
+            restored.onReplayComplete();
+            Assertions.assertNotEquals(LicenseQueryStatus.LICENSE_NOT_READY, restored.queryStatus());
+            int reads = host.membershipReads.get();
+            host.publicationFailure.set(true);
+            restored.markRecoveryIncomplete();
+            Assertions.assertEquals(reads, host.membershipReads.get());
+            Assertions.assertEquals(LicenseQueryStatus.LICENSE_NOT_READY, restored.queryStatus());
+            restored.onReplayComplete();
+            Assertions.assertEquals(reads, host.membershipReads.get());
+            Assertions.assertEquals(LicenseQueryStatus.LICENSE_NOT_READY, restored.queryStatus());
+        } finally {
+            host.publicationFailure.set(false);
+        }
+    }
+
+    @Test
+    void initializationProbeDoesNotHoldMemberQueueAndCannotCommitAcrossMemberChanges() throws Exception {
+        host.probeEntered = new CountDownLatch(1);
+        host.probeRelease = new CountDownLatch(1);
+        ExecutorService callers = Executors.newSingleThreadExecutor();
+        try {
+            manager.onMasterStart(false);
+            Assertions.assertTrue(host.probeEntered.await(5, TimeUnit.SECONDS));
+            Future<?> removal = callers.submit(() -> {
+                manager.runMembershipMutation(0, 0, () -> {
+                    host.changeMembers(1, 0);
+                    host.frontendVersion++;
+                });
+                return null;
+            });
+            removal.get(2, TimeUnit.SECONDS);
+            Assertions.assertEquals(0, manager.getAppliedVersion());
+            host.probeRelease.countDown();
+            awaitBackgroundMaintenance();
+            manager.runMembershipMutation(0, 0, () -> { });
+            Assertions.assertEquals(0, manager.getAppliedVersion());
+            host.probeEntered = null;
+            manager.maintenance();
+            Assertions.assertEquals(1, manager.getAppliedVersion());
+        } finally {
+            host.probeRelease.countDown();
+            callers.shutdownNow();
+        }
+    }
+
+    @Test
+    void initializationProofCannotSurviveLeadershipChange() throws Exception {
+        host.probeEntered = new CountDownLatch(1);
+        host.probeRelease = new CountDownLatch(1);
+        manager.onMasterStart(false);
+        try {
+            Assertions.assertTrue(host.probeEntered.await(5, TimeUnit.SECONDS));
+            manager.onNonMaster();
+            manager.onMasterStart(false);
+            host.probeRelease.countDown();
+            awaitBackgroundMaintenance();
+            manager.runMembershipMutation(0, 0, () -> { });
+            Assertions.assertEquals(0, manager.getAppliedVersion());
+            host.probeEntered = null;
+            manager.maintenance();
+            Assertions.assertEquals(1, manager.getAppliedVersion());
+        } finally {
+            host.probeRelease.countDown();
+        }
+    }
+
+    @Test
+    void uncertainInitialCommitDoesNotRepeatTheCompatibilityProbe() throws Exception {
+        host.throwAfterWrite = true;
+        manager.onMasterStart(true);
+        awaitBackgroundMaintenance();
+        Assertions.assertEquals(0, manager.getAppliedVersion());
+        Assertions.assertEquals(1, host.records.size());
+        Assertions.assertEquals(1, host.activationProbes.get());
+
+        host.throwAfterWrite = false;
+        host.compatible = false;
+        manager.onMasterStart(true);
+        awaitBackgroundMaintenance();
+        Assertions.assertEquals(1, host.activationProbes.get());
+        Assertions.assertEquals(1, host.records.size());
+        Assertions.assertEquals(0, manager.getAppliedVersion());
+        Assertions.assertEquals(LicenseQueryStatus.LICENSE_NOT_READY, manager.queryStatus());
+
+        manager.replay(host.records.get(0));
+        Assertions.assertEquals(1, manager.getAppliedVersion());
+        Assertions.assertNotEquals(LicenseQueryStatus.LICENSE_NOT_READY, manager.queryStatus());
+    }
+
+    @Test
+    void committedInitialRecordCanFinishApplyingWithoutAnotherCompatibilityProbe() throws Exception {
+        host.failPublicationAfterCommit = true;
+        manager.onMasterStart(true);
+        awaitBackgroundMaintenance();
+        Assertions.assertEquals(0, manager.getAppliedVersion());
+        Assertions.assertEquals(1, host.records.size());
+        Assertions.assertEquals(1, host.activationProbes.get());
+
+        host.compatible = false;
+        manager.onMasterStart(true);
+        awaitBackgroundMaintenance();
+        Assertions.assertEquals(1, host.activationProbes.get());
+        Assertions.assertEquals(1, host.records.size());
+        Assertions.assertEquals(1, manager.getAppliedVersion());
+        Assertions.assertNotEquals(LicenseQueryStatus.LICENSE_NOT_READY, manager.queryStatus());
+    }
+
+    @Test
     void memberAdmissionRequiresCommittedCapacityAndOnlyProvenBootstrapHasOneFe() throws Exception {
         AtomicBoolean changed = new AtomicBoolean();
         Assertions.assertEquals(LicenseQueryStatus.LICENSE_NOT_READY, manager.queryStatus());
@@ -1331,6 +1470,17 @@ class LicenseManagerTest {
         Thread.sleep(30);
     }
 
+    private void awaitBackgroundMaintenance() throws Exception {
+        java.lang.reflect.Field field = LicenseManager.class.getDeclaredField("maintenancePending");
+        field.setAccessible(true);
+        AtomicBoolean pending = (AtomicBoolean) field.get(manager);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (pending.get() && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        Assertions.assertFalse(pending.get(), "Background initialization did not finish");
+    }
+
     private LicenseManagementResult run(LicenseManager.Action action, String payload) throws Exception {
         return manager.execute(action, payload, "admin-" + principal++, true);
     }
@@ -1463,6 +1613,8 @@ class LicenseManagerTest {
         private volatile long membershipVersion = 1;
         private volatile CountDownLatch probeEntered;
         private volatile CountDownLatch probeRelease;
+        private final AtomicInteger membershipReads = new AtomicInteger();
+        private final AtomicInteger activationProbes = new AtomicInteger();
 
         Host(String path) {
             this.path = path;
@@ -1475,6 +1627,7 @@ class LicenseManagerTest {
 
         @Override
         public LicenseManager.Membership membership() {
+            membershipReads.incrementAndGet();
             if (publicationFailure.compareAndSet(true, false)) {
                 throw new IllegalStateException("Injected snapshot publication failure after durable commit");
             }
@@ -1509,6 +1662,7 @@ class LicenseManagerTest {
 
         @Override
         public boolean activationReady() {
+            activationProbes.incrementAndGet();
             if (probeEntered != null) {
                 probeEntered.countDown();
                 try {

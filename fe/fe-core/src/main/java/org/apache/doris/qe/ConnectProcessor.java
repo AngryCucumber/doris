@@ -265,8 +265,9 @@ public abstract class ConnectProcessor {
         }
 
         List<String> origSingleStmtList = null;
-        // if stmts.size() > 1, split originStmt to multi singleStmts
-        if (stmts.size() > 1) {
+        // Keep a sensitive packet intact. The independent separator has different comment/escape
+        // rules from DorisLexer and could otherwise move certificate text into an ordinary statement.
+        if (stmts.size() > 1 && !LicenseSqlRedactor.isSensitive(convertedStmt)) {
             try {
                 origSingleStmtList = SqlUtils.splitMultiStmts(convertedStmt);
             } catch (Exception ignore) {
@@ -740,8 +741,6 @@ public abstract class ConnectProcessor {
             LicenseSqlException licenseFailure = LicenseSqlException.find(e);
             if (licenseFailure != null) {
                 ctx.getState().setError(licenseFailure.getMysqlErrorCode(), licenseFailure.getMessage());
-            } else if (e instanceof UserException) {
-                ctx.getState().setError(((UserException) e).getMysqlErrorCode(), e.getMessage());
             } else {
                 LOG.warn("Process one query failed because unknown reason: ", e);
                 ctx.getState().setError(ErrorCode.ERR_UNKNOWN_ERROR, "Unexpected exception: " + e.getMessage());

@@ -1240,7 +1240,7 @@ public enum ErrorCode {
 
     ERR_LICENSE_QUERY_DENIED(6200, new byte[]{'4', '5', '0', '0', '0'}, "%s"),
     ERR_LICENSE_CANDIDATE_INVALID(6201, new byte[]{'4', '5', '0', '0', '0'}, "%s"),
-    ERR_LICENSE_CONFLICT(6202, new byte[]{'4', '0', '0', '0', '1'}, "%s"),
+    ERR_LICENSE_CONFLICT(6202, new byte[]{'4', '5', '0', '0', '0'}, "%s"),
     ERR_LICENSE_NOT_READY(6203, new byte[]{'H', 'Y', '0', '0', '0'}, "%s"),
     ERR_LICENSE_HISTORY_UNKNOWN(6204, new byte[]{'H', 'Y', '0', '0', '0'}, "%s");
 

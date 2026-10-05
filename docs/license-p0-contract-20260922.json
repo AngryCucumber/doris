@@ -3991,7 +3991,7 @@
           "expected_outcome": {
             "assertions": [
               "A返回6204/HY000 LICENSE_IMPORT_HISTORY_UNAVAILABLE，不伪称从未提交",
-              "同序号异内容为6202/40001 LICENSE_IMPORT_CONFLICT"
+              "同序号异内容为6202/45000 LICENSE_IMPORT_CONFLICT"
             ]
           },
           "side_effect_oracles": [
@@ -7050,8 +7050,8 @@
         "category": "INVALID_CANDIDATE"
       },
       "6202": {
-        "sqlstate": "40001",
-        "category": "VERSION_CONFLICT"
+        "sqlstate": "45000",
+        "category": "VERSION_OR_MEMBERSHIP_CONFLICT"
       },
       "6203": {
         "sqlstate": "HY000",
@@ -7077,7 +7077,35 @@
     "ui_poll_initial_interval_seconds": 2,
     "ui_poll_max_interval_seconds": 30,
     "ui_poll_backoff_multiplier": 2,
-    "ui_poll_max_in_flight": 1
+    "ui_poll_max_in_flight": 1,
+    "retry_policy": {
+      "interpretation": "Evaluate submission_status before retryable; HTTP 409/503 alone never permits automatic resubmission.",
+      "not_submitted_retryable_reasons": [
+        "LICENSE_NOT_READY",
+        "LICENSE_IMPORT_NOT_READY",
+        "LICENSE_NOT_LEADER",
+        "LICENSE_RATE_LIMITED",
+        "LICENSE_MANAGEMENT_BUSY",
+        "LICENSE_METADATA_UNAVAILABLE",
+        "LICENSE_STORE_UNAVAILABLE",
+        "LICENSE_STALE_IMPORT_DECISION"
+      ],
+      "not_submitted_other_reasons_retryable": false,
+      "unknown": {
+        "retryable": false,
+        "action": "Confirm by fingerprint/repair_id; do not resubmit the mutation or infer that it never committed."
+      },
+      "committed": {
+        "http_status": 202,
+        "retryable": true,
+        "action": "Poll the existing receipt for local application; never resubmit import/repair."
+      },
+      "applied": {
+        "retryable": false,
+        "action": "Retain the committed receipt and version."
+      },
+      "historical_sqlstate": "Earlier runtime evidence reporting 6202/40001 remains unchanged; the current protocol uses 6202/45000."
+    }
   },
   "time": {
     "rollback_tolerance_millis": 5000,
@@ -7087,7 +7115,24 @@
     "repair_lifetime_limit_seconds": 86400,
     "expiry": "not_before <= trusted_utc < expires_at; tolerance never adds validity",
     "repair": "fixed typ massdb-license-clock-repair+jws, purpose time_repair; current Master term/process/nonce/clock_epoch/repair_authorization_version; corrected wall validated, contaminated watermark not used",
-    "epoch_consistency": "management read() returns one immutable tuple; hot path capture epoch, UTC, suspect, then isCurrentEpoch; epoch change retries or conservatively denies"
+    "epoch_consistency": "management read() returns one immutable tuple; hot path capture epoch, UTC, suspect, then isCurrentEpoch; epoch change retries or conservatively denies",
+    "cumulative_detection": "Keep the same process/repair-epoch anchor and greatest trusted progress across checkpoints; repeated small corrections cannot reset rollback/forward budgets.",
+    "query_sampling": {
+      "steady_wall_reads": 1,
+      "steady_monotonic_reads": 1,
+      "forward_candidate_additional_monotonic_reads": 1,
+      "new_hot_path_locks": false,
+      "new_hot_path_allocations": false,
+      "pause_handling": "Bracket candidate forward corrections; retain the earlier bound for rollback and the later bound for forward corrections. A genuine jump obscured by a paused sample is still checked by the next stable sample.",
+      "unit": "One trusted time read; a SQL query may perform more than one admission check."
+    },
+    "anchor_sampling": {
+      "when": "process initialization or committed repair epoch",
+      "maximum_attempts": 32,
+      "maximum_pairing_interval_millis": 1,
+      "wide_sample_action": "Discard and resample; never retain the pause as permanent forward-jump tolerance.",
+      "exhausted_action": "Fail closed as sticky CLOCK_SUSPECT without throwing a sampling exception into image/journal replay; diagnose and use the signed repair procedure."
+    }
   },
   "deployment_request": {
     "schema_version": 1,
@@ -20059,7 +20104,36 @@
       "clock_watermark",
       "repair_authorization_version",
       "consumed_repair_receipts"
-    ]
+    ],
+    "recovery_review_20261004": {
+      "force_skip_header_probe": {
+        "configuration": "massdb_license_probe_skipped_journal_header",
+        "default": false,
+        "restart_required": true,
+        "scope": "Opt in only for physically readable records skipped due to application replay failures; never a physical JE corruption repair."
+      },
+      "always_recovery_relevant": [
+        "OP_MASSDB_LICENSE_INITIALIZE",
+        "OP_MASSDB_LICENSE_ACCEPT",
+        "OP_MASSDB_LICENSE_BASE_CAPACITY",
+        "OP_MASSDB_LICENSE_WATERMARK",
+        "OP_MASSDB_LICENSE_CLOCK_REPAIR",
+        "OP_MASSDB_LICENSE_INTEGRITY",
+        "OP_ADD_BACKEND",
+        "OP_DROP_BACKEND",
+        "OP_MODIFY_BACKEND",
+        "OP_BACKEND_STATE_CHANGE",
+        "OP_ADD_FRONTEND",
+        "OP_ADD_FIRST_FRONTEND",
+        "OP_MODIFY_FRONTEND",
+        "OP_REMOVE_FRONTEND"
+      ],
+      "force_skip": "Unknown, unrecognized, license or membership opcodes preserve incomplete recovery. An explicitly probed known ordinary opcode unrelated to license/member facts need not add the flag.",
+      "replay_exception_skip": "Explicit skip_operation_types_on_replay_exception preserves incomplete recovery for license and membership operations.",
+      "existing_flag": "No automatic clearing; recover complete same-deployment metadata from a healthy FE or reliable backup. No new SQL/API reset.",
+      "propagation": "The recovery-incomplete flag is local/image state, not an immediate broadcast journal operation.",
+      "evidence": "docs/license-review-remediation-20261004.md"
+    }
   },
   "path_reachability_evidence": {
     "report": ".build-records/license-p0-p1-20260922/path-probes/reachability-report.json",

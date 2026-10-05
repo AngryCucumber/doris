@@ -99,16 +99,20 @@ Basic 认证可用于接口调用。浏览器 Cookie POST 必须同时提供匹�
 | 结果 | 客户端处理 |
 | --- | --- |
 | HTTP 200，`APPLIED` | 已持久提交且当前 FE 已应用；记录 `committed_version` |
-| HTTP 202，`COMMITTED` | 已提交但当前 FE 尚未应用；按导入指纹或修复 `repair_id` 查询回执，保留原版本 |
-| `UNKNOWN` | 当前无法确认结果；查询回执，不推断未提交或盲目签发替代证书 |
+| HTTP 202，`COMMITTED` | 已提交但当前 FE 尚未应用；`retryable=true` 仅表示继续轮询回执，不能重新提交变更；保留原版本 |
+| `UNKNOWN` | 当前无法确认结果，`retryable=false`；查询回执，不直接重提变更，不推断未提交或盲目签发替代证书 |
 | HTTP 400 / SQL 6201、45000 | 候选或格式错误，按 `reason` 修正输入 |
-| HTTP 409 / SQL 6202、40001 | 状态、序号或并发冲突；先重新查看已提交状态 |
+| HTTP 409 / SQL 6202、45000 | 状态、序号或节点额度冲突；先重新查看已提交状态，不按事务序列化失败自动重试 |
 | HTTP 429 / SQL 6203、HY000 | 用户速率或管理队列已满；HTTP 遵守 `Retry-After`，SQL 按 `reason` 退避重试 |
 | HTTP 503 / SQL 6203、HY000 | 尚未就绪或提交不可确认；结合 `submission_status` 和回执处理，历史不可确认见下一行 |
 | HTTP 503、`*_HISTORY_UNAVAILABLE` / SQL 6204、HY000 | 历史回执不可确认；不表示从未提交 |
 | HTTP 401/403 | 原认证/权限或 CSRF 拒绝，修正调用身份和来源 |
 
 SQL 使用结果行表达提交/应用状态，错误保留独立 errno 与 SQLSTATE；原认证/权限错误仍使用原错误码，不强制转换为 6201–6204。HTTP 错误正文包含稳定的 `reason`、脱敏 `message`、`retryable`、`submission_status` 和版本字段；能定位提交时包含指纹或 `repair_id`，尚不能确定的版本可为 `null`。
+
+先判断 `submission_status`，再解释 `retryable`，不能仅根据 HTTP 409/503 或 SQL 错误码自动重试。`NOT_SUBMITTED` 只有明确的暂态原因返回 `retryable=true`：`LICENSE_NOT_READY`、`LICENSE_IMPORT_NOT_READY`、`LICENSE_NOT_LEADER`、`LICENSE_RATE_LIMITED`、`LICENSE_MANAGEMENT_BUSY`、`LICENSE_METADATA_UNAVAILABLE`、`LICENSE_STORE_UNAVAILABLE`、`LICENSE_STALE_IMPORT_DECISION`。这允许在状态重新就绪后退避重试，不保证无限重试能够恢复。永久证书/修复冲突、节点超额、FE 升级要求、时钟修复要求、验签不可用及历史不可确认均为 `false`，须按原因处理。`UNKNOWN` 必须先按指纹或 `repair_id` 确认；`COMMITTED` 只需等待原提交应用，不能将轮询建议解释为重新导入或再次修复。
+
+当前协议将 6202 的 SQLSTATE 统一为 `45000`。旧验收记录中的 `40001` 是当时版本的真实返回，保留作为历史证据，不代表新版本协议。
 
 轮询导入时使用 `GET /api/license/imports/{fingerprint}` 或 `SHOW LICENSE IMPORT`；修复时使用对应 `repair_id` 回执入口。需要确认某台 FE 已应用时，持续请求该 FE，直到回执为 `APPLIED` 且 `applied_version >= committed_version`。建议从 2 秒间隔逐步退避到 10 秒，并由客户端设置等待截止时间；超时后保留 `COMMITTED` 或 `UNKNOWN` 和原回执，不能改判为未提交。旧指纹返回的是那次提交的版本，并不表示它仍是当前有效证书。
 
@@ -118,7 +122,13 @@ SQL 使用结果行表达提交/应用状态，错误保留独立 errno 与 SQLS
 
 ## 4. 时间异常修复
 
-正常运行按单调时钟推进可信 UTC，并定期持久保存时间水位。超过容差的回拨或显著前跳进入粘滞的 `CLOCK_SUSPECT`；仅将墙钟调回不会清除已记录异常。先纠正服务器墙钟，再由签发方签发专用修复票据。
+正常运行按单调时钟推进可信 UTC，并定期持久保存时间水位。超过容差的回拨或显著前跳进入粘滞的 `CLOCK_SUSPECT`；仅将墙钟调回不会清除已记录异常。先排查并确保服务器墙钟正确，再由签发方签发专用修复票据。
+
+默认回拨容差为 5 秒、前向偏差上限为 300 秒，边界内允许、超过边界进入异常。偏差相对于同一进程/时间 epoch 的固定锚点和已观察到的可信进度计算，普通 checkpoint 不重置检测预算；多次小幅改时仍可能累计触发。使用渐进校时也不能保证任意长期偏差都被豁免。容差从不延长证书期限。
+
+当前实现避免把单次采样期间的线程暂停直接当成墙钟跳变：正常的每次许可时间读取各采样一次单调时钟和墙钟，仅候选正向修正才补读单调时钟；不新增查询锁或对象分配。进程启动或修复时建立锚点，管理路径最多重采样 32 次，只接受两次单调时钟间隔不超过 1 ms 的墙钟样本；宽样本被丢弃，不成为后续额外的前跳容差。若连续 32 次都无法取得可靠配对，仍保守进入 `CLOCK_SUSPECT`，需要排查暂停原因并按修复流程恢复；不会将这个采样失败作为异常抛给 image/journal 回放。不能据此承诺所有冻结场景都能自愈。若真实改时恰与采样暂停重叠，一次读可能只能保守判断，后续稳定采样仍检查累计偏差。
+
+Master 已提交的时钟异常会随元数据传播。Follower 若比已提交水位落后超过 5 秒，也会在本机进入异常；本机异常不会立即广播，但它之后成为 Master 时可能被提交并传播。
 
 ```sql
 ADMIN LICENSE CLOCK CHALLENGE;
@@ -137,6 +147,10 @@ HTTP 对应 `POST /api/license/clock/challenge`（空正文或 `{}`）、`POST /
 先使全部已注册 FE（含 Observer）具备相同的新格式能力，再导入首证书；首次能力检查不能跳过离线成员。管理员可访问各 FE 的只读 `GET /api/license/capability` 核对 `package_sha256`、`trust_sha256`、`trust_ready` 和节点身份；普通用户不能访问。成功能力检查保存程序包、公钥清单和 FE 成员身份的绑定；任一绑定变化要重新检查。已确认绑定未变化时，个别 FE 暂时离线不单独阻止续期。
 
 授权元数据采用 `massdbLicenseV1` 模块和 journal 6200–6205；包含新事实的 image 使用版本 141，旧 FE 不支持读取。不可用旧二进制直接加入已启用新格式的集群。跳过相关 journal、忽略模块或无法证明恢复完整性会保持 NOT_READY，不能把缺槽解释为未激活或免费额度。
+
+恢复不完整标记首先作用于本台 FE，并保存在其 image 中；没有普通导入或时钟修复命令可清除。默认 `force_skip_journal_id` 不读取故障记录，跳过内容未知仍会设置该标记。仅确认记录物理可读、因业务回放问题需要跳过时，可显式配置 `massdb_license_probe_skipped_journal_header=true` 并重启，探测到不涉及授权/成员事实的已知普通操作码才避免新增标记；默认值为 `false`。探测物理损坏记录可能使 JE 环境失效，此选项不是坏块修复手段，也不会清除已有标记。授权及 FE/BE 成员操作被强制跳过、或经 `skip_operation_types_on_replay_exception` 跳过回放异常时，仍设置标记，防止漏计节点和兼容检查对象。已有不完整状态需从健康 FE 或可靠备份恢复同一部署的完整元数据；具体限制见[本轮恢复说明](license-review-remediation-20261004.md#3-元数据恢复操作边界)。
+
+升级后的 FE 在完成初始化和证书导入前会拒绝受保护读取，当前没有自动宽限期。应提前准备全部注册 FE 的升级和离线签发流程，以及旧格式回滚所需的升级前元数据备份；修复信任公钥文件后按配置要求重启生效。
 
 FE/BE 注册额度在 P2 显示和导入策略中校验；新增节点的权威准入由 P3 接入。未来 pending 到点可以改变有效证书状态，基础额度切换仍须单独持久提交；等待期 ADD 按第 2.1 节较小上限执行。
 

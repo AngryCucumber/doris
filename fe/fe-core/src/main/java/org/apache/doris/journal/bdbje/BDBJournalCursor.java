@@ -15,9 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
+
 package org.apache.doris.journal.bdbje;
 
 import org.apache.doris.catalog.Env;
+import org.apache.doris.common.Config;
 import org.apache.doris.common.Pair;
 import org.apache.doris.journal.JournalCursor;
 import org.apache.doris.journal.JournalEntity;
@@ -27,6 +30,9 @@ import com.sleepycat.je.Database;
 import com.sleepycat.je.DatabaseEntry;
 import com.sleepycat.je.LockMode;
 import com.sleepycat.je.OperationStatus;
+import com.sleepycat.je.Transaction;
+import com.sleepycat.je.TransactionConfig;
+import com.sleepycat.je.rep.NoConsistencyRequiredPolicy;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -44,6 +50,8 @@ public class BDBJournalCursor implements JournalCursor {
     private Database database;
     private int nextDbPositionIndex;
     private final int maxTryTime = 3;
+    private long skippedJournalId = -1;
+    private Short skippedOperation;
 
     public static BDBJournalCursor getJournalCursor(BDBEnvironment env, long fromKey, long toKey) {
         return getJournalCursor(env, fromKey, toKey, true);
@@ -98,11 +106,18 @@ public class BDBJournalCursor implements JournalCursor {
 
     @Override
     public Pair<Long, JournalEntity> next() {
+        skippedJournalId = -1;
+        skippedOperation = null;
         if (currentKey > toKey) {
             return null;
         }
 
         if (Env.getCurrentEnv().getForceSkipJournalIds().contains(String.valueOf(currentKey))) {
+            skippedJournalId = currentKey;
+            // Preserve the no-read emergency path for physically damaged records by default.
+            if (Config.massdb_license_probe_skipped_journal_header) {
+                skippedOperation = probeSkippedOperation();
+            }
             return Pair.of(currentKey++, null);
         }
         Long key = currentKey;
@@ -117,6 +132,7 @@ public class BDBJournalCursor implements JournalCursor {
             // READ_COMMITTED guarantees no dirty read.
             int tryTimes = 0;
             while (true) {
+                advanceDatabase();
                 OperationStatus operationStatus = database.get(null, theKey, theData, LockMode.READ_COMMITTED);
                 if (operationStatus == OperationStatus.SUCCESS) {
                     // Recreate the data String.
@@ -132,10 +148,6 @@ public class BDBJournalCursor implements JournalCursor {
                     }
                     currentKey++;
                     return Pair.of(key, entity);
-                } else if (nextDbPositionIndex < dbNames.size() && currentKey == dbNames.get(nextDbPositionIndex)) {
-                    database = environment.openDatabase(dbNames.get(nextDbPositionIndex).toString());
-                    nextDbPositionIndex++;
-                    tryTimes = 0;
                 } else if (tryTimes < maxTryTime) {
                     tryTimes++;
                     LOG.warn("fail to get journal {}, will try again. status: {}", currentKey, operationStatus);
@@ -159,6 +171,52 @@ public class BDBJournalCursor implements JournalCursor {
             }
         } catch (Exception e) {
             LOG.warn("Catch an exception when get next JournalEntity. key:{}", currentKey, e);
+            return null;
+        }
+    }
+
+    @Override
+    public Short getSkippedOperation(long journalId) {
+        return journalId == skippedJournalId ? skippedOperation : null;
+    }
+
+    private void advanceDatabase() {
+        // A force-skipped record can be the first key in a new database.
+        while (nextDbPositionIndex < dbNames.size() && currentKey >= dbNames.get(nextDbPositionIndex)) {
+            Database nextDatabase = environment.openDatabase(dbNames.get(nextDbPositionIndex).toString());
+            if (nextDatabase == null) {
+                throw new IllegalStateException("Journal database unavailable");
+            }
+            database = nextDatabase;
+            nextDbPositionIndex++;
+        }
+    }
+
+    private Short probeSkippedOperation() {
+        try {
+            advanceDatabase();
+            DatabaseEntry key = new DatabaseEntry();
+            TupleBinding.getPrimitiveBinding(Long.class).objectToEntry(currentKey, key);
+            DatabaseEntry header = new DatabaseEntry();
+            header.setPartial(0, Short.BYTES, true);
+            Transaction transaction = database.getEnvironment().beginTransaction(null, new TransactionConfig()
+                    .setReadOnly(true).setNoWait(true).setConsistencyPolicy(new NoConsistencyRequiredPolicy()));
+            try {
+                // One committed header read, without business decoding, lock waits or retry sleeps.
+                if (database.get(transaction, key, header, LockMode.READ_COMMITTED) != OperationStatus.SUCCESS
+                        || header.getSize() != Short.BYTES) {
+                    return null;
+                }
+                byte[] bytes = header.getData();
+                int offset = header.getOffset();
+                return (short) ((bytes[offset] & 0xff) << 8 | bytes[offset + 1] & 0xff);
+            } finally {
+                transaction.abort();
+            }
+        } catch (RuntimeException e) {
+            // Ordinary read failures remain unknown. Physical JE corruption can invalidate the environment;
+            // the opt-in probe is not a physical-corruption recovery mechanism.
+            LOG.warn("Unable to classify force-skipped journal {}", currentKey);
             return null;
         }
     }

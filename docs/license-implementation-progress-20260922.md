@@ -9,6 +9,8 @@ Upstream and third-party components retain their respective licenses.
 
 # 授权证书 P0/P1/P2/P3/P2U/P4 实施记录
 
+**2026-10-04 分支审查修复：** 已修复空闲回放重复发布、时钟采样暂停误判、SQL 脱敏/多语句泄漏、hint 容错、初始化探测占用成员队列及错误码适配。恢复跳过的头部探测默认关闭；未知恢复事实继续拒绝，时钟累计阈值及原 BE 边界不变。实际验证、审查中需纠正的说法和保留的升级/恢复限制见[复核记录](license-review-remediation-20261004.md)。
+
 > **2026-09-30 性能辅助路径优化。** 减少不可变 SQL 诊断文本、Profile 和 hint 的重复扫描；水位恢复仅复用同一验签器、同一原文及提交版本下已经成功应用的可信证书槽。查询范围、时钟防回拨和额度规则不变。当前构建、回归及优化前后真实对照的状态与边界见[本轮记录](license-performance-optimization-20260930.md)，不把下面历史 P4 数据改写为零退化证明。
 
 > **2026-09-30 到期后缩容续期已实现，并完成本轮分层验证。** 用户要求旧证到期后可以先安全缩容 FE/BE，再导入较低额度续期证书；不再将已经过期的历史基础额度作为续期永久下限。未过期 active/pending/base 额度承诺及完整已注册+预留用量仍保护，离线不释放，成功 DROP 才释放，原安全约束不改。用量仍超限时保持 SQL 6201/45000、HTTP 400 和 `LICENSE_NODE_LIMIT_TOO_SMALL`，拒绝候选并保留旧事实。立即生效导入同步更新 base；未来 pending 等待期 ADD 分别取 base/pending 较小上限，到点复核用量后持久切换，较高 pending 不提前扩额。保留原格式及严格 FE 包摘要门禁，降额前全部注册 FE 须同新包；恢复仅放宽不重叠 active/base→pending，不放宽 base→active。

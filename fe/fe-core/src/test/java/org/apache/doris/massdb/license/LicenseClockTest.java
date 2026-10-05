@@ -234,6 +234,163 @@ class LicenseClockTest {
     }
 
     @Test
+    void pausesAroundTheWallSampleDoNotBecomeClockCorrections() {
+        for (long pause : new long[] {6_001, 300_001}) {
+            SamplingTime time = new SamplingTime(100_000);
+            LicenseClock clock = clock(time, 100_000);
+            time.pauseBeforeWall = pause;
+            Assertions.assertEquals(time.wall + pause, clock.trustedNowMillis());
+            Assertions.assertFalse(clock.isSuspect());
+            Assertions.assertEquals(time.wall, clock.trustedNowMillis());
+            Assertions.assertFalse(clock.isSuspect());
+
+            // A genuine small forward movement combined with a post-wall pause must not
+            // be converted into an even larger correction by the next normal sample.
+            time.wall += 1_000;
+            time.pauseAfterWall = pause;
+            clock.trustedNowMillis();
+            Assertions.assertFalse(clock.isSuspect());
+            Assertions.assertEquals(time.wall, clock.trustedNowMillis());
+            Assertions.assertFalse(clock.isSuspect());
+        }
+    }
+
+    @Test
+    void genuineForwardJumpDuringAPostWallPauseIsDetectedByTheNextStableSample() {
+        SamplingTime time = new SamplingTime(100_000);
+        LicenseClock clock = clock(time, 100_000);
+        time.wall += 300_001;
+        time.pauseAfterWall = 600_001;
+        clock.trustedNowMillis();
+        Assertions.assertFalse(clock.isSuspect());
+        Assertions.assertEquals(time.wall, clock.trustedNowMillis());
+        Assertions.assertTrue(clock.isSuspect());
+    }
+
+    @Test
+    void startupAndRepairAnchorsRetryPausedSamplesWithoutExpandingTheForwardTolerance() {
+        for (boolean beforeWall : new boolean[] {true, false}) {
+            SamplingTime time = new SamplingTime(100_000);
+            time.pauseBeforeWall = beforeWall ? 600_001 : 0;
+            time.pauseAfterWall = beforeWall ? 0 : 600_001;
+            LicenseClock clock = clock(time, 100_000);
+            Assertions.assertEquals(time.wall, clock.trustedNowMillis());
+            Assertions.assertFalse(clock.isSuspect());
+            Assertions.assertEquals(3, time.wallReads);
+            time.advance(10_000);
+            Assertions.assertEquals(time.wall, clock.trustedNowMillis());
+            Assertions.assertFalse(clock.isSuspect());
+            LicenseClock.Facts checkpoint = clock.prepareCheckpoint(1);
+            Assertions.assertNotNull(checkpoint);
+            clock.applyCommitted(checkpoint);
+            time.wall += 300_001;
+            clock.trustedNowMillis();
+            Assertions.assertTrue(clock.isSuspect());
+
+            clock.restoreSuspect();
+            time.pauseBeforeWall = beforeWall ? 600_001 : 0;
+            time.pauseAfterWall = beforeWall ? 0 : 600_001;
+            clock.applyCommitted(new LicenseClock.Facts(2, 1, time.wall, 1));
+            Assertions.assertEquals(time.wall, clock.trustedNowMillis());
+            Assertions.assertFalse(clock.isSuspect());
+            checkpoint = clock.prepareCheckpoint(1);
+            Assertions.assertNotNull(checkpoint);
+            clock.applyCommitted(checkpoint);
+            time.wall += 300_001;
+            clock.trustedNowMillis();
+            Assertions.assertTrue(clock.isSuspect());
+        }
+    }
+
+    @Test
+    void persistentlyUnreliableAnchorSamplesFailClosedWithinABoundedAttemptCount() {
+        SamplingTime time = new SamplingTime(100_000);
+        time.pauseEveryWall = 2;
+        LicenseClock clock = clock(time, 100_000);
+        Assertions.assertEquals(32, time.wallReads);
+        Assertions.assertEquals(64, time.monotonicReads);
+        Assertions.assertTrue(clock.isSuspect());
+        time.pauseEveryWall = 0;
+        Assertions.assertNull(clock.prepareCheckpoint(1));
+        Assertions.assertTrue(clock.isSuspect());
+        clock.applyCommitted(new LicenseClock.Facts(1, 1, time.wall, 1));
+        Assertions.assertFalse(clock.isSuspect());
+        Assertions.assertEquals(time.wall, clock.trustedNowMillis());
+    }
+
+    @Test
+    void checkpointSamplingPauseCannotInflateTheWatermarkOffset() {
+        SamplingTime time = new SamplingTime(100_000);
+        LicenseClock clock = clock(time, 100_000);
+        time.pauseBeforeWall = 6_001;
+        clock.applyCommitted(new LicenseClock.Facts(1, 0, 106_001, 0));
+        Assertions.assertEquals(106_001, clock.trustedNowMillis());
+        Assertions.assertFalse(clock.isSuspect());
+        time.advance(1_000);
+        Assertions.assertEquals(107_001, clock.trustedNowMillis());
+        Assertions.assertFalse(clock.isSuspect());
+    }
+
+    @Test
+    void concurrentCorrectionCannotMakeAnOlderWallSampleLookLikeRollback() {
+        SamplingTime time = new SamplingTime(100_000);
+        LicenseClock clock = clock(time, 100_000);
+        time.afterWall = () -> {
+            time.wall += 10_000;
+            Assertions.assertEquals(110_000, clock.trustedNowMillis());
+        };
+        clock.trustedNowMillis();
+        Assertions.assertFalse(clock.isSuspect());
+        Assertions.assertEquals(110_000, clock.trustedNowMillis());
+    }
+
+    @Test
+    void repeatedSmallCorrectionsCannotResetTheExistingTolerances() {
+        FakeTime forwardTime = new FakeTime(100_000);
+        LicenseClock forward = clock(forwardTime, 100_000);
+        for (int i = 1; i <= 10; i++) {
+            forwardTime.wall += 30_000;
+            Assertions.assertEquals(forwardTime.wall, forward.trustedNowMillis());
+            Assertions.assertFalse(forward.isSuspect());
+            LicenseClock.Facts checkpoint = forward.prepareCheckpoint(1);
+            Assertions.assertNotNull(checkpoint);
+            forward.applyCommitted(checkpoint);
+        }
+        forwardTime.wall++;
+        forward.trustedNowMillis();
+        Assertions.assertTrue(forward.isSuspect());
+
+        FakeTime rollbackTime = new FakeTime(100_000);
+        LicenseClock rollback = clock(rollbackTime, 100_000);
+        for (int i = 1; i <= 5; i++) {
+            rollbackTime.wall -= 1_000;
+            Assertions.assertEquals(100_000, rollback.trustedNowMillis());
+            Assertions.assertFalse(rollback.isSuspect());
+        }
+        rollbackTime.wall--;
+        rollback.trustedNowMillis();
+        Assertions.assertTrue(rollback.isSuspect());
+    }
+
+    @Test
+    void steadyReadsKeepOneReadOfEachTimeSourceAndOnlyCorrectionsConfirmMonotonicTime() {
+        SamplingTime time = new SamplingTime(100_000);
+        LicenseClock clock = clock(time, 100_000);
+        time.monotonicReads = 0;
+        time.wallReads = 0;
+        for (int i = 0; i < 1_000; i++) {
+            time.advance(1);
+            Assertions.assertEquals(time.wall, clock.trustedNowMillis());
+        }
+        Assertions.assertEquals(1_000, time.monotonicReads);
+        Assertions.assertEquals(1_000, time.wallReads);
+        time.wall++;
+        Assertions.assertEquals(time.wall, clock.trustedNowMillis());
+        Assertions.assertEquals(1_002, time.monotonicReads);
+        Assertions.assertEquals(1_001, time.wallReads);
+    }
+
+    @Test
     void saturatedTimeAndCounterExhaustionFailClosed() {
         FakeTime time = new FakeTime(LicenseClock.MAX_MILLIS);
         LicenseClock clock = clock(time, LicenseClock.MAX_MILLIS);
@@ -248,7 +405,7 @@ class LicenseClockTest {
         return new LicenseClock(new LicenseClock.Facts(0, 0, highWater, 0), time);
     }
 
-    static final class FakeTime implements LicenseClock.TimeSource {
+    static class FakeTime implements LicenseClock.TimeSource {
         volatile long wall;
         volatile long nano;
 
@@ -268,6 +425,41 @@ class LicenseClockTest {
 
         @Override
         public long monotonicNanos() {
+            return nano;
+        }
+    }
+
+    private static final class SamplingTime extends FakeTime {
+        private long pauseBeforeWall;
+        private long pauseAfterWall;
+        private long pauseEveryWall;
+        private int wallReads;
+        private int monotonicReads;
+        private Runnable afterWall;
+
+        private SamplingTime(long wall) {
+            super(wall);
+        }
+
+        @Override
+        public long wallTimeMillis() {
+            wallReads++;
+            advance(pauseBeforeWall + pauseEveryWall);
+            pauseBeforeWall = 0;
+            long result = wall;
+            advance(pauseAfterWall);
+            pauseAfterWall = 0;
+            Runnable action = afterWall;
+            afterWall = null;
+            if (action != null) {
+                action.run();
+            }
+            return result;
+        }
+
+        @Override
+        public long monotonicNanos() {
+            monotonicReads++;
             return nano;
         }
     }

@@ -3205,8 +3205,14 @@ public class Env {
             JournalEntity entity = kv.second;
             if (entity == null) {
                 if (logId != null && forceSkipJournalIds.contains(String.valueOf(logId))) {
-                    // The skipped opcode may itself be unreadable; completeness cannot be inferred.
-                    markLicenseRecoveryIncomplete();
+                    Short skippedOperation = cursor.getSkippedOperation(logId);
+                    // Only recognized non-license, non-membership records are independent of license recovery.
+                    // Missing member facts can undercount quotas or omit a FE from compatibility checks.
+                    if (skippedOperation == null || skippedOperation < 0
+                            || OperationType.isMassdbLicenseRecoveryRelevant(skippedOperation)
+                            || !OperationType.getOpName(skippedOperation).startsWith("OP_")) {
+                        markLicenseRecoveryIncomplete();
+                    }
                     replayedJournalId.incrementAndGet();
                     String msg = "journal " + replayedJournalId + " has skipped by config force_skip_journal_id";
                     LOG.info(msg);
