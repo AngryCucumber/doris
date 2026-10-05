@@ -8,6 +8,7 @@
 package org.apache.doris.massdb.license;
 
 import org.apache.doris.catalog.Env;
+import org.apache.doris.common.Config;
 import org.apache.doris.ha.FrontendNodeType;
 import org.apache.doris.system.Backend;
 import org.apache.doris.system.Frontend;
@@ -15,16 +16,28 @@ import org.apache.doris.system.SystemInfoService;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.google.common.base.Strings;
+import com.sun.net.httpserver.HttpServer;
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.Logger;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Property;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
 class LicenseFeCompatibilityTest {
@@ -195,6 +208,189 @@ class LicenseFeCompatibilityTest {
         Assertions.assertThrows(IOException.class, () -> LicenseFeCompatibility.managementPorts(new String[] {
                 "127.0.0.2:9010=8030", "127.0.0.2:9010=8130"}));
         Assertions.assertThrows(IOException.class, () -> LicenseFeCompatibility.managementPorts(new String[1025]));
+    }
+
+    @Test
+    void failedRemoteProofNamesMemberAndFieldWithoutLoggingRemoteValues() throws Exception {
+        try (ProbeFixture probe = new ProbeFixture(); LogCapture logs = new LogCapture()) {
+            Assertions.assertTrue(probe.check(new LicenseFeCompatibility.DiagnosticLimiter()));
+            for (String field : new String[] {"package_sha256", "trust_sha256", "fe_node_name", "module"}) {
+                ObjectNode altered = probe.capability.deepCopy();
+                altered.put(field, "private.payload.signature");
+                probe.respond(200, altered.toString());
+                Assertions.assertFalse(probe.check(new LicenseFeCompatibility.DiagnosticLimiter()));
+                String message = logs.nextMessage();
+                Assertions.assertTrue(message.contains("node=remote-fe, host=127.0.0.1, editLogPort=9110"));
+                Assertions.assertTrue(message.contains("reason=CAPABILITY_MISMATCH, field=" + field));
+                Assertions.assertFalse(message.contains(PACKAGE));
+                Assertions.assertFalse(message.contains(TRUST));
+            }
+        }
+    }
+
+    @Test
+    void httpAndMalformedCapabilityFailuresHaveSafeReasons() throws Exception {
+        try (ProbeFixture probe = new ProbeFixture(); LogCapture logs = new LogCapture()) {
+            probe.respond(403, "private.payload.signature provider-secret-detail cluster-secret-material");
+            Assertions.assertFalse(probe.check(new LicenseFeCompatibility.DiagnosticLimiter()));
+            String forbidden = logs.nextMessage();
+            Assertions.assertTrue(forbidden.contains("reason=HTTP_STATUS"));
+            Assertions.assertTrue(forbidden.contains("httpStatus=403"));
+            probe.respond(200, "{\"secret\":\"private.payload.signature\",provider-secret-detail}");
+            Assertions.assertFalse(probe.check(new LicenseFeCompatibility.DiagnosticLimiter()));
+            Assertions.assertTrue(logs.nextMessage().contains("reason=INVALID_CAPABILITY_JSON"));
+            probe.respond(200, Strings.repeat("private.payload.signature", 3000));
+            Assertions.assertFalse(probe.check(new LicenseFeCompatibility.DiagnosticLimiter()));
+            Assertions.assertTrue(logs.nextMessage().contains("reason=CAPABILITY_TOO_LARGE"));
+        }
+    }
+
+    @Test
+    void unavailableRemoteProofIsDiagnosedWithoutProviderException() throws Exception {
+        try (ProbeFixture probe = new ProbeFixture(); LogCapture logs = new LogCapture()) {
+            probe.server.stop(0);
+            Assertions.assertFalse(probe.check(new LicenseFeCompatibility.DiagnosticLimiter()));
+            String message = logs.nextMessage();
+            Assertions.assertTrue(message.contains("node=remote-fe"));
+            Assertions.assertTrue(message.contains("reason=PROBE_UNAVAILABLE"));
+            Assertions.assertFalse(message.contains("Connection refused"));
+        }
+    }
+
+    @Test
+    void repeatingFailedChecksShareOneBoundedWarningStream() throws Exception {
+        try (ProbeFixture probe = new ProbeFixture(); LogCapture logs = new LogCapture()) {
+            LicenseFeCompatibility.DiagnosticLimiter limiter = new LicenseFeCompatibility.DiagnosticLimiter();
+            probe.respond(403, "private.payload.signature");
+            for (int attempt = 0; attempt < 3; attempt++) {
+                Assertions.assertFalse(probe.check(limiter));
+            }
+            Assertions.assertTrue(logs.nextMessage().contains("reason=HTTP_STATUS"));
+            Assertions.assertEquals(1, logs.events.size());
+        }
+    }
+
+    @Test
+    void diagnosticLimitUsesElapsedTimeAcrossNanoTimeWrap() {
+        LicenseFeCompatibility.DiagnosticLimiter limiter = new LicenseFeCompatibility.DiagnosticLimiter();
+        long start = Long.MAX_VALUE - TimeUnit.SECONDS.toNanos(30);
+        Assertions.assertTrue(limiter.acquire(start));
+        Assertions.assertFalse(limiter.acquire(start + 1));
+        Assertions.assertFalse(limiter.acquire(start + TimeUnit.SECONDS.toNanos(60) - 1));
+        Assertions.assertTrue(limiter.acquire(start + TimeUnit.SECONDS.toNanos(60)));
+    }
+
+    @Test
+    void localFailureIdentityCannotInjectMultilineLog() throws Exception {
+        Env env = Mockito.mock(Env.class);
+        Mockito.when(env.getNodeName()).thenReturn("local\r\n" + Strings.repeat("x", 200));
+        Map<String, Object> local = capability(TRUST);
+        local.put("package_sha256", null);
+        try (LogCapture logs = new LogCapture()) {
+            Assertions.assertFalse(LicenseFeCompatibility.checkAll(env, local,
+                    new LicenseFeCompatibility.DiagnosticLimiter()));
+            String message = logs.nextMessage();
+            Assertions.assertTrue(message.contains("reason=LOCAL_PACKAGE_UNAVAILABLE"));
+            Assertions.assertTrue(message.contains("node=local__"));
+            Assertions.assertFalse(message.contains("\r"));
+            Assertions.assertFalse(message.contains("\n"));
+            Assertions.assertFalse(message.contains(Strings.repeat("x", 129)));
+        }
+    }
+
+    private static final class ProbeFixture implements AutoCloseable {
+        private final boolean originalHttps = Config.enable_https;
+        private final String[] originalPorts = Config.massdb_license_fe_management_ports;
+        private final HttpServer server;
+        private final Env env = Mockito.mock(Env.class);
+        private final Map<String, Object> local = capability(TRUST);
+        private final ObjectNode capability = JSON.valueToTree(local);
+        private volatile int status = 200;
+        private volatile byte[] body;
+
+        private ProbeFixture() throws IOException {
+            capability.put("fe_node_name", "remote-fe");
+            capability.put("fe_host", "127.0.0.1");
+            capability.put("edit_log_port", 9110);
+            respond(200, capability.toString());
+            server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            server.createContext("/api/license/capability", exchange -> {
+                byte[] response = body;
+                try {
+                    exchange.sendResponseHeaders(status, response.length);
+                    exchange.getResponseBody().write(response);
+                } finally {
+                    exchange.close();
+                }
+            });
+            server.start();
+            Config.enable_https = false;
+            Config.massdb_license_fe_management_ports = new String[] {
+                    "127.0.0.1:9110=" + server.getAddress().getPort()};
+            Mockito.when(env.getNodeName()).thenReturn("fe-member");
+            Mockito.when(env.getToken()).thenReturn("cluster-secret-material");
+            Mockito.when(env.getFrontends(null)).thenReturn(Arrays.asList(member(),
+                    new Frontend(FrontendNodeType.FOLLOWER, "remote-fe", "127.0.0.1", 9110)));
+        }
+
+        private void respond(int responseStatus, String responseBody) {
+            status = responseStatus;
+            body = responseBody.getBytes(StandardCharsets.UTF_8);
+        }
+
+        private boolean check(LicenseFeCompatibility.DiagnosticLimiter limiter) {
+            return LicenseFeCompatibility.checkAll(env, local, limiter);
+        }
+
+        @Override
+        public void close() {
+            server.stop(0);
+            Config.enable_https = originalHttps;
+            Config.massdb_license_fe_management_ports = originalPorts;
+        }
+    }
+
+    private static final class LogCapture implements AutoCloseable {
+        private final List<LogEvent> events = new CopyOnWriteArrayList<>();
+        private final Logger logger = (Logger) LogManager.getLogger(LicenseFeCompatibility.class);
+        private final Level originalLevel = logger.getLevel();
+        private final AbstractAppender appender = new AbstractAppender("license-fe-proof", null, null, false,
+                Property.EMPTY_ARRAY) {
+            @Override
+            public void append(LogEvent event) {
+                events.add(event.toImmutable());
+            }
+        };
+        private int consumed;
+
+        private LogCapture() {
+            appender.start();
+            logger.addAppender(appender);
+            logger.setLevel(Level.WARN);
+        }
+
+        private String nextMessage() throws InterruptedException {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (events.size() <= consumed && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            Assertions.assertTrue(events.size() > consumed, "Expected a compatibility diagnostic");
+            LogEvent event = events.get(consumed++);
+            Assertions.assertNull(event.getThrown());
+            String message = event.getMessage().getFormattedMessage();
+            for (String secret : new String[] {"private.payload.signature", "provider-secret-detail",
+                    "cluster-secret-material"}) {
+                Assertions.assertFalse(message.contains(secret));
+            }
+            return message;
+        }
+
+        @Override
+        public void close() {
+            logger.removeAppender(appender);
+            logger.setLevel(originalLevel);
+            appender.stop();
+        }
     }
 
     private static Frontend member() {

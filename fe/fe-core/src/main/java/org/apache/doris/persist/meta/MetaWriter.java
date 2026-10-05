@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.persist.meta;
 
@@ -67,8 +68,6 @@ import java.util.List;
 public class MetaWriter {
     private static final Logger LOG = LogManager.getLogger(MetaWriter.class);
 
-    public static MetaWriter writer = new MetaWriter();
-
     private interface Delegate {
         long doWork(String name, WriteMethod method) throws IOException;
     }
@@ -94,7 +93,13 @@ public class MetaWriter {
     }
 
     public static void write(File imageFile, Env env) throws IOException {
-        // save image does not need any lock. because only checkpoint thread will call this method.
+        write(imageFile, env, env.getReplayedJournalId());
+    }
+
+    public static void write(File imageFile, Env env, long replayedJournalId) throws IOException {
+        // Checkpoint owns an isolated Env; serving dumps establish their snapshot boundary before entering.
+        // Keep the delegate local because checkpoint and HTTP dump can serialize different images concurrently.
+        MetaWriter writer = new MetaWriter();
         LOG.info("start to save image to {}. is ckpt: {}",
                 imageFile.getAbsolutePath(), Env.isCheckpointThread());
         final Reference<Long> checksum = new Reference<>(0L);
@@ -106,7 +111,6 @@ public class MetaWriter {
         try (CountingDataOutputStream dos = new CountingDataOutputStream(new BufferedOutputStream(imageFileOut),
                 startPosition)) {
             writer.setDelegate(dos, metaIndices);
-            long replayedJournalId = env.getReplayedJournalId();
             // 1. write header first
             checksum.setRef(
                     writer.doWork("header", () -> env.saveHeader(dos, replayedJournalId, checksum.getRef())));

@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -122,6 +123,8 @@ public final class LicenseManager implements AutoCloseable {
     private volatile LicensePersistRecord committedPendingApply;
     private ScheduledExecutorService scheduler;
     private long lastMaintenanceWarningNanos = Long.MIN_VALUE;
+    private long lastReportedClockEpoch = -1;
+    private boolean lastReportedClockSuspect;
 
     public LicenseManager(Host host, boolean checkpoint) {
         this(host, checkpoint, LicenseClock.SYSTEM);
@@ -623,6 +626,8 @@ public final class LicenseManager implements AutoCloseable {
             }
             Thread.currentThread().interrupt();
             throw new DdlException("LICENSE_MEMBERSHIP_COMMIT_UNCERTAIN", ErrorCode.ERR_LICENSE_NOT_READY);
+        } catch (CancellationException e) {
+            throw new DdlException("LICENSE_NOT_READY", ErrorCode.ERR_LICENSE_NOT_READY);
         } catch (ExecutionException e) {
             if (e.getCause() instanceof DdlException) {
                 throw (DdlException) e.getCause();
@@ -634,6 +639,45 @@ public final class LicenseManager implements AutoCloseable {
                 throw (Error) e.getCause();
             }
             throw new DdlException("LICENSE_MEMBERSHIP_COMMIT_UNCERTAIN", ErrorCode.ERR_LICENSE_NOT_READY);
+        }
+    }
+
+    /**
+     * Serialize a serving image dump with license/member commits. Enter before acquiring Env or metadata locks.
+     * The callback holds its own replay/snapshot locks; no Manager monitor is held across image I/O.
+     */
+    public String runImageSnapshot(Callable<String> writer) throws IOException {
+        if (closed || checkpoint) {
+            throw new IOException("License image snapshot is unavailable");
+        }
+        final Future<String> future;
+        try {
+            future = mutations.submit(() -> {
+                if (closed || uncertainCommit != null || committedPendingApply != null) {
+                    throw new IOException("License image snapshot has an unconfirmed or unapplied commit");
+                }
+                return writer.call();
+            });
+        } catch (RejectedExecutionException e) {
+            throw new IOException("License image snapshot queue is unavailable");
+        }
+        try {
+            return future.get();
+        } catch (InterruptedException e) {
+            future.cancel(false);
+            if (future instanceof Runnable) {
+                mutations.remove((Runnable) future);
+            }
+            Thread.currentThread().interrupt();
+            throw new IOException("License image snapshot completion is unavailable");
+        } catch (CancellationException e) {
+            throw new IOException("License image snapshot was cancelled");
+        } catch (ExecutionException e) {
+            if (e.getCause() instanceof Error) {
+                throw (Error) e.getCause();
+            }
+            // Snapshot implementations may carry metadata/certificate text in their failure message.
+            throw new IOException("License image snapshot failed");
         }
     }
 
@@ -689,6 +733,8 @@ public final class LicenseManager implements AutoCloseable {
             }
             Thread.currentThread().interrupt();
             throw failure("LICENSE_COMMIT_UNCERTAIN", 503, "UNKNOWN", fingerprint);
+        } catch (CancellationException e) {
+            throw failure("LICENSE_MANAGEMENT_UNAVAILABLE", 503, "NOT_SUBMITTED", fingerprint);
         } catch (ExecutionException e) {
             if (e.getCause() instanceof LicenseManagementException) {
                 LicenseManagementException failure = (LicenseManagementException) e.getCause();
@@ -842,6 +888,9 @@ public final class LicenseManager implements AutoCloseable {
         trustLoaded = true;
         String path = host.trustStorePath();
         if (path == null || path.isEmpty()) {
+            if (!checkpoint) {
+                LOG.warn("License trust is not configured; set massdb_license_trust_store_file and restart this FE");
+            }
             return;
         }
         try (InputStream input = Files.newInputStream(Paths.get(path))) {
@@ -860,6 +909,13 @@ public final class LicenseManager implements AutoCloseable {
         } catch (IOException | LicenseException | RuntimeException e) {
             // Management remains available for diagnostics; no fallback key or implicit entitlement.
             trustDigest = null;
+            if (!checkpoint) {
+                String reason = e instanceof LicenseException
+                        ? ((LicenseException) e).getErrorCode().name() : "TRUST_STORE_LOAD_FAILED";
+                LOG.warn("License trust loading failed: reason={}, failure_type={}; "
+                                + "check massdb_license_trust_store_file and restart this FE",
+                        reason, e.getClass().getSimpleName());
+            }
         }
     }
 
@@ -1035,6 +1091,7 @@ public final class LicenseManager implements AutoCloseable {
     private void maintenance(InitializationProof proof) {
         try {
             publish();
+            reportClockState();
             if (!leader || !host.isMaster() || recoveryIncomplete || uncertainCommit != null) {
                 return;
             }
@@ -1069,6 +1126,29 @@ public final class LicenseManager implements AutoCloseable {
             // Never log a certificate/provider message. Retry only from the current committed facts.
             warnMaintenance(e);
         }
+    }
+
+    /** Observe transitions on the existing background cadence, never log from the query clock. */
+    private synchronized void reportClockState() {
+        LicenseClock current = clock;
+        if (current == null) {
+            return;
+        }
+        current.trustedNowMillis();
+        long epoch = current.getClockEpoch();
+        boolean suspect = current.isSuspect();
+        if (epoch == lastReportedClockEpoch && suspect == lastReportedClockSuspect) {
+            return;
+        }
+        if (suspect) {
+            LOG.warn("License clock is CLOCK_SUSPECT: clock_epoch={}, applied_version={}, leader={}; "
+                            + "verify FE time and use the signed clock repair procedure",
+                    epoch, appliedVersion, leader && host.isMaster());
+        } else if (lastReportedClockSuspect) {
+            LOG.info("License clock is no longer suspect: clock_epoch={}, applied_version={}", epoch, appliedVersion);
+        }
+        lastReportedClockEpoch = epoch;
+        lastReportedClockSuspect = suspect;
     }
 
     private synchronized void warnMaintenance(Exception error) {
@@ -1115,8 +1195,17 @@ public final class LicenseManager implements AutoCloseable {
             }
         }
         if (verification != null) {
-            verification.shutdownNow();
-            mutations.shutdownNow();
+            cancelQueued(verification);
+            cancelQueued(mutations);
+        }
+    }
+
+    private static void cancelQueued(ThreadPoolExecutor executor) {
+        // shutdownNow removes queued FutureTasks without completing them; unblock waiting management callers.
+        for (Runnable queued : executor.shutdownNow()) {
+            if (queued instanceof Future<?>) {
+                ((Future<?>) queued).cancel(false);
+            }
         }
     }
 }

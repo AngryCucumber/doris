@@ -16,16 +16,20 @@ import org.apache.doris.system.Frontend;
 
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.net.HostAndPort;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.Proxy;
+import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -44,9 +48,11 @@ import java.util.concurrent.TimeUnit;
 
 /** FE-only, management-time proof of the running package and installed public trust. */
 public final class LicenseFeCompatibility {
+    private static final Logger LOG = LogManager.getLogger(LicenseFeCompatibility.class);
     public static final String CLUSTER_TOKEN_HEADER = "X-MassDB-License-Cluster-Token";
     private static final int MAX_CAPABILITY_BYTES = 64 * 1024;
     private static final long PROBE_BUDGET_NANOS = TimeUnit.SECONDS.toNanos(10);
+    private static final DiagnosticLimiter DIAGNOSTICS = new DiagnosticLimiter();
     private static final List<Integer> OPCODES = Arrays.asList(6200, 6201, 6202, 6203, 6204, 6205);
     private static final ObjectMapper JSON = new ObjectMapper(JsonFactory.builder()
             .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build());
@@ -98,23 +104,30 @@ public final class LicenseFeCompatibility {
     }
 
     public static boolean checkAll(Env env, Map<String, Object> local) {
-        if (!isDigest(local.get("package_sha256")) || env.getNodeName() == null) {
-            return false;
+        return checkAll(env, local, DIAGNOSTICS);
+    }
+
+    static boolean checkAll(Env env, Map<String, Object> local, DiagnosticLimiter diagnostics) {
+        if (!isDigest(local.get("package_sha256"))) {
+            return reject(env, null, "LOCAL_PACKAGE_UNAVAILABLE", "package_sha256", 0, diagnostics);
+        }
+        if (env.getNodeName() == null) {
+            return reject(env, null, "LOCAL_IDENTITY_UNAVAILABLE", "fe_node_name", 0, diagnostics);
         }
         Object trustDigest = local.get("trust_sha256");
         if (trustDigest != null && !isDigest(trustDigest)) {
-            return false;
+            return reject(env, null, "LOCAL_TRUST_INVALID", "trust_sha256", 0, diagnostics);
         }
         List<Frontend> frontends = env.getFrontends(null);
         List<String> before = frontendIdentities(frontends);
         if (frontends.isEmpty()) {
-            return false;
+            return reject(env, null, "EMPTY_MEMBERSHIP", "membership", 0, diagnostics);
         }
         Map<String, Integer> ports;
         try {
             ports = managementPorts(Config.massdb_license_fe_management_ports);
         } catch (IOException e) {
-            return false;
+            return reject(env, null, "MANAGEMENT_PORTS_INVALID", "massdb_license_fe_management_ports", 0, diagnostics);
         }
         Map<String, Integer> hostCounts = new LinkedHashMap<>();
         for (Frontend frontend : frontends) {
@@ -125,8 +138,9 @@ public final class LicenseFeCompatibility {
         for (Frontend frontend : frontends) {
             if (frontend.getNodeName().equals(env.getNodeName())) {
                 foundSelf = true;
-                if (!matches(JSON.valueToTree(local), frontend, local, false)) {
-                    return false;
+                String mismatch = mismatchField(JSON.valueToTree(local), frontend, local, false);
+                if (mismatch != null) {
+                    return reject(env, frontend, "CAPABILITY_MISMATCH", mismatch, 0, diagnostics);
                 }
                 continue;
             }
@@ -136,45 +150,139 @@ public final class LicenseFeCompatibility {
                 // The legacy heartbeat treats all same-host FE identities as self. The fresh endpoint proof
                 // remains authoritative for these identities, including their distinct edit-log ports.
                 boolean reliableHeartbeat = hostCounts.get(frontend.getHost()) == 1;
-                if (!matches(probe(frontend, env.getToken(), deadline, port), frontend, local, reliableHeartbeat)) {
-                    return false;
+                String mismatch = mismatchField(probe(frontend, env.getToken(), deadline, port), frontend,
+                        local, reliableHeartbeat);
+                if (mismatch != null) {
+                    return reject(env, frontend, "CAPABILITY_MISMATCH", mismatch, 0, diagnostics);
                 }
+            } catch (ProbeFailure e) {
+                return reject(env, frontend, e.reason, "probe", e.httpStatus, diagnostics);
+            } catch (SocketTimeoutException e) {
+                return reject(env, frontend, "PROBE_TIMEOUT", "probe", 0, diagnostics);
+            } catch (JsonProcessingException e) {
+                return reject(env, frontend, "INVALID_CAPABILITY_JSON", "response", 0, diagnostics);
             } catch (IOException | RuntimeException e) {
                 // An old FE, missing trust, offline member or authentication failure cannot prove compatibility.
-                return false;
+                return reject(env, frontend, "PROBE_UNAVAILABLE", "probe", 0, diagnostics);
             }
         }
-        return foundSelf && before.equals(frontendIdentities(env.getFrontends(null)));
+        if (!foundSelf) {
+            return reject(env, null, "SELF_NOT_REGISTERED", "membership", 0, diagnostics);
+        }
+        return before.equals(frontendIdentities(env.getFrontends(null)))
+                || reject(env, null, "MEMBERSHIP_CHANGED", "membership", 0, diagnostics);
     }
 
     static boolean matches(JsonNode capability, Frontend frontend, Map<String, Object> local,
             boolean checkHeartbeatProcess) {
-        if (capability == null || !capability.isObject()
-                || !capability.path("schema_version").isIntegralNumber()
+        return mismatchField(capability, frontend, local, checkHeartbeatProcess) == null;
+    }
+
+    private static String mismatchField(JsonNode capability, Frontend frontend, Map<String, Object> local,
+            boolean checkHeartbeatProcess) {
+        if (capability == null || !capability.isObject()) {
+            return "response";
+        }
+        if (!capability.path("schema_version").isIntegralNumber()
                 || !capability.path("schema_version").canConvertToInt()
-                || capability.path("schema_version").asInt() != 1
-                || !capability.path("format_version").isIntegralNumber()
+                || capability.path("schema_version").asInt() != 1) {
+            return "schema_version";
+        }
+        if (!capability.path("format_version").isIntegralNumber()
                 || !capability.path("format_version").canConvertToInt()
-                || capability.path("format_version").asInt() != 1
-                || !"massdbLicenseV1".equals(capability.path("module").asText())
-                || !JSON.valueToTree(OPCODES).equals(capability.path("journal_opcodes"))
-                || !frontend.getNodeName().equals(capability.path("fe_node_name").asText())
-                || !frontend.getHost().equals(capability.path("fe_host").asText())
-                || !capability.path("edit_log_port").isIntegralNumber()
+                || capability.path("format_version").asInt() != 1) {
+            return "format_version";
+        }
+        if (!"massdbLicenseV1".equals(capability.path("module").asText())) {
+            return "module";
+        }
+        if (!JSON.valueToTree(OPCODES).equals(capability.path("journal_opcodes"))) {
+            return "journal_opcodes";
+        }
+        if (!frontend.getNodeName().equals(capability.path("fe_node_name").asText())) {
+            return "fe_node_name";
+        }
+        if (!frontend.getHost().equals(capability.path("fe_host").asText())) {
+            return "fe_host";
+        }
+        if (!capability.path("edit_log_port").isIntegralNumber()
                 || !capability.path("edit_log_port").canConvertToInt()
-                || frontend.getEditLogPort() != capability.path("edit_log_port").asInt()
-                || !capability.path("process_uuid").isIntegralNumber()
+                || frontend.getEditLogPort() != capability.path("edit_log_port").asInt()) {
+            return "edit_log_port";
+        }
+        if (!capability.path("process_uuid").isIntegralNumber()
                 || !capability.path("process_uuid").canConvertToLong()
-                || capability.path("process_uuid").asLong() == 0
-                || !Objects.equals(local.get("package_sha256"), nullableText(capability.get("package_sha256")))
-                || !capability.has("trust_sha256")
-                || !Objects.equals(local.get("trust_sha256"), nullableText(capability.get("trust_sha256")))
-                || !capability.path("trust_ready").isBoolean()
+                || capability.path("process_uuid").asLong() == 0) {
+            return "process_uuid";
+        }
+        if (!Objects.equals(local.get("package_sha256"), nullableText(capability.get("package_sha256")))) {
+            return "package_sha256";
+        }
+        if (!capability.has("trust_sha256")
+                || !Objects.equals(local.get("trust_sha256"), nullableText(capability.get("trust_sha256")))) {
+            return "trust_sha256";
+        }
+        if (!capability.path("trust_ready").isBoolean()
                 || capability.path("trust_ready").asBoolean() != (local.get("trust_sha256") != null)) {
-            return false;
+            return "trust_ready";
         }
         return !checkHeartbeatProcess || frontend.getProcessUUID() == 0
-                || frontend.getProcessUUID() == capability.path("process_uuid").asLong();
+                || frontend.getProcessUUID() == capability.path("process_uuid").asLong() ? null : "process_uuid";
+    }
+
+    private static boolean reject(Env env, Frontend frontend, String reason, String field, int httpStatus,
+            DiagnosticLimiter diagnostics) {
+        if (diagnostics.acquire(System.nanoTime())) {
+            String node = frontend == null ? env.getNodeName() : frontend.getNodeName();
+            String host = frontend == null ? env.getSelfNode() == null ? null : env.getSelfNode().getHost()
+                    : frontend.getHost();
+            int port = frontend == null ? env.getSelfNode() == null ? 0 : env.getSelfNode().getPort()
+                    : frontend.getEditLogPort();
+            // Never include a capability value, cluster token, HTTP body or exception/provider message.
+            LOG.warn("License FE compatibility proof failed: node={}, host={}, editLogPort={}, "
+                            + "reason={}, field={}, httpStatus={}",
+                    safeIdentity(node), safeIdentity(host), port, reason, field, httpStatus);
+        }
+        return false;
+    }
+
+    private static String safeIdentity(String value) {
+        if (value == null) {
+            return "unavailable";
+        }
+        StringBuilder safe = new StringBuilder(Math.min(value.length(), 128));
+        for (int i = 0; i < value.length() && i < 128; i++) {
+            char c = value.charAt(i);
+            safe.append(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+                    || c == '_' || c == '-' || c == '.' || c == ':' || c == '%' ? c : '_');
+        }
+        return safe.toString();
+    }
+
+    /** A single bounded warning stream per FE process; only management-time failures enter this lock. */
+    static final class DiagnosticLimiter {
+        private boolean emitted;
+        private long lastNanos;
+
+        synchronized boolean acquire(long nowNanos) {
+            if (emitted && nowNanos - lastNanos < TimeUnit.SECONDS.toNanos(60)) {
+                return false;
+            }
+            emitted = true;
+            lastNanos = nowNanos;
+            return true;
+        }
+    }
+
+    private static final class ProbeFailure extends IOException {
+        private final String reason;
+        private final int httpStatus;
+
+        private ProbeFailure(String reason, int httpStatus) {
+            super(reason);
+            this.reason = reason;
+            this.httpStatus = httpStatus;
+        }
     }
 
     static Map<String, Integer> managementPorts(String[] entries) throws IOException {
@@ -225,8 +333,11 @@ public final class LicenseFeCompatibility {
 
     private static JsonNode probe(Frontend frontend, String token, long deadline, int port) throws IOException {
         long remainingMillis = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
-        if (remainingMillis <= 0 || token == null || token.isEmpty()) {
-            throw new IOException("License compatibility proof unavailable");
+        if (remainingMillis <= 0) {
+            throw new ProbeFailure("PROBE_DEADLINE", 0);
+        }
+        if (token == null || token.isEmpty()) {
+            throw new ProbeFailure("CLUSTER_TOKEN_UNAVAILABLE", 0);
         }
         String scheme = Config.enable_https ? "https" : "http";
         URL url = new URL(scheme + "://" + NetUtils.getHostPortInAccessibleFormat(frontend.getHost(), port)
@@ -238,15 +349,18 @@ public final class LicenseFeCompatibility {
             connection.setReadTimeout((int) Math.min(2000, remainingMillis));
             connection.setRequestProperty(CLUSTER_TOKEN_HEADER, token);
             connection.setRequestProperty("Accept", "application/json");
-            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK
-                    || connection.getContentLengthLong() > MAX_CAPABILITY_BYTES) {
-                throw new IOException("License compatibility proof unavailable");
+            int status = connection.getResponseCode();
+            if (status != HttpURLConnection.HTTP_OK) {
+                throw new ProbeFailure("HTTP_STATUS", status);
+            }
+            if (connection.getContentLengthLong() > MAX_CAPABILITY_BYTES) {
+                throw new ProbeFailure("CAPABILITY_TOO_LARGE", status);
             }
             try (InputStream input = connection.getInputStream()) {
                 try (JsonParser parser = JSON.createParser(readBounded(input, deadline))) {
                     JsonNode result = JSON.readTree(parser);
                     if (parser.nextToken() != null) {
-                        throw new IOException("Trailing license capability content");
+                        throw new ProbeFailure("INVALID_CAPABILITY_JSON", 0);
                     }
                     return result;
                 }
@@ -261,8 +375,11 @@ public final class LicenseFeCompatibility {
         byte[] buffer = new byte[4096];
         int read;
         while ((read = input.read(buffer)) != -1) {
-            if (System.nanoTime() > deadline || output.size() + read > MAX_CAPABILITY_BYTES) {
-                throw new IOException("License compatibility proof exceeds resource limit");
+            if (System.nanoTime() > deadline) {
+                throw new ProbeFailure("PROBE_DEADLINE", 0);
+            }
+            if (output.size() + read > MAX_CAPABILITY_BYTES) {
+                throw new ProbeFailure("CAPABILITY_TOO_LARGE", 0);
             }
             output.write(buffer, 0, read);
         }

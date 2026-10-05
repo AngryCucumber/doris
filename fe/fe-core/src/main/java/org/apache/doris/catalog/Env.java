@@ -1715,15 +1715,7 @@ public class Env {
 
             toMasterProgress = "replay journal";
             long replayStartTime = System.currentTimeMillis();
-            // Empty storage is independent evidence; an absent license module alone is not a new cluster.
-            long licenseReplayTarget = getMaxJournalId();
-            boolean pristineLicenseBootstrap = isFirstTimeStartUp && replayedJournalId.get() == 0
-                    && licenseReplayTarget == 0;
-            // replay journals. -1 means replay all the journals larger than current journal id.
-            replayJournal(-1);
-            if (licenseReplayTarget < 0 || replayedJournalId.get() < licenseReplayTarget) {
-                markLicenseRecoveryIncomplete();
-            }
+            boolean pristineLicenseBootstrap = replayJournalsBeforeMaster();
             long replayEndTime = System.currentTimeMillis();
             LOG.info("finish replay in " + (replayEndTime - replayStartTime) + " msec");
 
@@ -1870,6 +1862,26 @@ public class Env {
             LOG.error("failed to transfer to master. progress: {}", toMasterProgress, e);
             System.exit(-1);
         }
+    }
+
+    private boolean replayJournalsBeforeMaster() throws IOException {
+        // Freeze the fenced journal boundary. A second max lookup can observe a different transient tail.
+        long target = getMaxJournalId();
+        if (target < 0 || replayedJournalId.get() > target) {
+            throw new IOException("Cannot establish the journal boundary before becoming master");
+        }
+        // Empty storage is independent evidence; an absent license module alone is not a new cluster.
+        boolean pristineLicenseBootstrap = isFirstTimeStartUp && replayedJournalId.get() == 0 && target == 0;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            replayJournal(target);
+            if (replayedJournalId.get() == target) {
+                return pristineLicenseBootstrap;
+            }
+        }
+        // An unavailable cursor/tail is not evidence that authorization metadata was lost. Abort promotion
+        // through its existing failure path; only actual skipped or invalid facts persist incomplete recovery.
+        throw new IOException("Journal replay did not reach the master boundary " + target
+                + "; replayed " + replayedJournalId.get());
     }
 
     /*
@@ -2670,7 +2682,7 @@ public class Env {
         if (!curFile.createNewFile()) {
             throw new IOException(curFile.getName() + " can not be created.");
         }
-        MetaWriter.write(curFile, this);
+        MetaWriter.write(curFile, this, replayedJournalId);
     }
 
     public long saveHeader(CountingDataOutputStream dos, long replayedJournalId, long checksum) throws IOException {
@@ -6580,6 +6592,17 @@ public class Env {
     }
 
     public String dumpImage() {
+        try {
+            // Enter the mutation queue before taking Env or metadata locks: member mutations need them too.
+            return licenseManager.runImageSnapshot(this::dumpImageWithStableLicenseState);
+        } catch (IOException e) {
+            LOG.warn("failed to establish a consistent license state for image dump", e);
+            return null;
+        }
+    }
+
+    private synchronized String dumpImageWithStableLicenseState() {
+        // The mutation queue excludes serving-master license commits. This monitor excludes follower replay.
         LOG.info("begin to dump meta data");
         String dumpFilePath;
         List<Database> databases = Lists.newArrayList();
@@ -6605,7 +6628,11 @@ public class Env {
             LOG.info("acquired all the tables' read lock.");
 
             LOG.info("acquired all jobs' read lock.");
-            long journalId = getMaxJournalId();
+            long journalId = licenseLeadership ? getMaxJournalId() : getReplayedJournalId();
+            if (journalId < 0) {
+                LOG.warn("cannot dump image without a confirmed journal boundary");
+                return null;
+            }
             File dumpFile = new File(Config.meta_dir, "image." + journalId);
             if (Config.enable_check_compatibility_mode) {
                 dumpFile = new File(imageDir, "image." + journalId);

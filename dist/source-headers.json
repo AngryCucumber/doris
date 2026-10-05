@@ -193,7 +193,9 @@
     "ui/src/pages/license/model.ts",
     "ui/src/utils/session-events.ts",
     "ui/scripts/license.test.cjs",
-    "fe/fe-core/src/test/java/org/apache/doris/httpv2/restv2/LicenseExternalHttpAdmissionTest.java"
+    "fe/fe-core/src/test/java/org/apache/doris/httpv2/restv2/LicenseExternalHttpAdmissionTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicensePersistRecordTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseManagerDiagnosticsTest.java"
   ],
   "apache": [
     "docker-compose/docker-compose.be-host.yml",
@@ -631,6 +633,10 @@
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
     },
     "fe/fe-core/src/main/java/org/apache/doris/persist/OperationType.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/persist/meta/MetaWriter.java": {
       "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
     }

@@ -203,6 +203,8 @@ header:
     - "ui/src/pages/license/model.ts"
     - "ui/src/utils/session-events.ts"
     - "ui/scripts/license.test.cjs"
+    - "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicensePersistRecordTest.java"
+    - "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseManagerDiagnosticsTest.java"
     # END MassDB separately checked headers
     # License texts; their contents and npm references are checked separately.
     - "LICENSE-MASSDB.txt"

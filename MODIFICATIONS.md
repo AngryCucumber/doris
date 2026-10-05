@@ -4,6 +4,34 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License follow-up recovery corrections (2026-10-05)
+
+- Freeze the journal boundary before master promotion and retry short replay
+  within a bounded attempt count. Abort incomplete promotion without persisting
+  a false license-recovery flag; retain actual skipped/invalid fact protection.
+- Serialize serving image dumps with license/member mutations and replay. Pass
+  their explicit journal boundary to `MetaWriter`; give each image write its own
+  delegate to prevent concurrent checkpoint/dump index corruption. Refuse dumps
+  while a license commit is uncertain or unapplied, and cancel queued management
+  futures when closing the manager.
+- Compare persisted integer values independently of Jackson IntNode/LongNode
+  representation, retaining structural equality and strict version continuity.
+  Cache each fully validated immutable clock state within its own record;
+  cold reads and new records continue complete validation.
+- Add safe trust-loading, compatibility-field and clock-transition diagnostics
+  on management/background paths. Bound warnings and exclude signed material,
+  tokens, remote values and exception messages. Keep query paths, BE, protocols,
+  persisted formats, clock thresholds, admission and quota policy unchanged.
+- Record audit corrections, known recovery/upgrade limits and qualified
+  performance evidence in `docs/license-followup-review-20261005.md`.
+- Pass 350 tests across 34 FE suites on JDK 17.0.4, FE Maven packaging,
+  Checkstyle, source-header release checks and whitespace validation. Verify
+  SQL/HTTP, an actual image dump and same-image startup recovery with the tested
+  artifacts in one owned FE, then stop every task and remove the test install.
+  Preserve failed fixtures and distinguish these results from multi-FE failures
+  or performance equivalence. Package the five FE class changes with unchanged
+  common JAR, BE, public trust and UI contents.
+
 ## License review corrections (2026-10-04)
 
 - Publish recovery completion once instead of rebuilding membership on every

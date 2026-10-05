@@ -25,6 +25,7 @@ import org.apache.doris.persist.meta.MetaHeader;
 import org.apache.doris.persist.meta.MetaIndex;
 import org.apache.doris.persist.meta.MetaPersistMethod;
 import org.apache.doris.persist.meta.MetaReader;
+import org.apache.doris.persist.meta.MetaWriter;
 import org.apache.doris.persist.meta.PersistMetaModules;
 
 import org.junit.jupiter.api.Assertions;
@@ -40,11 +41,19 @@ import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.zip.CRC32;
 
 class LicenseEnvPersistenceTest {
@@ -224,6 +233,109 @@ class LicenseEnvPersistenceTest {
         }.getSkippedOperation(1));
     }
 
+    @Test
+    void promotionRetriesAnUnavailableCursorWithoutChangingTheFrozenTarget() throws Exception {
+        Env recovered = new Env(true);
+        recovered.getLicenseManager().replay(initial());
+        EditLog log = Mockito.mock(EditLog.class);
+        JournalCursor cursor = ordinaryCursor(1);
+        Mockito.when(log.getMaxJournalId()).thenReturn(1L, 2L);
+        Mockito.when(log.read(1, 1)).thenReturn(null, cursor);
+        Deencapsulation.setField(recovered, "editLog", log);
+
+        Assertions.assertFalse(Deencapsulation.<Boolean>invoke(recovered, "replayJournalsBeforeMaster"));
+        Assertions.assertEquals(1, recovered.getReplayedJournalId());
+        Assertions.assertEquals(0, module(recovered)[0]);
+        Mockito.verify(log, Mockito.times(1)).getMaxJournalId();
+        Mockito.verify(log, Mockito.times(2)).read(1, 1);
+        Mockito.verify(log, Mockito.never()).read(1, 2);
+    }
+
+    @Test
+    void promotionContinuesAfterAShortCursorFromTheLastAppliedJournal() throws Exception {
+        Env recovered = new Env(true);
+        recovered.getLicenseManager().replay(initial());
+        EditLog log = Mockito.mock(EditLog.class);
+        JournalCursor first = ordinaryCursor(1);
+        JournalCursor second = ordinaryCursor(2);
+        Mockito.when(log.getMaxJournalId()).thenReturn(2L);
+        Mockito.when(log.read(1, 2)).thenReturn(first);
+        Mockito.when(log.read(2, 2)).thenReturn(second);
+        Deencapsulation.setField(recovered, "editLog", log);
+
+        Assertions.assertFalse(Deencapsulation.<Boolean>invoke(recovered, "replayJournalsBeforeMaster"));
+        Assertions.assertEquals(2, recovered.getReplayedJournalId());
+        Assertions.assertEquals(0, module(recovered)[0]);
+        Mockito.verify(log).read(1, 2);
+        Mockito.verify(log).read(2, 2);
+    }
+
+    @Test
+    void promotionFailsAfterBoundedShortReplayWithoutPersistingIncompleteRecovery() throws Exception {
+        Env recovered = new Env(true);
+        recovered.getLicenseManager().replay(initial());
+        EditLog log = Mockito.mock(EditLog.class);
+        JournalCursor cursor = Mockito.mock(JournalCursor.class);
+        Mockito.when(log.getMaxJournalId()).thenReturn(1L);
+        Mockito.when(log.read(1, 1)).thenReturn(cursor);
+        Deencapsulation.setField(recovered, "editLog", log);
+
+        Assertions.assertThrows(IOException.class,
+                () -> Deencapsulation.invoke(recovered, "replayJournalsBeforeMaster"));
+        Assertions.assertEquals(0, recovered.getReplayedJournalId());
+        Assertions.assertEquals(0, module(recovered)[0]);
+        Mockito.verify(log, Mockito.times(3)).read(1, 1);
+    }
+
+    @Test
+    void promotionRejectsUnknownOrRegressedJournalBoundariesWithoutPersistingIncompleteRecovery() throws Exception {
+        for (long target : new long[] {-1, 0}) {
+            Env recovered = new Env(true);
+            recovered.getLicenseManager().replay(initial());
+            Deencapsulation.setField(recovered, "replayedJournalId", new AtomicLong(1));
+            EditLog log = Mockito.mock(EditLog.class);
+            Mockito.when(log.getMaxJournalId()).thenReturn(target);
+            Deencapsulation.setField(recovered, "editLog", log);
+
+            Assertions.assertThrows(IOException.class,
+                    () -> Deencapsulation.invoke(recovered, "replayJournalsBeforeMaster"));
+            Assertions.assertEquals(0, module(recovered)[0]);
+            Mockito.verify(log, Mockito.never()).read(Mockito.anyLong(), Mockito.anyLong());
+        }
+    }
+
+    @Test
+    void completedPromotionReplayRetainsActualSkippedLicenseDamage() throws Exception {
+        Env recovered = skipping(OperationType.OP_MASSDB_LICENSE_WATERMARK);
+        Mockito.when(recovered.getEditLog().getMaxJournalId()).thenReturn(1L);
+
+        Assertions.assertFalse(Deencapsulation.<Boolean>invoke(recovered, "replayJournalsBeforeMaster"));
+        Assertions.assertEquals(1, recovered.getReplayedJournalId());
+        Assertions.assertTrue(module(recovered)[0] != 0);
+    }
+
+    @Test
+    void pristineBootstrapRequiresAConfirmedEmptyJournalBoundary() throws Exception {
+        Env recovered = new Env(true);
+        Deencapsulation.setField(recovered, "isFirstTimeStartUp", true);
+        EditLog log = Mockito.mock(EditLog.class);
+        Mockito.when(log.getMaxJournalId()).thenReturn(0L);
+        Deencapsulation.setField(recovered, "editLog", log);
+
+        Assertions.assertTrue(Deencapsulation.<Boolean>invoke(recovered, "replayJournalsBeforeMaster"));
+        Mockito.verify(log, Mockito.never()).read(Mockito.anyLong(), Mockito.anyLong());
+        Assertions.assertEquals(0, module(recovered).length);
+    }
+
+    private static JournalCursor ordinaryCursor(long journalId) {
+        JournalEntity entity = new JournalEntity();
+        entity.setOpCode(OperationType.OP_SAVE_NEXTID);
+        entity.setData(new Text("100"));
+        JournalCursor cursor = Mockito.mock(JournalCursor.class);
+        Mockito.when(cursor.next()).thenReturn(Pair.of(journalId, entity)).thenReturn(null);
+        return cursor;
+    }
+
     private static Env skipping(Short opcode) throws IOException {
         Env recovered = new Env(true);
         recovered.getLicenseManager().replay(initial());
@@ -260,6 +372,139 @@ class LicenseEnvPersistenceTest {
         Assertions.assertArrayEquals(imageModule(first), module(historical));
         Assertions.assertArrayEquals(imageModule(second), module(other));
         Assertions.assertEquals(FeMetaVersion.VERSION_MASSDB_LICENSE_V1, imageVersion(historical));
+    }
+
+    @Test
+    void imageWriterUsesTheFrozenBoundaryAndKeepsConcurrentModuleIndicesIndependent() throws Exception {
+        File first = temporary.resolve("image.41").toFile();
+        File second = temporary.resolve("image.42").toFile();
+        CountDownLatch firstHeader = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        Env firstEnv = imageWriterEnv(firstHeader, releaseFirst);
+        Env secondEnv = imageWriterEnv(null, null);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            Future<?> writingFirst = executor.submit(() -> {
+                MetaWriter.write(first, firstEnv, 41);
+                return null;
+            });
+            Assertions.assertTrue(firstHeader.await(10, TimeUnit.SECONDS));
+            MetaWriter.write(second, secondEnv, 42);
+            releaseFirst.countDown();
+            writingFirst.get(10, TimeUnit.SECONDS);
+            assertImageWriterBoundaries(first, 41);
+            assertImageWriterBoundaries(second, 42);
+
+            File legacy = temporary.resolve("image.77").toFile();
+            MetaWriter.write(legacy, secondEnv);
+            assertImageWriterBoundaries(legacy, 77);
+        } finally {
+            releaseFirst.countDown();
+            executor.shutdownNow();
+            Assertions.assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void servingDumpEntersTheLicenseBarrierBeforeEnvLocksAndUsesTheAppliedRoleBoundary() throws Exception {
+        String previousMetaDir = Config.meta_dir;
+        boolean previousCompatibility = Config.enable_check_compatibility_mode;
+        try {
+            Config.meta_dir = temporary.toString();
+            Config.enable_check_compatibility_mode = false;
+            for (boolean leader : new boolean[] {false, true}) {
+                Env env = Mockito.spy(new Env(true));
+                LicenseManager manager = Mockito.mock(LicenseManager.class);
+                Deencapsulation.setField(env, "licenseManager", manager);
+                Deencapsulation.setField(env, "licenseLeadership", leader);
+                Deencapsulation.setField(env, "replayedJournalId", new AtomicLong(7));
+                Mockito.doReturn(19L).when(env).getMaxJournalId();
+                Mockito.when(manager.runImageSnapshot(Mockito.any())).thenAnswer(call -> {
+                    Assertions.assertFalse(Thread.holdsLock(env));
+                    Callable<String> work = call.getArgument(0);
+                    return work.call();
+                });
+                Mockito.doAnswer(call -> {
+                    Assertions.assertTrue(Thread.holdsLock(env));
+                    File file = call.getArgument(0);
+                    long cut = call.getArgument(1);
+                    Assertions.assertEquals(leader ? 19L : 7L, cut);
+                    Assertions.assertEquals("image." + cut, file.getName());
+                    return null;
+                }).when(env).saveImage(Mockito.any(File.class), Mockito.anyLong());
+
+                Assertions.assertEquals(temporary.resolve("image." + (leader ? 19 : 7)).toString(), env.dumpImage());
+                Mockito.verify(manager).runImageSnapshot(Mockito.any());
+                Mockito.verify(env, Mockito.times(leader ? 1 : 0)).getMaxJournalId();
+            }
+        } finally {
+            Config.meta_dir = previousMetaDir;
+            Config.enable_check_compatibility_mode = previousCompatibility;
+        }
+    }
+
+    @Test
+    void servingDumpDoesNotWriteAnUnknownMasterBoundary() throws Exception {
+        Env env = Mockito.spy(new Env(true));
+        LicenseManager manager = Mockito.mock(LicenseManager.class);
+        Deencapsulation.setField(env, "licenseManager", manager);
+        Deencapsulation.setField(env, "licenseLeadership", true);
+        Mockito.doReturn(-1L).when(env).getMaxJournalId();
+        Mockito.when(manager.runImageSnapshot(Mockito.any())).thenAnswer(call -> {
+            Callable<String> work = call.getArgument(0);
+            return work.call();
+        });
+
+        Assertions.assertNull(env.dumpImage());
+        Mockito.verify(env, Mockito.never()).saveImage(Mockito.any(File.class), Mockito.anyLong());
+    }
+
+    private static Env imageWriterEnv(CountDownLatch entered, CountDownLatch release) {
+        return Mockito.mock(Env.class, call -> {
+            String name = call.getMethod().getName();
+            if (name.equals("getReplayedJournalId")) {
+                return 77L;
+            }
+            if (name.equals("saveHeader")) {
+                if (entered != null) {
+                    entered.countDown();
+                    Assertions.assertTrue(release.await(10, TimeUnit.SECONDS));
+                }
+                CountingDataOutputStream output = call.getArgument(0);
+                long cut = call.getArgument(1);
+                output.writeInt(FeConstants.meta_version);
+                output.writeLong(cut);
+                return 0L;
+            }
+            if (name.startsWith("save") && call.getArguments().length == 2
+                    && call.getArgument(0) instanceof CountingDataOutputStream) {
+                CountingDataOutputStream output = call.getArgument(0);
+                output.writeInt(name.hashCode());
+                return 0L;
+            }
+            return Mockito.RETURNS_DEFAULTS.answer(call);
+        });
+    }
+
+    private static void assertImageWriterBoundaries(File file, long cut) throws IOException {
+        List<MetaIndex> indices = MetaFooter.read(file).metaIndices;
+        Assertions.assertEquals(PersistMetaModules.MODULES_IN_ORDER.size() + 1, indices.size());
+        try (RandomAccessFile input = new RandomAccessFile(file, "r")) {
+            long start = MetaHeader.read(file).getEnd();
+            Assertions.assertEquals("header", indices.get(0).name);
+            Assertions.assertEquals(start, indices.get(0).offset);
+            input.seek(start);
+            Assertions.assertEquals(FeConstants.meta_version, input.readInt());
+            Assertions.assertEquals(cut, input.readLong());
+            for (int i = 0; i < PersistMetaModules.MODULES_IN_ORDER.size(); i++) {
+                MetaPersistMethod module = PersistMetaModules.MODULES_IN_ORDER.get(i);
+                MetaIndex index = indices.get(i + 1);
+                Assertions.assertEquals(module.name, index.name);
+                Assertions.assertEquals(start + Integer.BYTES + Long.BYTES + (long) i * Integer.BYTES, index.offset);
+                input.seek(index.offset);
+                Assertions.assertEquals(module.writeMethod.getName().hashCode(), input.readInt());
+            }
+        }
     }
 
     private File image(int version, byte[] module, boolean indexModule) throws IOException {

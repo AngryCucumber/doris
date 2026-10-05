@@ -49,10 +49,12 @@ public final class LicensePersistRecord implements Writable {
 
     private final ObjectNode data;
     private final byte[] encoded;
+    // State, facts and receipts are immutable. Keep only this record's fully validated clock view.
+    private final LicenseClockRepair.State clockState;
 
     private LicensePersistRecord(ObjectNode data) throws IOException {
         this.data = data.deepCopy();
-        validateEnvelope();
+        clockState = validateEnvelope();
         encoded = JSON.writeValueAsBytes(this.data);
         if (encoded.length > MAX_BYTES - 38) {
             throw invalid();
@@ -214,7 +216,7 @@ public final class LicensePersistRecord implements Writable {
         }
     }
 
-    private void validateEnvelope() throws IOException {
+    private LicenseClockRepair.State validateEnvelope() throws IOException {
         try {
             fields(data, "format_version", "operation", "record_version", "deployment_id", "bootstrap",
                     "activated", "complete", "active", "pending", "base", "highest_sequence", "license_version",
@@ -250,7 +252,7 @@ public final class LicensePersistRecord implements Writable {
                 }
             }
             importReceipts();
-            clockState();
+            LicenseClockRepair.State parsedClock = parseClockState();
             JsonNode versions = data.get("submission_versions");
             if (!versions.isObject() || versions.size() > 2 * LicenseImportState.MAX_RECEIPTS + 3) {
                 throw invalid();
@@ -263,6 +265,7 @@ public final class LicensePersistRecord implements Writable {
                     throw invalid();
                 }
             }
+            return parsedClock;
         } catch (IllegalArgumentException e) {
             throw invalid();
         }
@@ -281,6 +284,10 @@ public final class LicensePersistRecord implements Writable {
     }
 
     LicenseClockRepair.State clockState() throws IOException {
+        return clockState;
+    }
+
+    private LicenseClockRepair.State parseClockState() throws IOException {
         JsonNode value = data.get("clock");
         fields(value, "version", "epoch", "high_water_millis", "authorization_version", "receipts");
         LicenseClock.Facts facts = new LicenseClock.Facts(number(value, "version"), number(value, "epoch"),
@@ -405,7 +412,12 @@ public final class LicensePersistRecord implements Writable {
     }
 
     boolean sameAs(LicensePersistRecord other) {
-        return other != null && data.equals(other.data);
+        // Factories write long nodes; recovery may decode the same validated integer as an int node.
+        // Compare integral values exactly while retaining object fields, array order and scalar types.
+        return other != null && data.equals((left, right) ->
+                left.isIntegralNumber() && right.isIntegralNumber()
+                        ? Long.compare(left.longValue(), right.longValue())
+                        : left.equals(right) ? 0 : 1, other.data);
     }
 
     @Override

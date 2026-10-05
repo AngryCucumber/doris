@@ -31,6 +31,7 @@ import java.security.KeyPairGenerator;
 import java.security.MessageDigest;
 import java.security.Signature;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -41,6 +42,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -212,6 +214,195 @@ class LicenseManagerTest {
         Assertions.assertEquals(1, host.records.size());
         Assertions.assertEquals(1, manager.getAppliedVersion());
         Assertions.assertNotEquals(LicenseQueryStatus.LICENSE_NOT_READY, manager.queryStatus());
+    }
+
+    @Test
+    void imageSnapshotSerializesMemberAndLicenseCommitsWithoutBlockingStatus() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 2000));
+        String renewal = certificate(2, 1000, 2300);
+        int committed = host.records.size();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        List<String> events = Collections.synchronizedList(new ArrayList<>());
+        ExecutorService clients = Executors.newFixedThreadPool(4);
+        try {
+            Future<String> image = clients.submit(() -> manager.runImageSnapshot(() -> {
+                Assertions.assertFalse(Thread.holdsLock(manager));
+                events.add("snapshot-enter");
+                entered.countDown();
+                Assertions.assertTrue(release.await(10, TimeUnit.SECONDS));
+                Assertions.assertEquals(committed, host.records.size());
+                Assertions.assertEquals(1, host.feNodes);
+                events.add("snapshot-exit");
+                return "image.ready";
+            }));
+            Assertions.assertTrue(entered.await(5, TimeUnit.SECONDS));
+            Future<?> membership = clients.submit(() -> {
+                manager.runMembershipMutation(1, 1, () -> {
+                    host.changeMembers(2, 1);
+                    events.add("member");
+                });
+                return null;
+            });
+            awaitMutationQueueSize(1);
+            Future<LicenseManagementException> imported = clients.submit(() -> Assertions.assertThrows(
+                    LicenseManagementException.class, () -> manager.execute(LicenseManager.Action.IMPORT,
+                            renewal, "snapshot-renewal", true)));
+            awaitMutationQueueSize(2);
+            Assertions.assertFalse(membership.isDone());
+            Assertions.assertFalse(imported.isDone());
+            Future<Integer> status = clients.submit(() -> manager.execute(
+                    LicenseManager.Action.STATUS, null, "snapshot-reader", false).getHttpStatus());
+            Assertions.assertEquals(200, status.get(2, TimeUnit.SECONDS).intValue());
+            Assertions.assertTrue(manager.queryStatus().permitsNewQuery());
+            release.countDown();
+            Assertions.assertEquals("image.ready", image.get(5, TimeUnit.SECONDS));
+            membership.get(5, TimeUnit.SECONDS);
+            // The preceding member commit invalidates the import prepared while the image held the queue.
+            LicenseManagementException stale = imported.get(5, TimeUnit.SECONDS);
+            Assertions.assertEquals(409, stale.getHttpStatus());
+            Assertions.assertEquals("LICENSE_STALE_IMPORT_DECISION", stale.getReason());
+            Assertions.assertEquals(Arrays.asList("snapshot-enter", "snapshot-exit", "member"), events);
+            Assertions.assertEquals(committed, host.records.size());
+            Assertions.assertEquals(200, run(LicenseManager.Action.IMPORT, renewal).getHttpStatus());
+            Assertions.assertEquals(committed + 1, host.records.size());
+        } finally {
+            release.countDown();
+            clients.shutdownNow();
+            Assertions.assertTrue(clients.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void imageSnapshotRejectsUncertainAndUnappliedCommitsUntilColdReplayConfirmsThem() throws Exception {
+        start();
+        String first = certificate(1, 900, 2000);
+        String second = certificate(2, 1000, 2300);
+        AtomicBoolean wroteImage = new AtomicBoolean();
+        host.throwAfterWrite = true;
+        Assertions.assertThrows(LicenseManagementException.class, () -> run(LicenseManager.Action.IMPORT, first));
+        Assertions.assertEquals(LicenseQueryStatus.LICENSE_NOT_READY, manager.queryStatus());
+        Assertions.assertThrows(IOException.class, () -> manager.runImageSnapshot(() -> {
+            wroteImage.set(true);
+            return "unsafe.image";
+        }));
+        Assertions.assertFalse(wroteImage.get());
+        host.throwAfterWrite = false;
+        LicensePersistRecord accepted = coldRecord(host.records.get(host.records.size() - 1));
+        manager.replay(accepted);
+        manager.replay(coldRecord(accepted));
+        Assertions.assertTrue(manager.queryStatus().permitsNewQuery());
+        Assertions.assertEquals("APPLIED", run(LicenseManager.Action.IMPORT_RECEIPT,
+                LicenseVerifier.fingerprint(first)).getBody().get("submission_status"));
+        Assertions.assertEquals("confirmed.image", manager.runImageSnapshot(() -> "confirmed.image"));
+
+        host.failPublicationAfterCommit = true;
+        Assertions.assertEquals(202, run(LicenseManager.Action.IMPORT, second).getHttpStatus());
+        Assertions.assertEquals(LicenseQueryStatus.LICENSE_NOT_READY, manager.queryStatus());
+        Assertions.assertThrows(IOException.class, () -> manager.runImageSnapshot(() -> {
+            wroteImage.set(true);
+            return "unapplied.image";
+        }));
+        Assertions.assertFalse(wroteImage.get());
+        LicensePersistRecord pending = coldRecord(host.records.get(host.records.size() - 1));
+        manager.replay(pending);
+        manager.replay(coldRecord(pending));
+        Assertions.assertTrue(manager.queryStatus().permitsNewQuery());
+        Assertions.assertEquals("APPLIED", run(LicenseManager.Action.IMPORT_RECEIPT,
+                LicenseVerifier.fingerprint(second)).getBody().get("submission_status"));
+        Assertions.assertEquals("applied.image", manager.runImageSnapshot(() -> "applied.image"));
+    }
+
+    @Test
+    void closingCancelsQueuedImageAndMemberRequestsWithoutRunningTheirCallbacks() throws Exception {
+        start();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicBoolean queuedImageRan = new AtomicBoolean();
+        AtomicBoolean queuedMemberRan = new AtomicBoolean();
+        ExecutorService clients = Executors.newFixedThreadPool(3);
+        try {
+            Future<IOException> running = clients.submit(() -> Assertions.assertThrows(IOException.class,
+                    () -> manager.runImageSnapshot(() -> {
+                        entered.countDown();
+                        release.await(10, TimeUnit.SECONDS);
+                        throw new IOException("sensitive image payload");
+                    })));
+            Assertions.assertTrue(entered.await(5, TimeUnit.SECONDS));
+            Future<IOException> queued = clients.submit(() -> Assertions.assertThrows(IOException.class,
+                    () -> manager.runImageSnapshot(() -> {
+                        queuedImageRan.set(true);
+                        return "must-not-exist.image";
+                    })));
+            awaitMutationQueueSize(1);
+            Future<DdlException> member = clients.submit(() -> Assertions.assertThrows(DdlException.class,
+                    () -> manager.runMembershipMutation(0, 0, () -> queuedMemberRan.set(true))));
+            awaitMutationQueueSize(2);
+            manager.close();
+            Assertions.assertNotNull(queued.get(5, TimeUnit.SECONDS));
+            Assertions.assertNotNull(member.get(5, TimeUnit.SECONDS));
+            IOException failure = running.get(5, TimeUnit.SECONDS);
+            Assertions.assertFalse(failure.toString().contains("sensitive image payload"));
+            Assertions.assertNull(failure.getCause());
+            Assertions.assertFalse(queuedImageRan.get());
+            Assertions.assertFalse(queuedMemberRan.get());
+            Assertions.assertThrows(IOException.class, () -> manager.runImageSnapshot(() -> "closed.image"));
+        } finally {
+            release.countDown();
+            clients.shutdownNow();
+            Assertions.assertTrue(clients.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void imageSnapshotFailuresAreSafeAndDoNotPoisonLaterSnapshots() throws Exception {
+        // Read-only follower/uninitialized dumps need the barrier too, without acquiring master privileges.
+        for (Exception cause : new Exception[] {new IOException("private certificate text"),
+                new IllegalStateException("private certificate text")}) {
+            IOException failure = Assertions.assertThrows(IOException.class,
+                    () -> manager.runImageSnapshot(() -> {
+                        throw cause;
+                    }));
+            Assertions.assertFalse(failure.toString().contains("private certificate text"));
+            Assertions.assertNull(failure.getCause());
+        }
+        Assertions.assertEquals("follower.image", manager.runImageSnapshot(() -> "follower.image"));
+        Assertions.assertEquals(0, manager.getAppliedVersion());
+        try (LicenseManager checkpoint = new LicenseManager(host, true, time)) {
+            Assertions.assertThrows(IOException.class, () -> checkpoint.runImageSnapshot(() -> "checkpoint.image"));
+        }
+    }
+
+    @Test
+    void coldReplayOfTheSameVersionWithDifferentFactsStillInvalidatesRecovery() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 2000));
+        long version = manager.getAppliedVersion();
+        ObjectNode conflict = imageJson(image(manager));
+        ObjectNode clock = (ObjectNode) conflict.get("clock");
+        clock.put("high_water_millis", clock.get("high_water_millis").longValue() + 1);
+        manager.replay(recordFromEnvelope(conflict));
+        Assertions.assertEquals(version, manager.getAppliedVersion());
+        Assertions.assertEquals(LicenseQueryStatus.LICENSE_NOT_READY, manager.queryStatus());
+        Assertions.assertTrue(image(manager)[0] != 0);
+    }
+
+    private void awaitMutationQueueSize(int expected) throws Exception {
+        java.lang.reflect.Field field = LicenseManager.class.getDeclaredField("mutations");
+        field.setAccessible(true);
+        ThreadPoolExecutor worker = (ThreadPoolExecutor) field.get(manager);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (worker.getQueue().size() < expected && System.nanoTime() < deadline) {
+            Thread.sleep(2);
+        }
+        Assertions.assertEquals(expected, worker.getQueue().size());
+    }
+
+    private static LicensePersistRecord coldRecord(LicensePersistRecord record) throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        record.write(new DataOutputStream(bytes));
+        return LicensePersistRecord.read(input(bytes.toByteArray()));
     }
 
     @Test
