@@ -4,6 +4,20 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License operating-limit clarification (2026-10-05)
+
+- Document that manual image dumps occupy the management queue while waiting
+  for metadata locks and writing the image, and pause local follower/observer
+  replay while holding the Env monitor. Explain maintenance scheduling and why
+  an HTTP timeout does not prove cancellation or completion.
+- Clarify bounded read-only receipt polling, conditional initialization before
+  certificate import, journal-based rollback boundaries, and recovery choices
+  after failed master promotion. Distinguish the tested explicit Manager close
+  API from the production shutdown hook, which does not invoke it.
+- This follow-up changes documentation only. Retain the previously tested
+  product artifacts and behavior; validate documentation paths, source headers
+  and whitespace without claiming another product-test or performance run.
+
 ## License follow-up recovery corrections (2026-10-05)
 
 - Freeze the journal boundary before master promotion and retry short replay
