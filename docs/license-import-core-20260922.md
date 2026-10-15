@@ -12,6 +12,8 @@ Upstream and third-party components retain their respective licenses.
 本文冻结 P1 导入核心的实际 API、状态不变量和 P2 接入要求。范围是 FE 许可管理状态；BE 代码、扫描协议和已发计划的行为不变。
 `LicenseImportPolicy` 已实现纯准入与候选事实计算，`LicenseImportState` 已实现不可变事实模型。这里没有 SQL/HTTP handler、EditLog 操作、image 格式注册、Master 转发、锁管理或多 FE 发布功能；这些仍由 P2 及后续阶段接入。
 
+**2026-10-16 补充：** 第 4 节第 7 步增加一条拒绝：候选未来生效、且 FE 或 BE 额度低于导入后仍保留的 active 或基础额度（不论其是否已到期）时返回 `RENEWAL_REDUCTION`，因为更早的带许可版本恢复时会拒绝这种 pending 并退出。恢复仍接受已有的此类状态。持久化格式冻结。见[降级兼容、内置公钥与取消导入前 FE 检查执行计划](license-downgrade-trust-compat-plan-20261015.md)。
+
 **2026-10-15 取代式续期已实现，当前规则以本段为准：** 同一部署内 sequence 更高的合法证书一经导入，就完全取代当前 active 和 pending 的全部承诺；核心不再比较新旧证书的到期时间、生效时间、额度和功能集，只要求新额度覆盖当前已注册+预留用量。`RENEWAL_REDUCTION` 不再产生，缩减改由 `Prepared.getChanges()` 作为事实返回；恢复不再比较跨槽额度。下文第 2、4、5、7 节已按新规则改写，历史验证见[执行计划与验收记录](license-renewal-replacement-plan-20261015.md)。
 
 **（历史）2026-09-30 到期后降额续期补充已实现并完成分层验证。** 当时更新的核心规则：过期历史额度不再是永久续期下限，仍保护未过期 active/pending/base 的额度承诺与完整注册+预留用量。原 P1/P2 接入阶段的时态及通过记录保留为历史，实际管理接入见[管理说明](license-management-p2.md)。本轮 279 项 FE 回归、Checkstyle/构建与 28 项签发测试通过，真实单 FE 注册身份缩容、SQL/HTTP 导入、ADD 拒绝、幂等与重启通过；核心、受控恢复/门禁和真实运行层级分别见[本轮验收记录](license-expired-renewal-20260930.md)，不以旧测试结论代替新规则证据。
@@ -103,7 +105,7 @@ LicenseImportState state = LicenseImportState.restore(deployment, active, pendin
 
 查询快照与导入全状态的可信要求不同：一个隔离坏 base 的有效查询槽可继续按 `LicenseSnapshot` 决策，但缺失的历史事实不能被导入代码解释为“从未接受过更高额度或序号”。是否允许恢复后的新导入，由 P2 对恢复就绪证据设置 `Context.recoveryReady`，不能仅根据某张证书验签通过就置为 `true`。
 
-取代式续期不改变签名证书或 FE 持久化外壳格式；导入前全部已注册 FE 必须通过相同更新包摘要及信任集的既有能力门禁，该门禁只在导入时检查。回退到 2026-10-15 之前的 FE 包是不支持的运维操作：旧包逐条回放 journal 并恢复 image，只要待恢复区间内出现“与未到期 active/base 重叠的较低额度 pending”状态，旧包恢复校验即拒绝并退出；立即取代和单纯缩短到期的状态旧包能够回放，之后按旧规则处理导入。实际边界见[本轮验收](license-renewal-replacement-plan-20261015.md)。
+取代式续期不改变签名证书或 FE 持久化外壳格式。2026-10-16 起导入不再探测其他 FE，也不再比较包摘要和信任集；下段关于旧包回放的边界因第 4 节的未来降额拒绝而不再出现于新写入的记录，只适用于 2026-09-30 至 10-15 版本已写入的状态。（历史）导入前全部已注册 FE 必须通过相同更新包摘要及信任集的既有能力门禁，该门禁只在导入时检查。回退到 2026-10-15 之前的 FE 包是不支持的运维操作：旧包逐条回放 journal 并恢复 image，只要待恢复区间内出现“与未到期 active/base 重叠的较低额度 pending”状态，旧包恢复校验即拒绝并退出；立即取代和单纯缩短到期的状态旧包能够回放，之后按旧规则处理导入。实际边界见[本轮验收](license-renewal-replacement-plan-20261015.md)。
 
 ## 4. prepare 的精确语义
 
@@ -200,7 +202,7 @@ Prepared finalActivation = policy.recheckForCommit(activation, currentState, cur
 | `ISSUED_IN_FUTURE` / `CERTIFICATE_EXPIRED` | 签发时间超出 300 秒容差或候选已经到期 |
 | `FEATURE_NOT_LICENSED` | 新导入候选没有 `DATA_QUERY` |
 | `NODE_LIMIT_TOO_SMALL` | 候选/待激活证书不足以覆盖实际注册加预留数量 |
-| `RENEWAL_REDUCTION` | 2026-10-15 起不再产生；枚举保留以兼容旧客户端和历史日志 |
+| `RENEWAL_REDUCTION` | 2026-10-16 起只用于“未来生效且降低额度”的候选（降级兼容）；2026-10-15 版本不产生 |
 | `STALE_IMPORT_DECISION` | 最终提交前许可/成员版本或部署发生变化 |
 
 格式、算法、签名和信任集错误沿用验证器错误；恢复结构矛盾使用不含原文的异常。真实 SQL/HTTP 错误码映射、指标和审计由接入层统一完成。

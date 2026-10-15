@@ -137,7 +137,10 @@ public final class LicensePersistRecord implements Writable {
         return new LicensePersistRecord(replacement);
     }
 
-    /** Attach the successful live FE proof to the same atomic first-import/renewal record. */
+    /**
+     * The FE package proof that imports before 2026-10-16 attached. Kept so records of that shape can still be
+     * produced in tests; earlier FEs validate exactly this field set and re-probe when it does not match them.
+     */
     public LicensePersistRecord withRollout(String packageDigest, String trustDigest, long frontendVersion)
             throws IOException {
         ObjectNode replacement = data.deepCopy();
@@ -148,12 +151,11 @@ public final class LicensePersistRecord implements Writable {
         return new LicensePersistRecord(replacement);
     }
 
-    public boolean matchesRollout(String packageDigest, String trustDigest, long frontendVersion) {
-        JsonNode rollout = data.get("rollout");
-        return !rollout.isNull() && packageDigest != null && trustDigest != null
-                && packageDigest.equals(rollout.get("package_sha256").textValue())
-                && trustDigest.equals(rollout.get("trust_sha256").textValue())
-                && frontendVersion == rollout.get("frontend_version").longValue();
+    /** Imports no longer probe other FEs. Null is the initial, always-valid value: the persisted shape is unchanged. */
+    public LicensePersistRecord withoutRollout() throws IOException {
+        ObjectNode replacement = data.deepCopy();
+        replacement.set("rollout", NullNode.getInstance());
+        return new LicensePersistRecord(replacement);
     }
 
     private ObjectNode next(short operation) throws IOException {

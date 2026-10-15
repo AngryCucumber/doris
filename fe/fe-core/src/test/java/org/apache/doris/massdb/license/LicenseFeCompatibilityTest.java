@@ -46,12 +46,18 @@ class LicenseFeCompatibilityTest {
     private static final String TRUST = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     @Test
-    void allMembersMustProveIdenticalPackageTrustAndFormat() {
+    void initializationProofComparesLicenseModuleFormatAndIdentityOnly() {
         Map<String, Object> local = capability(TRUST);
         Frontend member = member();
         ObjectNode remote = JSON.valueToTree(local);
         Assertions.assertTrue(LicenseFeCompatibility.matches(remote, member, local, true));
-        for (String field : new String[] {"package_sha256", "trust_sha256", "module", "fe_node_name", "fe_host"}) {
+        // Different package bytes (a hotfix or rebuild) or another trust manifest do not block initialization.
+        for (String field : new String[] {"package_sha256", "trust_sha256"}) {
+            ObjectNode altered = remote.deepCopy();
+            altered.put(field, "different");
+            Assertions.assertTrue(LicenseFeCompatibility.matches(altered, member, local, true), field);
+        }
+        for (String field : new String[] {"module", "fe_node_name", "fe_host"}) {
             ObjectNode altered = remote.deepCopy();
             altered.put(field, "different");
             Assertions.assertFalse(LicenseFeCompatibility.matches(altered, member, local, true), field);
@@ -71,24 +77,26 @@ class LicenseFeCompatibilityTest {
         Map<String, Object> local = capability(TRUST);
         ObjectNode remote = JSON.valueToTree(local);
         for (String field : new String[] {"schema_version", "format_version", "module", "journal_opcodes",
-                "fe_node_name", "fe_host", "edit_log_port", "process_uuid", "package_sha256", "trust_sha256",
-                "trust_ready"}) {
+                "fe_node_name", "fe_host", "edit_log_port", "process_uuid"}) {
             ObjectNode altered = remote.deepCopy();
             altered.remove(field);
             Assertions.assertFalse(LicenseFeCompatibility.matches(altered, member(), local, true), field);
         }
+        ObjectNode withoutDigests = remote.deepCopy();
+        withoutDigests.remove(Arrays.asList("package_sha256", "trust_sha256", "trust_ready"));
+        Assertions.assertTrue(LicenseFeCompatibility.matches(withoutDigests, member(), local, true));
         remote.put("format_version", "1");
         Assertions.assertFalse(LicenseFeCompatibility.matches(remote, member(), local, true));
     }
 
     @Test
-    void unconfiguredTrustCanInitializeIdentityButCannotMatchInstalledTrust() {
+    void trustStateIsNotPartOfInitializationProof() {
         Map<String, Object> absent = capability(null);
         ObjectNode remote = JSON.valueToTree(absent);
         Assertions.assertTrue(LicenseFeCompatibility.matches(remote, member(), absent, true));
-        Assertions.assertFalse(LicenseFeCompatibility.matches(remote, member(), capability(TRUST), true));
-        remote.put("trust_ready", true);
-        Assertions.assertFalse(LicenseFeCompatibility.matches(remote, member(), absent, true));
+        Assertions.assertTrue(LicenseFeCompatibility.matches(remote, member(), capability(TRUST), true));
+        Assertions.assertTrue(LicenseFeCompatibility.matches(JSON.valueToTree(capability(TRUST)), member(), absent,
+                true));
     }
 
     @Test
@@ -214,7 +222,7 @@ class LicenseFeCompatibilityTest {
     void failedRemoteProofNamesMemberAndFieldWithoutLoggingRemoteValues() throws Exception {
         try (ProbeFixture probe = new ProbeFixture(); LogCapture logs = new LogCapture()) {
             Assertions.assertTrue(probe.check(new LicenseFeCompatibility.DiagnosticLimiter()));
-            for (String field : new String[] {"package_sha256", "trust_sha256", "fe_node_name", "module"}) {
+            for (String field : new String[] {"fe_node_name", "module"}) {
                 ObjectNode altered = probe.capability.deepCopy();
                 altered.put(field, "private.payload.signature");
                 probe.respond(200, altered.toString());
@@ -285,12 +293,11 @@ class LicenseFeCompatibilityTest {
         Env env = Mockito.mock(Env.class);
         Mockito.when(env.getNodeName()).thenReturn("local\r\n" + Strings.repeat("x", 200));
         Map<String, Object> local = capability(TRUST);
-        local.put("package_sha256", null);
         try (LogCapture logs = new LogCapture()) {
             Assertions.assertFalse(LicenseFeCompatibility.checkAll(env, local,
                     new LicenseFeCompatibility.DiagnosticLimiter()));
             String message = logs.nextMessage();
-            Assertions.assertTrue(message.contains("reason=LOCAL_PACKAGE_UNAVAILABLE"));
+            Assertions.assertTrue(message.contains("reason=EMPTY_MEMBERSHIP"));
             Assertions.assertTrue(message.contains("node=local__"));
             Assertions.assertFalse(message.contains("\r"));
             Assertions.assertFalse(message.contains("\n"));

@@ -24,7 +24,8 @@ import java.util.Objects;
  *
  * <p>A valid certificate with a higher sequence replaces every accepted active and pending promise.
  * Expiry, start time, quota and features are not compared with the replaced certificates; only the
- * registered plus reserved membership limits admission. Reductions are reported as changes.
+ * registered plus reserved membership limits admission. Reductions are reported as changes. The one
+ * exception keeps metadata readable by every earlier licensed FE: a future certificate may not lower quota.
  */
 public final class LicenseImportPolicy {
     private static final long ISSUED_AT_TOLERANCE_SECONDS = 300;
@@ -193,6 +194,9 @@ public final class LicenseImportPolicy {
             base = promotedBase(base, normalizedPending);
         }
         Slot currentBase = base;
+        if (candidate.getNotBefore() > now) {
+            requireDowngradeReadablePending(candidate, normalizedActive, currentBase);
+        }
         Slot accepted = new Slot(candidate, compact, version);
         Slot active;
         Slot pending;
@@ -324,6 +328,22 @@ public final class LicenseImportPolicy {
         if (context.clockSuspect || context.trustedNowSeconds < 0
                 || context.trustedNowSeconds > LicenseVerifier.MAX_EPOCH_SECOND) {
             reject(LicenseErrorCode.CLOCK_SUSPECT);
+        }
+    }
+
+    /**
+     * Every licensed FE before 2026-10-15 rejects, while recovering, a pending certificate whose quota is lower
+     * than the retained active or base certificate; versions before 2026-09-30 do so even after that certificate
+     * expired, and the failed replay stops the FE. Never write that state, so a whole-cluster downgrade or an older
+     * FE replaying newer journals is not blocked by license metadata. Lower quota must start immediately.
+     */
+    private static void requireDowngradeReadablePending(LicenseDocument candidate, Slot active, Slot base)
+            throws LicenseException {
+        for (Slot retained : new Slot[] {active, base}) {
+            if (retained != null && (candidate.getMaxFeNodes() < retained.getDocument().getMaxFeNodes()
+                    || candidate.getMaxBeNodes() < retained.getDocument().getMaxBeNodes())) {
+                reject(LicenseErrorCode.RENEWAL_REDUCTION);
+            }
         }
     }
 

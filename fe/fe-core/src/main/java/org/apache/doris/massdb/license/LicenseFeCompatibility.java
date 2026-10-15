@@ -32,9 +32,6 @@ import java.net.Proxy;
 import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -43,10 +40,13 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
-/** FE-only, management-time proof of the running package and installed public trust. */
+/**
+ * FE-only proof, before the one-time deployment initialization, that every registered FE carries the license
+ * module and can therefore replay license journal records. Package bytes and installed trust are not compared;
+ * imports never probe other FEs because every licensed FE version can replay the records they write.
+ */
 public final class LicenseFeCompatibility {
     private static final Logger LOG = LogManager.getLogger(LicenseFeCompatibility.class);
     public static final String CLUSTER_TOKEN_HEADER = "X-MassDB-License-Cluster-Token";
@@ -60,11 +60,6 @@ public final class LicenseFeCompatibility {
     private LicenseFeCompatibility() {
     }
 
-    // Deliberately lazy: creating a checkpoint Env never hashes a deployment package or starts a probe.
-    private static final class PackageDigest {
-        private static final String VALUE = packageDigest();
-    }
-
     public static Map<String, Object> localCapability(Env env, String trustDigest) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("schema_version", 1);
@@ -75,7 +70,8 @@ public final class LicenseFeCompatibility {
         result.put("fe_host", env.getSelfNode() == null ? null : env.getSelfNode().getHost());
         result.put("edit_log_port", env.getSelfNode() == null ? 0 : env.getSelfNode().getPort());
         result.put("process_uuid", ExecuteEnv.getInstance().getProcessUUID());
-        result.put("package_sha256", PackageDigest.VALUE);
+        // Retained for earlier FEs and diagnostics; the package is no longer hashed or compared.
+        result.put("package_sha256", null);
         result.put("trust_sha256", trustDigest);
         result.put("trust_ready", trustDigest != null);
         return Collections.unmodifiableMap(result);
@@ -108,15 +104,8 @@ public final class LicenseFeCompatibility {
     }
 
     static boolean checkAll(Env env, Map<String, Object> local, DiagnosticLimiter diagnostics) {
-        if (!isDigest(local.get("package_sha256"))) {
-            return reject(env, null, "LOCAL_PACKAGE_UNAVAILABLE", "package_sha256", 0, diagnostics);
-        }
         if (env.getNodeName() == null) {
             return reject(env, null, "LOCAL_IDENTITY_UNAVAILABLE", "fe_node_name", 0, diagnostics);
-        }
-        Object trustDigest = local.get("trust_sha256");
-        if (trustDigest != null && !isDigest(trustDigest)) {
-            return reject(env, null, "LOCAL_TRUST_INVALID", "trust_sha256", 0, diagnostics);
         }
         List<Frontend> frontends = env.getFrontends(null);
         List<String> before = frontendIdentities(frontends);
@@ -214,17 +203,6 @@ public final class LicenseFeCompatibility {
                 || !capability.path("process_uuid").canConvertToLong()
                 || capability.path("process_uuid").asLong() == 0) {
             return "process_uuid";
-        }
-        if (!Objects.equals(local.get("package_sha256"), nullableText(capability.get("package_sha256")))) {
-            return "package_sha256";
-        }
-        if (!capability.has("trust_sha256")
-                || !Objects.equals(local.get("trust_sha256"), nullableText(capability.get("trust_sha256")))) {
-            return "trust_sha256";
-        }
-        if (!capability.path("trust_ready").isBoolean()
-                || capability.path("trust_ready").asBoolean() != (local.get("trust_sha256") != null)) {
-            return "trust_ready";
         }
         return !checkHeartbeatProcess || frontend.getProcessUUID() == 0
                 || frontend.getProcessUUID() == capability.path("process_uuid").asLong() ? null : "process_uuid";
@@ -412,45 +390,11 @@ public final class LicenseFeCompatibility {
         return result & Long.MAX_VALUE;
     }
 
-    private static String packageDigest() {
-        try {
-            Path path = Paths.get(LicenseFeCompatibility.class.getProtectionDomain().getCodeSource()
-                    .getLocation().toURI());
-            if (!Files.isRegularFile(path) || !path.getFileName().toString().endsWith(".jar")) {
-                return null;
-            }
-            MessageDigest digest = sha256();
-            try (InputStream input = Files.newInputStream(path)) {
-                byte[] buffer = new byte[64 * 1024];
-                int read;
-                while ((read = input.read(buffer)) != -1) {
-                    digest.update(buffer, 0, read);
-                }
-            }
-            StringBuilder result = new StringBuilder(64);
-            for (byte value : digest.digest()) {
-                result.append(Character.forDigit((value >>> 4) & 15, 16));
-                result.append(Character.forDigit(value & 15, 16));
-            }
-            return result.toString();
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
     private static MessageDigest sha256() {
         try {
             return MessageDigest.getInstance("SHA-256");
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("JDK SHA-256 unavailable", e);
         }
-    }
-
-    private static boolean isDigest(Object value) {
-        return value instanceof String && ((String) value).matches("[0-9a-f]{64}");
-    }
-
-    private static String nullableText(JsonNode value) {
-        return value == null || value.isNull() ? null : value.isTextual() ? value.textValue() : "invalid";
     }
 }

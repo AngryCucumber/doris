@@ -9,6 +9,8 @@ Upstream and third-party components retain their respective licenses.
 
 # 授权证书 P0/P1/P2/P3/P2U/P4 实施记录
 
+**2026-10-16 降级兼容、内置公钥与取消导入前 FE 检查：** 见[降级兼容、内置公钥与取消导入前 FE 检查执行计划](license-downgrade-trust-compat-plan-20261015.md)。
+
 **2026-10-15 取代式续期：** 更高序号的合法新证取代当前 active 和 pending 的全部承诺，只按实际已注册+预留用量准入；缩短、空档、降额、丢弃 pending 和移除功能作为 `changes` 返回而不拒绝。下文 2026-09-30 “等待旧承诺到期才能降额”的规则和结论保留为历史；本轮实现、测试与真实运行见[执行计划与验收记录](license-renewal-replacement-plan-20261015.md)。
 
 **2026-10-05 后续审查修复：** 固定切主回放目标并阻止不完整晋升；隔离手工 image 导出与授权提交/回放，修复并发镜像写入及同一记录冷读后的幂等比较。增加安全诊断并复用记录内已验证的时钟状态，保留真实恢复缺失、时钟及业务范围约定。审查纠偏与本轮验证见[后续复核记录](license-followup-review-20261005.md)。

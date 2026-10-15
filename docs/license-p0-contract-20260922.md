@@ -11,6 +11,8 @@ Upstream and third-party components retain their respective licenses.
 
 当前范围冻结：2026-09-25（保留原文件名）；源码基线：`23e39e63295fd730523da8d916c898c28b903216`。本文落实[执行计划](/data/project/massdb-sql/docs/license-certificate-execution-plan-20260922.md)，以原五类出口、用户允许的窄式表非空探测及自用部署为基础；2026-09-29 用户另授权补充 ES search/file_review 两个 FE HTTP 读取入口。
 
+**2026-10-16 降级兼容与取消导入前 FE 检查：** 未来生效的证书不能降低额度（`LICENSE_RENEWAL_REDUCTION`），使新版写入的许可记录所有带许可旧版都能回放；许可持久化格式冻结；导入不再探测其他 FE、不再比较 JAR 和公钥文件哈希，只在首次初始化前确认全部 FE 带有许可模块；自用公钥内置在 `doris-fe.jar`，外部清单改为可选并继续随包提供。新增 M18；下文“严格 FE 包摘要门禁”等表述按此修订，详见[降级兼容、内置公钥与取消导入前 FE 检查执行计划](license-downgrade-trust-compat-plan-20261015.md)。
+
 **2026-10-15 取代式续期已实现：** 同一部署内 sequence 更高的合法证书一经导入，就完全取代当前 active 和 pending 的全部承诺；FE 不再比较新旧证书的到期时间、生效时间、额度和功能集，只保留“新证额度必须容纳当前已注册+预留用量”。validate/import 成功响应新增固定代码的 `changes`，`RENEWAL_REDUCTION` 不再产生。M15/M16 的保护性条款被本轮统一规则吸收，新增 M17；分层测试、真实运行与旧包回退边界见[执行计划与验收记录](license-renewal-replacement-plan-20261015.md)，不回写 M15/M16 的历史结论。
 
 **（历史）2026-09-30 续期契约调整已实现并完成分层验证：** 旧授权覆盖到期后，允许安全缩容至新额度以内，再导入较低额度续期证书；历史过期基础额度不再永久阻止降额。未过期 active/pending/base 额度承诺及当前完整注册+预留用量仍保护。等待低额度 pending 生效期间 ADD 提前采用较小上限，基础额度切换仍须持久提交；全部注册 FE 须先通过相同新包摘要的原有能力门禁，格式不变。279 项 FE 回归、Checkstyle/构建和 28 项签发测试通过；真实单 FE 注册身份缩容、SQL/HTTP 导入、ADD 拒绝、幂等与重启通过。M15/M16 的真实及受控范围、失败夹具和未执行边界见[本轮验收记录](license-expired-renewal-20260930.md)，不将旧 P1/P2/P3/P4 记录改写为此次新规则通过。
@@ -86,7 +88,7 @@ Checkpoint使用独立Env的历史截面，不能读线上静态快照；不生�
 
 升级分三步：先使全部提供SQL/HTTP/Flight/转发/计划服务的注册FE具备新格式能力；在受控发行窗口验证全部FE包及信任集；然后提交唯一deployment/首证书并单向激活。旧FE缺能力、未知版本、离线未验证FE不得被默认为可服务新规则。验证使用FE管理能力/发行清单，不改BE心跳协议。激活后，不支持把旧二进制直接加入服务或无备份格式迁移地降级；缺证、普通配置、skip journal不能取消激活。混合期不能宣称全FE读取许可已覆盖。
 
-2026-09-30 降额续期补充沿用原证书、journal/image 外壳格式和严格 FE 包摘要门禁：降额前必须使全部已注册 FE 使用相同新包。恢复仅对授权时间不重叠的 active/base→pending 放宽额度下降，base→active 保持原校验；旧二进制不能恢复带较低 pending 的新元数据。该兼容边界在本轮受控恢复和门禁测试中单列记录，不将旧 P2 混合版本测试直接计为通过，也不宣称重新完成真实多 FE 混包部署或切主。
+2026-10-16 起导入不再要求全部 FE 使用相同新包：新版只写所有带许可旧版都能回放的状态，外壳格式冻结，只有首次初始化前仍探测全部 FE 是否带有许可模块；整集群降级到更早的带许可版本不受证书影响（见[降级兼容、内置公钥与取消导入前 FE 检查执行计划](license-downgrade-trust-compat-plan-20261015.md)）。以下为历史表述：2026-09-30 降额续期补充沿用原证书、journal/image 外壳格式和严格 FE 包摘要门禁：降额前必须使全部已注册 FE 使用相同新包。恢复仅对授权时间不重叠的 active/base→pending 放宽额度下降，base→active 保持原校验；旧二进制不能恢复带较低 pending 的新元数据。该兼容边界在本轮受控恢复和门禁测试中单列记录，不将旧 P2 混合版本测试直接计为通过，也不宣称重新完成真实多 FE 混包部署或切主。
 
 上述升级/格式是 P0 冻结输入。真实 mixed-FE、checkpoint、坏槽、skip、切主和丢响应恢复测试属于 P2/P4；本轮只冻结设计，不冒充运行时通过。
 
@@ -202,6 +204,7 @@ Checkpoint使用独立Env的历史截面，不能读线上静态快照；不生�
 | M15 / 2026-09-30 降额续期补充（2026-10-15 被 M17 吸收，保留为历史） | 旧证 FE/BE 额度较高，在 expires_at 前后分别导入较低额新证；含成功 DROP、仅离线、仍预留、未过期 active/pending/base 承诺、validate 后成员变化、提交失败及重试 | 只有旧承诺已到期且新额覆盖完整注册+预留时允许降额；立即生效导入同步更新 base，超额 ADD 按新额拒绝。其他降额返回 `LICENSE_NODE_LIMIT_TOO_SMALL`（SQL 6201/45000、HTTP 400）且保旧；幂等重试不复活旧高额度，DROP 安全条件不变 | K1、K2、K3、K4；Import/Manager/Store |
 | M16 / 2026-09-30 未来降额与恢复补充（2026-10-15 被 M17 吸收，保留为历史） | 旧覆盖到期后导入低额度未来 pending，在等待期 ADD、到点激活、并发成员变化、journal/image 恢复；较高 pending 对照；旧包/混包门禁 | 等待期 FE/BE ADD 各取 base/pending 较小值；较高 pending 不提前扩额，激活重新核对用量后提交。仅不重叠 active/base→pending 降额允许恢复，base→active 不放宽；全部注册 FE 相同新包才通过门禁，旧版本不能承接新低 pending 状态；独立记录测试层级 | K1、K4；Import/Snapshot/Store |
 | M17 / 2026-10-15 取代式续期 | 到期更早、额度更低、功能更少的立即与未来新证；旧证未到期且已真正缩容/未缩容、预留占满、仅离线未 DROP；新 active 吞掉旧 pending、新 pending 替换旧 pending 并留空档；缩减后再导入更高额度、重新导入被取代旧证；validate 与 import 之间成员变化；journal/image/checkpoint 恢复；旧 FE 包回放与混包导入 | 实际用量满足即接受并原子取代，`changes` 按固定代码陈述缩减且 validate 与 import 对同一事实一致；低于实际用量返回 `LICENSE_NODE_LIMIT_TOO_SMALL` 保旧；等待期 ADD 取 base/pending 较小值，到点复核用量后提交 base；旧证只回执不恢复；旧包对重叠低额 pending 拒绝恢复，立即取代/仅缩短可回放但属不支持的回退。逐项层级见[M17 验收](license-renewal-replacement-plan-20261015.md) | K1、K2、K3、K4、K5；Import/Manager/Store/UI |
+| M18 / 2026-10-16 降级兼容与取消导入前 FE 检查 | 未来低额证书（仅 FE、仅 BE、两者；对 active 或已过期基础额度）；立即降额、等额与更高未来证书；无外部公钥文件、外部文件损坏/追加新公钥/kid 冲突；FE 离线或 JAR 不同的导入；多 FE 滚动升级、切主、整集群降级到 10-05 与 09-29 版本；从无许可版本升级时的首次初始化 | 未来低额返回 `LICENSE_RENEWAL_REDUCTION` 保旧，其余照常；内置公钥使 FE 不依赖外部文件即就绪；导入不再探测其他 FE；旧版 FE 回放新记录、整集群降级后状态与查询不变；首次初始化等全部 FE 带许可模块才发生。逐项层级见[降级兼容、内置公钥与取消导入前 FE 检查执行计划](license-downgrade-trust-compat-plan-20261015.md) | K1、K2、K3、K4；Import/TrustStore/FeCompatibility/Store |
 | U01 / P2U | 登录后其他 Tab、直达 /License、刷新、前进/后退、反向代理前缀、中英切换 | 其他 Tab 零新增许可请求；证书页加载一次，页面/资源/API 路径正确，Tab 选中与权限一致 | K5 |
 | U02 / P2U | ADMIN 文件与文本导入、validate 后确认；普通已具 Web 登录资格用户看状态并直接 POST；超大输入/坏证 | 前后端都做权限和大小校验，旧许可保持；输入只在临时内存，关闭/成功/注销清空，URL/storage/日志无原文；不为该功能扩大原 Web 登录资格 | K3、K5 |
 | U03 / P2U | 导入已提交待同步/响应丢失，进入回执查询；隐藏/离开页面/注销/网络失败 | 2/4/8/16/30 秒退避、单请求串行、总预算 120 秒；停止后不再自动发新请求，可手动查回执；不重复自动提交证书 | K3、K5 |

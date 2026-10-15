@@ -14,14 +14,18 @@ import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.KeyFactory;
+import java.security.MessageDigest;
 import java.security.PublicKey;
 import java.security.spec.X509EncodedKeySpec;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collection;
@@ -29,10 +33,15 @@ import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/** Explicit operator-installed public keys only; never fetches a certificate-supplied trust root. */
+/**
+ * Public keys shipped in doris-fe.jar plus optional operator-installed keys; never fetches a
+ * certificate-supplied trust root. The built-in manifest has the same bytes as the package's
+ * conf/massdb-license-trust.json, which earlier FE versions still read after a downgrade.
+ */
 public final class LicenseTrustStore {
     public enum Purpose {
         LICENSE("license"),
@@ -45,6 +54,7 @@ public final class LicenseTrustStore {
         }
     }
 
+    static final String BUILT_IN_RESOURCE = "/massdb/license/builtin-trust.json";
     private static final byte[] ED25519_PREFIX = {0x30, 0x2a, 0x30, 0x05, 0x06, 0x03,
             0x2b, 0x65, 0x70, 0x03, 0x21, 0x00};
     private static final ObjectMapper JSON = new ObjectMapper(JsonFactory.builder()
@@ -120,6 +130,90 @@ public final class LicenseTrustStore {
         } catch (IOException | GeneralSecurityException | IllegalArgumentException e) {
             throw invalid();
         }
+    }
+
+    /** The manifest packaged in doris-fe.jar. A missing or malformed resource fails closed, like an absent file. */
+    public static LicenseTrustStore builtIn() throws LicenseException {
+        try (InputStream input = LicenseTrustStore.class.getResourceAsStream(BUILT_IN_RESOURCE)) {
+            if (input == null) {
+                throw invalid();
+            }
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            byte[] chunk = new byte[4096];
+            int count;
+            while (buffer.size() <= 65536
+                    && (count = input.read(chunk, 0, Math.min(chunk.length, 65537 - buffer.size()))) != -1) {
+                buffer.write(chunk, 0, count);
+            }
+            return parse(buffer.toByteArray());
+        } catch (IOException e) {
+            throw invalid();
+        }
+    }
+
+    /**
+     * Add operator-installed keys. A key ID or key value never changes meaning: one ID carries one key and purpose,
+     * and one key is never trusted for two purposes. A conflict rejects the added keys as a whole.
+     */
+    public LicenseTrustStore merge(LicenseTrustStore added) throws LicenseException {
+        if (added == null) {
+            throw invalid();
+        }
+        Map<Purpose, Map<String, PublicKey>> merged = new EnumMap<>(Purpose.class);
+        for (Purpose purpose : Purpose.values()) {
+            merged.put(purpose, new HashMap<>());
+        }
+        Map<String, Purpose> keyPurposes = new HashMap<>();
+        for (LicenseTrustStore store : new LicenseTrustStore[] {this, added}) {
+            for (Purpose purpose : Purpose.values()) {
+                for (Map.Entry<String, PublicKey> entry : store.getKeys(purpose).entrySet()) {
+                    for (Purpose other : Purpose.values()) {
+                        if (other != purpose && merged.get(other).containsKey(entry.getKey())) {
+                            throw invalid();
+                        }
+                    }
+                    PublicKey existing = merged.get(purpose).get(entry.getKey());
+                    if (existing != null && !Arrays.equals(existing.getEncoded(), entry.getValue().getEncoded())) {
+                        throw invalid();
+                    }
+                    Purpose previous = keyPurposes.put(encode(entry.getValue()), purpose);
+                    if (previous != null && previous != purpose) {
+                        throw invalid();
+                    }
+                    merged.get(purpose).put(entry.getKey(), entry.getValue());
+                }
+            }
+        }
+        return new LicenseTrustStore(merged);
+    }
+
+    /** SHA-256 of the effective key set, independent of manifest formatting, field order or key order. */
+    public String digest() {
+        List<String> entries = new ArrayList<>();
+        for (Purpose purpose : Purpose.values()) {
+            for (Map.Entry<String, PublicKey> entry : getKeys(purpose).entrySet()) {
+                entries.add(purpose.wireName + "\n" + entry.getKey() + "\n" + encode(entry.getValue()));
+            }
+        }
+        Collections.sort(entries);
+        try {
+            MessageDigest sha = MessageDigest.getInstance("SHA-256");
+            for (String entry : entries) {
+                sha.update(entry.getBytes(StandardCharsets.UTF_8));
+                sha.update((byte) 0);
+            }
+            StringBuilder result = new StringBuilder(64);
+            for (byte value : sha.digest()) {
+                result.append(Character.forDigit((value >>> 4) & 15, 16)).append(Character.forDigit(value & 15, 16));
+            }
+            return result.toString();
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException("JDK SHA-256 unavailable", e);
+        }
+    }
+
+    private static String encode(PublicKey key) {
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(key.getEncoded());
     }
 
     public Map<String, PublicKey> getKeys(Purpose purpose) {

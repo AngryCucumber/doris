@@ -53,9 +53,18 @@ class LicenseManagerDiagnosticsTest {
     }
 
     @Test
-    void unconfiguredTrustWarnsOnceForEachManager() throws Exception {
+    void unconfiguredOptionalTrustUsesBuiltInKeysWithoutWarnings() throws Exception {
         for (String path : new String[] {null, ""}) {
-            assertTrustWarning(path, "License trust is not configured");
+            LicenseManager.Host host = host(path);
+            try (LogCapture logs = new LogCapture(); LicenseManager manager = new LicenseManager(host, false,
+                    new Time())) {
+                manager.onReplayComplete();
+                manager.capability();
+                Mockito.verify(host).localCapability(LicenseTrustStore.builtIn().digest());
+                manager.maintenance();
+                logs.flush();
+                Assertions.assertTrue(logs.events.isEmpty());
+            }
         }
     }
 
@@ -131,6 +140,7 @@ class LicenseManagerDiagnosticsTest {
             Assertions.assertEquals(Level.WARN, logs.events.get(0).getLevel());
             String message = logs.message(0);
             Assertions.assertTrue(message.contains(expectedMessage));
+            Assertions.assertTrue(message.contains("built-in public keys remain in use"));
             Assertions.assertTrue(message.contains("massdb_license_trust_store_file"));
             Assertions.assertTrue(message.contains("restart this FE"));
             Assertions.assertFalse(message.contains(directory.toString()));

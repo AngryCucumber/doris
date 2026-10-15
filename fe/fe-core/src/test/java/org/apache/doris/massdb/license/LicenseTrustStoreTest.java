@@ -14,12 +14,16 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.UUID;
 
 class LicenseTrustStoreTest {
@@ -143,6 +147,75 @@ class LicenseTrustStoreTest {
         LicenseTrustStore renamed = LicenseTrustStore.parse(bytes(replacement));
         Assertions.assertThrows(LicenseException.class, () -> old.requireSafeReplacement(renamed,
                 Collections.emptyList(), Collections.emptySet(), Collections.emptySet()));
+    }
+
+    @Test
+    void builtInManifestIsTheShippedSelfUsePublicTrust() throws Exception {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        try (InputStream input = LicenseTrustStore.class.getResourceAsStream(LicenseTrustStore.BUILT_IN_RESOURCE)) {
+            byte[] chunk = new byte[1024];
+            int count;
+            while ((count = input.read(chunk)) != -1) {
+                buffer.write(chunk, 0, count);
+            }
+        }
+        byte[] bytes = buffer.toByteArray();
+        // Same bytes as conf/massdb-license-trust.json in every released package; never replaced by a build.
+        StringBuilder hex = new StringBuilder();
+        for (byte value : MessageDigest.getInstance("SHA-256").digest(bytes)) {
+            hex.append(String.format("%02x", value & 0xff));
+        }
+        Assertions.assertEquals("b7b7e54f5197d753dd319619ecd5ff15d1387d9b7705f62756cf4e5ecbd45f7b", hex.toString());
+        LicenseTrustStore builtIn = LicenseTrustStore.builtIn();
+        Assertions.assertEquals(Collections.singleton("self-use-license-20260929"),
+                builtIn.getKeys(LicenseTrustStore.Purpose.LICENSE).keySet());
+        Assertions.assertEquals(Collections.singleton("self-use-time-repair-20260929"),
+                builtIn.getKeys(LicenseTrustStore.Purpose.TIME_REPAIR).keySet());
+        Assertions.assertEquals(builtIn.digest(), LicenseTrustStore.parse(bytes).digest());
+    }
+
+    @Test
+    void mergeAddsKeysButNeverChangesTheMeaningOfAnIdOrKey() throws Exception {
+        LicenseTrustStore base = LicenseTrustStore.parse(bytes(manifest()));
+        KeyPair added = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+        ObjectNode extra = JSON.createObjectNode().put("schema_version", 1);
+        extra.putArray("keys").add(entry("issuer-2027", "license", added)).add(entry("issuer", "license", licenseKey));
+        LicenseTrustStore merged = base.merge(LicenseTrustStore.parse(bytes(extra)));
+        Assertions.assertEquals(new HashSet<>(Arrays.asList("issuer", "issuer-2027")),
+                merged.getKeys(LicenseTrustStore.Purpose.LICENSE).keySet());
+        Assertions.assertEquals(Collections.singleton("repair"),
+                merged.getKeys(LicenseTrustStore.Purpose.TIME_REPAIR).keySet());
+        for (ObjectNode conflict : new ObjectNode[] {
+                single(entry("issuer", "license", added)),
+                single(entry("issuer", "time_repair", added)),
+                single(entry("other", "time_repair", licenseKey))}) {
+            LicenseException error = Assertions.assertThrows(LicenseException.class,
+                    () -> base.merge(LicenseTrustStore.parse(bytes(conflict))));
+            Assertions.assertEquals(LicenseErrorCode.INVALID_TRUST_STORE, error.getErrorCode());
+        }
+        Assertions.assertEquals(2, base.getKeys(LicenseTrustStore.Purpose.LICENSE).size()
+                + base.getKeys(LicenseTrustStore.Purpose.TIME_REPAIR).size());
+    }
+
+    @Test
+    void digestDependsOnKeysNotManifestFormatting() throws Exception {
+        ObjectNode manifest = manifest();
+        ObjectNode reordered = JSON.createObjectNode();
+        reordered.putArray("keys").add(manifest.get("keys").get(1)).add(manifest.get("keys").get(0));
+        reordered.put("schema_version", 1);
+        String digest = LicenseTrustStore.parse(bytes(manifest)).digest();
+        Assertions.assertTrue(digest.matches("[0-9a-f]{64}"));
+        Assertions.assertEquals(digest, LicenseTrustStore.parse(
+                JSON.writerWithDefaultPrettyPrinter().writeValueAsBytes(reordered)).digest());
+        ObjectNode renamed = manifest();
+        ((ObjectNode) renamed.get("keys").get(0)).put("kid", "issuer-renamed");
+        Assertions.assertNotEquals(digest, LicenseTrustStore.parse(bytes(renamed)).digest());
+    }
+
+    private ObjectNode single(ObjectNode entry) {
+        ObjectNode result = JSON.createObjectNode().put("schema_version", 1);
+        result.putArray("keys").add(entry);
+        return result;
     }
 
     private ObjectNode manifest() {

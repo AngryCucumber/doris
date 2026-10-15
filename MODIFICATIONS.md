@@ -4,6 +4,29 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License downgrade safety, built-in public keys and no import-time FE check (2026-10-16)
+
+- `LicenseImportPolicy`: reject a candidate that starts in the future with a lower FE or BE limit than the retained
+  active or base certificate (`RENEWAL_REDUCTION`). Licensed FEs released before 2026-10-15 stop when they recover
+  such a pending state, so new metadata stays readable by every earlier licensed version and a whole-cluster
+  downgrade is not affected by license data. Lower limits must start immediately. Recovery still accepts such a
+  pending if an earlier version wrote it, and the persisted record shape is unchanged (pinned by a test).
+- `LicenseTrustStore`, `LicenseManager`: ship the self-use public-key manifest inside `doris-fe.jar`
+  (`massdb/license/builtin-trust.json`, the same bytes as the packaged `conf/massdb-license-trust.json`). The external
+  manifest becomes optional and only adds keys; a missing, malformed or conflicting file is logged and ignored instead
+  of leaving licensing unready. Packages keep shipping the file and the `fe.conf` line because earlier FE versions read
+  only that file.
+- `LicenseManager`, `LicenseFeCompatibility`, `LicensePersistRecord`: imports no longer probe other FEs, no longer
+  compare `doris-fe.jar` or trust-file digests and no longer hash the JAR; offline FEs and different JAR bytes do not
+  block imports. New import records store a null `rollout`. Only the one-time deployment initialization still probes
+  every registered FE, and only for the license module, so an upgrade from a version without it cannot leave an old FE
+  unable to replay. The capability endpoint reports `package_sha256` as null and `trust_sha256` as the effective key
+  set digest.
+- `fe-common` `Config`, `conf/fe.conf`: describe the trust file as optional and the management port map as used only
+  for initialization. UI: add Chinese and English text for the future-reduction rejection.
+- Update the P0 contract, import core, management manual, earlier plans, the issuer README (lower limits must start
+  immediately; key rotation keeps old keys) and add `docs/license-downgrade-trust-compat-plan-20261015.md`.
+
 ## License replacement renewal (2026-10-15)
 
 - `LicenseImportPolicy`: a valid certificate with a higher sequence now replaces every accepted active and

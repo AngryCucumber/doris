@@ -500,7 +500,8 @@ class LicenseManagerTest {
         run(LicenseManager.Action.IMPORT, certificate(1, 900, 1100));
         manager.runMembershipMutation(1, 3, () -> host.changeMembers(2, 3));
         time.advance(100_000);
-        run(LicenseManager.Action.IMPORT, certificateWithLimits(2, 1200, 2000, 2, 3));
+        assertFutureReductionRejected(certificateWithLimits(2, 1200, 2000, 2, 3));
+        replayLegacyPending(2, 1200, 2000, 2, 3);
         Assertions.assertEquals(LicenseQueryStatus.EXPIRED, manager.queryStatus());
         Assertions.assertEquals(5, manager.getSnapshot().getBaseMaxBeNodes());
         assertAdditionalNodesRejected(manager);
@@ -537,21 +538,21 @@ class LicenseManagerTest {
         manager.runMembershipMutation(1, 2, () -> host.changeMembers(2, 2));
         time.advance(100_000);
         String lower = certificateWithLimits(2, 1100, 2000, 2, 3);
-        host.frontendVersion++;
-        host.probeEntered = new CountDownLatch(1);
-        host.probeRelease = new CountDownLatch(1);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        holdVerification(entered, release);
         ExecutorService client = Executors.newSingleThreadExecutor();
         try {
             Future<Integer> imported = client.submit(() -> importStatus(lower, "lower-membership-race"));
-            Assertions.assertTrue(host.probeEntered.await(5, TimeUnit.SECONDS));
+            Assertions.assertTrue(entered.await(5, TimeUnit.SECONDS));
             manager.runMembershipMutation(0, 2, () -> host.changeMembers(2, 4));
-            host.probeRelease.countDown();
+            release.countDown();
             Assertions.assertEquals(409, imported.get(5, TimeUnit.SECONDS));
             Assertions.assertEquals(5, manager.getSnapshot().getBaseMaxBeNodes());
             Assertions.assertEquals(1L, run(LicenseManager.Action.STATUS, null).getBody().get("highest_sequence"));
             assertCapacityImportRejected(lower);
         } finally {
-            host.probeRelease.countDown();
+            release.countDown();
             client.shutdownNow();
         }
     }
@@ -685,20 +686,20 @@ class LicenseManagerTest {
         start();
         run(LicenseManager.Action.IMPORT, certificate(1, 900, 2000));
         String renewal = certificate(2, 900, 2500);
-        host.frontendVersion++;
-        host.probeEntered = new CountDownLatch(1);
-        host.probeRelease = new CountDownLatch(1);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        holdVerification(entered, release);
         ExecutorService client = Executors.newSingleThreadExecutor();
         try {
             Future<Integer> imported = client.submit(() -> importStatus(renewal, "membership-race"));
-            Assertions.assertTrue(host.probeEntered.await(5, TimeUnit.SECONDS));
+            Assertions.assertTrue(entered.await(5, TimeUnit.SECONDS));
             manager.runMembershipMutation(0, 1, () -> host.changeMembers(1, 1));
-            host.probeRelease.countDown();
+            release.countDown();
             Assertions.assertEquals(409, imported.get(5, TimeUnit.SECONDS));
             Assertions.assertEquals(1L, run(LicenseManager.Action.STATUS, null).getBody().get("highest_sequence"));
             Assertions.assertEquals(1, manager.getSnapshot().getRegisteredBe());
         } finally {
-            host.probeRelease.countDown();
+            release.countDown();
             client.shutdownNow();
         }
     }
@@ -751,25 +752,29 @@ class LicenseManagerTest {
     }
 
     @Test
-    void duplicateImportReturnsOriginalVersionEvenWhenCompatibilityProbeFails() throws Exception {
+    void importsDoNotProbeOtherFrontendsAndDuplicatesKeepTheirOriginalVersion() throws Exception {
         start();
+        int probes = host.activationProbes.get();
         String first = certificate(1, 900, 2000);
         Map<String, Object> original = run(LicenseManager.Action.IMPORT, first).getBody();
         String second = certificate(2, 900, 3000);
         run(LicenseManager.Action.IMPORT, second);
         long version = manager.getAppliedVersion();
+        // Another FE is offline or runs different bytes, and the registered FE set changed after the last import.
         host.compatible = false;
+        host.frontendVersion = 2;
         Map<String, Object> duplicate = run(LicenseManager.Action.IMPORT, first).getBody();
         Assertions.assertEquals(original.get("committed_version"), duplicate.get("committed_version"));
         Assertions.assertEquals(version, manager.getAppliedVersion());
         Assertions.assertEquals(2L, run(LicenseManager.Action.STATUS, null).getBody().get("highest_sequence"));
-        // A temporarily offline, already verified FE does not prevent a normal renewal.
-        run(LicenseManager.Action.IMPORT, certificate(3, 900, 4000));
-        Assertions.assertEquals(3L, run(LicenseManager.Action.STATUS, null).getBody().get("highest_sequence"));
-        host.frontendVersion = 2;
-        Assertions.assertEquals("LICENSE_FE_UPGRADE_REQUIRED", Assertions.assertThrows(
-                LicenseManagementException.class, () -> run(LicenseManager.Action.IMPORT,
-                        certificate(4, 900, 5000))).getReason());
+        Assertions.assertEquals("APPLIED", run(LicenseManager.Action.IMPORT, certificate(3, 900, 4000))
+                .getBody().get("submission_status"));
+        Assertions.assertEquals("APPLIED", run(LicenseManager.Action.IMPORT, certificate(4, 900, 5000))
+                .getBody().get("submission_status"));
+        Assertions.assertEquals(4L, run(LicenseManager.Action.STATUS, null).getBody().get("highest_sequence"));
+        Assertions.assertEquals(probes, host.activationProbes.get());
+        // New records carry no FE package proof; the persisted shape is unchanged (null is the initial value).
+        Assertions.assertTrue(imageJson(image(manager)).get("rollout").isNull());
     }
 
     @Test
@@ -1058,8 +1063,9 @@ class LicenseManagerTest {
     void verificationQueueIsBoundedAndStatusRemainsAvailable() throws Exception {
         start();
         String candidate = certificate(1, 900, 2000);
-        host.probeEntered = new CountDownLatch(2);
-        host.probeRelease = new CountDownLatch(1);
+        CountDownLatch entered = new CountDownLatch(2);
+        CountDownLatch release = new CountDownLatch(1);
+        holdVerification(entered, release);
         ExecutorService clients = Executors.newFixedThreadPool(35);
         List<Future<Integer>> requests = new ArrayList<>();
         try {
@@ -1073,7 +1079,7 @@ class LicenseManagerTest {
                     }
                 }));
             }
-            Assertions.assertTrue(host.probeEntered.await(5, TimeUnit.SECONDS));
+            Assertions.assertTrue(entered.await(5, TimeUnit.SECONDS));
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
             Future<Integer> rejected = null;
             while (rejected == null && System.nanoTime() < deadline) {
@@ -1089,7 +1095,7 @@ class LicenseManagerTest {
             Assertions.assertEquals(429, rejected.get().intValue());
             Assertions.assertEquals(200, manager.execute(LicenseManager.Action.STATUS, null, "reader", false)
                     .getHttpStatus());
-            host.probeRelease.countDown();
+            release.countDown();
             int successful = 0;
             for (Future<Integer> request : requests) {
                 int status = request.get(5, TimeUnit.SECONDS);
@@ -1099,7 +1105,7 @@ class LicenseManagerTest {
             Assertions.assertEquals(34, successful);
             Assertions.assertEquals(2, manager.getAppliedVersion());
         } finally {
-            host.probeRelease.countDown();
+            release.countDown();
             clients.shutdownNow();
             Assertions.assertTrue(clients.awaitTermination(5, TimeUnit.SECONDS));
         }
@@ -1328,7 +1334,7 @@ class LicenseManagerTest {
     }
 
     @Test
-    void absentInvalidAndOversizedTrustAllowDeploymentIdentityButNeverAcceptAnUntrustedCertificate() throws Exception {
+    void brokenOptionalTrustFallsBackToBuiltInKeysAndNeverAcceptsAnUntrustedCertificate() throws Exception {
         Path missing = directory.resolve("missing-trust.json");
         Path invalid = directory.resolve("invalid-trust.json");
         Path oversized = directory.resolve("oversized-trust.json");
@@ -1351,9 +1357,10 @@ class LicenseManagerTest {
                 Assertions.assertArrayEquals(before, image(untrusted));
                 Assertions.assertEquals(1, untrustedHost.records.size());
                 Assertions.assertFalse(untrusted.isActivated());
-                Assertions.assertNull(untrusted.capability().get("trust_sha256"));
-                Assertions.assertEquals(LicenseQueryStatus.LICENSE_NOT_READY,
-                        untrusted.getSnapshot().queryStatus(1000));
+                Assertions.assertEquals(LicenseTrustStore.builtIn().digest(),
+                        untrusted.capability().get("trust_sha256"));
+                // Ready on the built-in keys; without an imported certificate queries are MISSING, not NOT_READY.
+                Assertions.assertEquals(LicenseQueryStatus.MISSING, untrusted.getSnapshot().queryStatus(1000));
             }
         }
     }
@@ -1363,15 +1370,16 @@ class LicenseManagerTest {
         start();
         String first = certificate(1, 900, 2000);
         String second = certificate(1, 900, 3000);
-        host.probeEntered = new CountDownLatch(2);
-        host.probeRelease = new CountDownLatch(1);
+        CountDownLatch entered = new CountDownLatch(2);
+        CountDownLatch release = new CountDownLatch(1);
+        holdVerification(entered, release);
         ExecutorService clients = Executors.newFixedThreadPool(2);
         try {
             Future<Integer> firstResult = clients.submit(() -> importStatus(first, "concurrent-first"));
             Future<Integer> secondResult = clients.submit(() -> importStatus(second, "concurrent-second"));
-            Assertions.assertTrue(host.probeEntered.await(5, TimeUnit.SECONDS));
+            Assertions.assertTrue(entered.await(5, TimeUnit.SECONDS));
             Assertions.assertEquals(1, manager.getAppliedVersion());
-            host.probeRelease.countDown();
+            release.countDown();
             int a = firstResult.get(5, TimeUnit.SECONDS);
             int b = secondResult.get(5, TimeUnit.SECONDS);
             Assertions.assertTrue(a == 200 && b == 409 || a == 409 && b == 200);
@@ -1385,7 +1393,7 @@ class LicenseManagerTest {
             Assertions.assertEquals(2, manager.getAppliedVersion());
             Assertions.assertEquals(2, host.records.size());
         } finally {
-            host.probeRelease.countDown();
+            release.countDown();
             clients.shutdownNow();
             Assertions.assertTrue(clients.awaitTermination(5, TimeUnit.SECONDS));
         }
@@ -1395,16 +1403,17 @@ class LicenseManagerTest {
     void concurrentIdenticalImportsConfirmOneDurableReceiptWhenPublicationFails() throws Exception {
         start();
         String candidate = certificate(1, 900, 2000);
-        host.probeEntered = new CountDownLatch(2);
-        host.probeRelease = new CountDownLatch(1);
+        CountDownLatch entered = new CountDownLatch(2);
+        CountDownLatch release = new CountDownLatch(1);
+        holdVerification(entered, release);
         host.failPublicationAfterCommit = true;
         ExecutorService clients = Executors.newFixedThreadPool(2);
         try {
             Future<Integer> first = clients.submit(() -> importStatus(candidate, "concurrent-pending-first"));
             Future<Integer> second = clients.submit(() -> importStatus(candidate, "concurrent-pending-second"));
-            Assertions.assertTrue(host.probeEntered.await(5, TimeUnit.SECONDS));
+            Assertions.assertTrue(entered.await(5, TimeUnit.SECONDS));
             Assertions.assertEquals(1, host.records.size());
-            host.probeRelease.countDown();
+            release.countDown();
             Assertions.assertEquals(202, first.get(5, TimeUnit.SECONDS).intValue());
             Assertions.assertEquals(202, second.get(5, TimeUnit.SECONDS).intValue());
             Assertions.assertEquals(2, host.records.size());
@@ -1416,7 +1425,7 @@ class LicenseManagerTest {
             Assertions.assertEquals(2, manager.getAppliedVersion());
             Assertions.assertEquals(2, host.records.size());
         } finally {
-            host.probeRelease.countDown();
+            release.countDown();
             clients.shutdownNow();
             Assertions.assertTrue(clients.awaitTermination(5, TimeUnit.SECONDS));
         }
@@ -1426,14 +1435,15 @@ class LicenseManagerTest {
     void cancellingQueuedRequestReleasesItsSlotBeforeBusyWorkersAreUnblocked() throws Exception {
         start();
         String candidate = certificate(1, 900, 2000);
-        host.probeEntered = new CountDownLatch(2);
-        host.probeRelease = new CountDownLatch(1);
+        CountDownLatch entered = new CountDownLatch(2);
+        CountDownLatch release = new CountDownLatch(1);
+        holdVerification(entered, release);
         List<AsyncImport> calls = new ArrayList<>();
         try {
             for (int i = 0; i < 2; i++) {
                 calls.add(new AsyncImport(manager, candidate, "busy-" + i));
             }
-            Assertions.assertTrue(host.probeEntered.await(5, TimeUnit.SECONDS));
+            Assertions.assertTrue(entered.await(5, TimeUnit.SECONDS));
             for (int i = 0; i < 32; i++) {
                 calls.add(new AsyncImport(manager, candidate, "queued-" + i));
             }
@@ -1453,7 +1463,7 @@ class LicenseManagerTest {
             awaitWaiting(Collections.singletonList(replacement));
             Assertions.assertEquals(429, importStatus(candidate, "full-after-replacement"));
             Assertions.assertEquals(1, host.records.size());
-            host.probeRelease.countDown();
+            release.countDown();
             for (AsyncImport call : calls) {
                 call.thread.join(5000);
                 Assertions.assertFalse(call.thread.isAlive());
@@ -1465,7 +1475,7 @@ class LicenseManagerTest {
             Assertions.assertEquals(2, manager.getAppliedVersion());
             Assertions.assertEquals(2, host.records.size());
         } finally {
-            host.probeRelease.countDown();
+            release.countDown();
             for (AsyncImport call : calls) {
                 call.thread.interrupt();
             }
@@ -1569,6 +1579,24 @@ class LicenseManagerTest {
     }
 
     @Test
+    void futureReductionIsRejectedButImmediateReductionAndEqualFutureAreAccepted() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 100_000));
+        assertFutureReductionRejected(certificateWithLimits(2, 50_000, 200_000, 2, 5));
+        assertFutureReductionRejected(certificateWithLimits(2, 50_000, 200_000, 3, 4));
+        Assertions.assertEquals(1L, run(LicenseManager.Action.STATUS, null).getBody().get("highest_sequence"));
+        Map<String, Object> future = run(LicenseManager.Action.IMPORT,
+                certificateWithLimits(2, 50_000, 200_000, 3, 5)).getBody();
+        Assertions.assertEquals("APPLIED", future.get("submission_status"));
+        Map<String, Object> immediate = run(LicenseManager.Action.IMPORT,
+                certificateWithLimits(3, 900, 150_000, 2, 4)).getBody();
+        Assertions.assertEquals(Arrays.asList("FE_LIMIT_REDUCED", "BE_LIMIT_REDUCED", "PENDING_DISCARDED"),
+                codes(immediate));
+        Assertions.assertEquals(2, manager.getSnapshot().getBaseMaxFeNodes());
+        Assertions.assertNull(run(LicenseManager.Action.STATUS, null).getBody().get("pending"));
+    }
+
+    @Test
     void shorterRenewalMovesExpiryAndExpiringWarningToTheNewCertificate() throws Exception {
         start();
         long day = 24L * 60 * 60;
@@ -1596,13 +1624,13 @@ class LicenseManagerTest {
     }
 
     @Test
-    void lowerFuturePendingCapsAddsNowAndActivatesOnlyAfterRecheckingUsage() throws Exception {
+    void legacyLowerPendingCapsAddsAndActivatesOnlyAfterRecheckingUsage() throws Exception {
         start();
         run(LicenseManager.Action.IMPORT, certificate(1, 900, 100_000));
         manager.runMembershipMutation(1, 3, () -> host.changeMembers(2, 3));
-        Map<String, Object> pending = run(LicenseManager.Action.IMPORT,
-                certificateWithLimits(2, 2000, 200_000, 2, 3)).getBody();
-        Assertions.assertEquals(Arrays.asList("FE_LIMIT_REDUCED", "BE_LIMIT_REDUCED"), codes(pending));
+        // New imports reject it; metadata written by 2026-09-30..10-15 FEs may still contain it.
+        assertFutureReductionRejected(certificateWithLimits(2, 2000, 200_000, 2, 3));
+        replayLegacyPending(2, 2000, 200_000, 2, 3);
         Assertions.assertEquals(3, manager.getSnapshot().getBaseMaxFeNodes());
         Assertions.assertEquals(5, manager.getSnapshot().getBaseMaxBeNodes());
         assertAdditionalNodesRejected(manager);
@@ -1950,6 +1978,63 @@ class LicenseManagerTest {
                 old.getHighWaterMillis() + 60_000, old.getRepairAuthorizationVersion());
         return record.withClock(LicensePersistRecord.WATERMARK,
                 new LicenseClockRepair.State(record.getDeploymentId(), next, before.getReceipts()));
+    }
+
+    /** Hold management verification workers inside certificate verification; commit-thread replays never wait. */
+    private void holdVerification(CountDownLatch entered, CountDownLatch release) throws Exception {
+        java.lang.reflect.Field field = LicenseManager.class.getDeclaredField("verifier");
+        field.setAccessible(true);
+        LicenseVerifier held = Mockito.spy((LicenseVerifier) field.get(manager));
+        Mockito.doAnswer(invocation -> {
+            if (Thread.currentThread().getName().startsWith("license-verification")) {
+                entered.countDown();
+                Assertions.assertTrue(release.await(10, TimeUnit.SECONDS));
+            }
+            return invocation.callRealMethod();
+        }).when(held).verify(Mockito.anyString());
+        field.set(manager, held);
+    }
+
+    private void assertFutureReductionRejected(String certificate) throws Exception {
+        byte[] before = image(manager);
+        int records = host.records.size();
+        for (LicenseManager.Action action : new LicenseManager.Action[] {
+                LicenseManager.Action.VALIDATE, LicenseManager.Action.IMPORT}) {
+            LicenseManagementException failure = Assertions.assertThrows(LicenseManagementException.class,
+                    () -> run(action, certificate));
+            Assertions.assertEquals("LICENSE_RENEWAL_REDUCTION", failure.getReason());
+            Assertions.assertEquals(400, failure.getHttpStatus());
+            Assertions.assertEquals(6201, failure.getSqlErrorCode());
+            Assertions.assertEquals("NOT_SUBMITTED", failure.getBody().get("submission_status"));
+            Assertions.assertArrayEquals(before, image(manager));
+            Assertions.assertEquals(records, host.records.size());
+        }
+    }
+
+    /** Replay a lower future pending exactly as a 2026-09-30..10-15 FE would have journaled it. */
+    private void replayLegacyPending(long sequence, long notBefore, long expiresAt, int maxFe, int maxBe)
+            throws Exception {
+        String compact = certificateWithLimits(sequence, notBefore, expiresAt, maxFe, maxBe);
+        LicenseImportState current = (LicenseImportState) managerField("imports");
+        long version = current.getLicenseVersion() + 1;
+        List<LicenseImportState.Receipt> receipts = new ArrayList<>(current.getReceipts());
+        receipts.add(new LicenseImportState.Receipt(LicenseVerifier.fingerprint(compact), "license-" + sequence,
+                sequence, version));
+        LicenseImportState legacy = LicenseImportState.restore(current.getDeploymentId(), current.getActive(),
+                LicenseImportState.Slot.verify(compact, version, (LicenseVerifier) managerField("verifier")),
+                current.getEffectiveBase(), sequence, version, receipts);
+        LicensePersistRecord next = ((LicensePersistRecord) managerField("committed"))
+                .withImports(LicensePersistRecord.ACCEPT, legacy, true);
+        host.records.add(next);
+        manager.replay(next);
+        Assertions.assertEquals(sequence, ((LicenseImportState) managerField("imports")).getPending()
+                .getDocument().getSequence());
+    }
+
+    private Object managerField(String name) throws Exception {
+        java.lang.reflect.Field field = LicenseManager.class.getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(manager);
     }
 
     private static void installVerifier(LicenseManager target, LicenseVerifier verifier) throws Exception {

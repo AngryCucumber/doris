@@ -87,7 +87,7 @@ validate 和 import 成功响应新增 `changes` 数组，每项含固定 `code`
 - expires_at 必须大于可信 UTC 时间；不认客户端本地时间，不允许手工改时绕过。
 - 额度按真正除名后的已注册数量加进行中的 ADD 预留计算。停进程、离线不释放额度；BE 须 `DECOMMISSION BACKEND` 完成，FE 删除仍受角色、主节点和法定人数约束。
 - 已消费序号不可回退。重新导入被取代的旧证只返回原回执，不恢复旧额度或旧期限；误导入只能由签发方签发更高序号的新证纠正。需要恢复更长期限或更高额度时同样只需一张新证，不存在死路。
-- 导入前全部已注册 FE 必须通过相同包摘要门禁（`LicenseFeCompatibility`）。该门禁只在导入时检查，不阻止之后整集群回退二进制。回退到本轮之前的 FE 包属于**不支持的运维操作**，不是程序保证：旧包的恢复校验只拒绝"与未到期 active 或 base 重叠的更低额度 pending"这一种状态；立即生效的取代（active 与 base 同为新证）和单纯缩短到期的状态旧包能够回放，回放后旧包会按旧规则处理后续导入。实测补充见 7.5：旧包逐条回放最近 image 之后的 journal，判断的是该区间内出现过的每个状态；遇到重叠低额 pending 时 FE 进程退出。
+- （2026-10-16 修订：导入前的包摘要门禁已取消，未来降额被拒绝以保证旧版可回放，见[降级兼容、内置公钥与取消导入前 FE 检查执行计划](license-downgrade-trust-compat-plan-20261015.md)。以下为本轮原文。）导入前全部已注册 FE 必须通过相同包摘要门禁（`LicenseFeCompatibility`）。该门禁只在导入时检查，不阻止之后整集群回退二进制。回退到本轮之前的 FE 包属于**不支持的运维操作**，不是程序保证：旧包的恢复校验只拒绝"与未到期 active 或 base 重叠的更低额度 pending"这一种状态；立即生效的取代（active 与 base 同为新证）和单纯缩短到期的状态旧包能够回放，回放后旧包会按旧规则处理后续导入。实测补充见 7.5：旧包逐条回放最近 image 之后的 journal，判断的是该区间内出现过的每个状态；遇到重叠低额 pending 时 FE 进程退出。
 - 回执上限、限流、脱敏、权限、转发等管理接口行为不变。
 
 ## 3. 改动清单
@@ -139,7 +139,7 @@ LicenseManager 的 ADD 校验、`LicenseSnapshot`、`LicenseQueryGuard`、持久
 | M17-03 | 旧证未到期、未缩容、额度降低 | `NODE_LIMIT_TOO_SMALL`，保旧，最高序号不变 |
 | M17-04 | 进行中的 ADD 预留占满额度时降额 | `NODE_LIMIT_TOO_SMALL` |
 | M17-05 | 仅停进程或离线、未 DROP 的节点仍计数 | `NODE_LIMIT_TOO_SMALL` |
-| M17-06 | 低额未来 pending | 接受；等待期 ADD 取 min(base, pending)；到点 `prepareBaseActivation` 重新核对用量后切换 base |
+| M17-06 | 低额未来 pending（2026-10-16 起改为拒绝，见 M18） | 接受；等待期 ADD 取 min(base, pending)；到点 `prepareBaseActivation` 重新核对用量后切换 base |
 | M17-07 | 新 active 吞掉旧 pending | 接受，`PENDING_DISCARDED`；旧 pending 回执保留 |
 | M17-08 | 新 pending 替换旧 pending，生效更晚 | 接受，`PENDING_DISCARDED` 加 `COVERAGE_GAP` |
 | M17-09 | 旧 active 到期后新 pending 才生效 | 接受，`COVERAGE_GAP`；空档内查询 EXPIRED |
@@ -152,7 +152,7 @@ LicenseManager 的 ADD 校验、`LicenseSnapshot`、`LicenseQueryGuard`、持久
 | M17-14 | 降额/缩短状态的 journal 回放、image 恢复、checkpoint | 恢复成功，事实与提交一致；`SHOW LICENSE` 和 HTTP 的 `max_*`、`base_max_*` 一致 |
 | M17-15a | 旧 FE 包回放"立即取代"或"仅缩短到期"状态 | 回放成功；记录为"可回放但不支持"的运维边界，不宣称程序阻止 |
 | M17-15b | 旧 FE 包回放"与未到期 active/base 重叠的更低额度 pending"状态 | 恢复校验拒绝，记录为程序保证的兼容边界 |
-| M17-15c | 混包集群导入 | 包摘要门禁在导入前返回 `LICENSE_FE_UPGRADE_REQUIRED`；该门禁不覆盖导入后的整体回退 |
+| M17-15c | 混包集群导入（2026-10-16 起导入不再检查） | 包摘要门禁在导入前返回 `LICENSE_FE_UPGRADE_REQUIRED`；该门禁不覆盖导入后的整体回退 |
 | M17-16 | expires_at ≤ 可信时间、issued_at 超前、时钟可疑 | 拒绝，不变 |
 | M17-17 | validate 与 import 对同一候选返回相同 `changes` | 一致 |
 

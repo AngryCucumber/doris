@@ -174,8 +174,13 @@ python3 tools/license-issuer/license_issuer.py --openssl /usr/bin/openssl sign \
 | `PENDING_DISCARDED` | 旧证在 `--at` 时尚未生效，导入后作为 pending 被替换 | `license_id`、`sequence` |
 | `FEATURES_REMOVED` | 旧证能力不在新证中 | `features` |
 
-这些是签发前要与客户确认的事实，签发仍然成功；导入后被取代的旧证不能用来恢复旧期限或额度，误签只能再签更高序号的新证纠正。`prepare-claims` 仍要求新额度不少于部署申请中的注册数，不会因为续期降额而跳过该检查。
+这些是签发前要与客户确认的事实，签发仍然成功；导入后被取代的旧证不能用来恢复旧期限或额度，误签只能再签更高序号的新证纠正。
+2026-10-16 起，数据库拒绝导入“未来才生效、且 FE 或 BE 额度低于当前证书”的证书（`LICENSE_RENEWAL_REDUCTION`），以保证更早的带许可 FE 版本始终能回放元数据、整集群降级不受证书影响。降低额度的证书请让 `not_before` 不晚于导入时间（立即生效），或等到生效时间到达后再导入；预检结果中同时出现未来的 `not_before` 与 `FE_LIMIT_REDUCED`/`BE_LIMIT_REDUCED` 时即属这种情况。`prepare-claims` 仍要求新额度不少于部署申请中的注册数，不会因为续期降额而跳过该检查。
 本工具只比较传入的一张旧证，不知道 FE 当时的 active、基础额度和实时成员：数据库 VALIDATE 与 IMPORT 响应中的 `changes` 按 FE 实际状态计算，以导入响应为准。`--at` 是离线预检时间，不改变 FE 的可信时间；签发方仍须维护签发登记。省略旧证参数仅执行单证检查。
+
+### 换钥纪律
+
+FE 把自用公钥内置在 `doris-fe.jar` 中，发行包仍提供同字节的 `conf/massdb-license-trust.json` 供更早的 FE 版本使用。换钥时：先用 `keygen` 生成新密钥对，用 `export-trust --existing` 在保留旧公钥的同时追加新公钥，随一个新版本同时更新内置清单与外部文件；在所有可能降级到的版本都包含新公钥之前，继续用旧私钥签发；旧公钥在不再有任何版本或证书依赖它之后才能移除。只追加公钥时，也可临时把新清单放到 `massdb_license_trust_store_file` 指向的外部文件中，内置公钥照常生效。
 
 ## 4. 离线验证
 

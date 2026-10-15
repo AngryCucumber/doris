@@ -189,7 +189,8 @@
             "LICENSE_SUBMISSION_UNKNOWN": "The submission could not be confirmed. Query its receipt; do not assume it failed.",
             "LICENSE_IMPORT_HISTORY_UNAVAILABLE": "This submission cannot currently be confirmed from the available history.",
             "LICENSE_NOT_READY": "License management is not ready. Retry later or query the receipt for an earlier submission.",
-            "LICENSE_RATE_LIMITED": "Too many requests. Respect the server retry interval."
+            "LICENSE_RATE_LIMITED": "Too many requests. Respect the server retry interval.",
+            "LICENSE_RENEWAL_REDUCTION": "A certificate that starts in the future cannot lower the current FE/BE limit. Issue it to start now, or import it once its start time arrives."
         }
     }
 }

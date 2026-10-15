@@ -189,7 +189,8 @@
             "LICENSE_SUBMISSION_UNKNOWN": "尚不能确认提交结果，请查询回执，不应据此判定提交失败。",
             "LICENSE_IMPORT_HISTORY_UNAVAILABLE": "现有历史记录暂时无法确认该次提交。",
             "LICENSE_NOT_READY": "授权管理尚未就绪。稍后重试，已有提交请查询回执。",
-            "LICENSE_RATE_LIMITED": "请求过于频繁，请按服务端等待时间重试。"
+            "LICENSE_RATE_LIMITED": "请求过于频繁，请按服务端等待时间重试。",
+            "LICENSE_RENEWAL_REDUCTION": "未来生效的证书不能低于当前 FE/BE 额度。请签发立即生效的证书，或在生效时间到达后再导入。"
         }
     }
 }

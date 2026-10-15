@@ -994,6 +994,20 @@ test('P2U License browser contracts (controlled API, not FE integration)', { tim
             assert.ok(!text.includes(CANARY) && !text.includes('<b>'), 'untrusted values must not be echoed');
         });
 
+        for (const language of ['en', 'zh-CN']) {
+            await run('U05-future-reduction-rejected-' + language, async f => {
+                f.model.validate = { status: 400, body: errorBody('LICENSE_RENEWAL_REDUCTION') };
+                await f.enter(); await f.open();
+                await f.id('license-validate').click();
+                await f.id('license-error').waitFor();
+                const text = await f.id('license-error').innerText();
+                assert.match(text, language === 'en' ? /cannot lower the current FE\/BE limit/ : /不能低于当前 FE\/BE 额度/);
+                assert.match(text, /LICENSE_RENEWAL_REDUCTION · HTTP 400/);
+                assert.equal(await f.id('license-confirm-import').isEnabled(), false);
+                assert.equal(f.count('/import'), 0);
+            }, { language });
+        }
+
         await run('U03-unknown-submission-receipt', async f => {
             f.model.imported = { status: 503, body: receipt('UNKNOWN') };
             f.model.received = { status: 503, body: receipt('UNKNOWN') };

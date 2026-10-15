@@ -27,9 +27,11 @@ public class Config extends ConfigBase {
                     + "The configuration in this file will override the configuration in fe.conf"})
     public static String custom_config_dir = EnvUtils.getDorisHome() + "/conf";
 
-    @ConfField(description = {"授权证书验签公钥清单路径；仅公钥，空值表示尚未安装信任清单，重启生效",
-            "Path to the license public-key trust manifest; public keys only. "
-                    + "An empty value leaves trust unconfigured. Takes effect after restart."})
+    @ConfField(description = {"可选的授权公钥清单路径（仅公钥），在 doris-fe.jar 内置公钥之外追加公钥；"
+            + "为空时只使用内置公钥。旧版 FE 仍需要该文件，升级或降级时请保留。重启生效",
+            "Optional license public-key manifest (public keys only) added to the keys built into doris-fe.jar. "
+                    + "Empty uses the built-in keys only. Earlier FE versions still need this file; keep it when "
+                    + "upgrading or downgrading. Takes effect after restart."})
     public static String massdb_license_trust_store_file = "";
 
     @ConfField(description = {"是否探测强制跳过日志的操作码；默认不读取故障记录，重启生效。"
@@ -39,9 +41,11 @@ public class Config extends ConfigBase {
                     + "Does not clear existing incomplete license recovery. Takes effect after restart."})
     public static boolean massdb_license_probe_skipped_journal_header = false;
 
-    @ConfField(description = {"已注册 FE 的授权管理端口映射，格式 host:edit_log_port=management_port；重启生效",
-            "Optional registered-FE license management ports: host:edit_log_port=management_port. "
-                    + "Only the port may be overridden; protocol follows enable_https. Takes effect after restart."})
+    @ConfField(description = {"已注册 FE 的授权管理端口映射，格式 host:edit_log_port=management_port；"
+            + "仅用于首次初始化前探测各 FE 的许可模块，重启生效",
+            "Optional registered-FE license management ports: host:edit_log_port=management_port, used only by "
+                    + "the one-time license initialization probe. Only the port may be overridden; protocol "
+                    + "follows enable_https. Takes effect after restart."})
     public static String[] massdb_license_fe_management_ports = {};
 
     @ConfField(description = {"fe.log 和 fe.audit.log 的最大文件大小。超过这个大小后，日志文件会被切分",

@@ -13,9 +13,9 @@ Upstream and third-party components retain their respective licenses.
 
 ## 1. 安装公钥并取得部署申请
 
-在离线签发机按[签发工具说明](../tools/license-issuer/README.md)创建 Ed25519 密钥、导出信任清单。FE 只安装公钥清单；签发私钥留在签发机。`license` 与 `time_repair` 使用不同密钥和 `kid`，产品不附带默认信任根。
+在离线签发机按[签发工具说明](../tools/license-issuer/README.md)创建 Ed25519 密钥、导出信任清单。签发私钥留在签发机。`license` 与 `time_repair` 使用不同密钥和 `kid`，不附带任何测试根。
 
-所有已注册 FE 安装相同程序包和字节完全相同的清单，在各 FE 的 `fe.conf` 中指定只读启动配置，再按已有流程重启。清单只在启动时加载，修改文件后也需要重启：
+**2026-10-16 起，自用公钥内置在 `doris-fe.jar` 中**，FE 不配置外部文件也能加载公钥并就绪。外部清单改为可选，只用于追加公钥（例如换钥过渡期）：内置公钥总是生效，外部文件缺失、损坏或与内置 `kid` 冲突时只记一条告警并被忽略，不再导致许可未就绪。发行包仍提供与内置清单同字节的 `conf/massdb-license-trust.json` 和下面这行配置，因为更早的 FE 版本只会从外部文件读公钥；升级和降级时都请保留。清单只在启动时加载，修改文件后需要重启：
 
 ```properties
 massdb_license_trust_store_file = /etc/massdb/license-public-keys.json
@@ -29,7 +29,7 @@ massdb_license_fe_management_ports = fe-a:9010=8030,fe-b:9010=8130
 
 IPv6 键使用方括号，例如 `[2001:db8::1]:9010=8030`。协议跟随现有 `enable_https`，未配置映射时能力检查使用本 FE 的 `http_port` 或 `https_port` 作为对端默认端口。映射也用于 HTTPS 下的 Follower 管理转发；HTTP 转发使用当前 Master 发布的 HTTP 端口。它不改变原 FE helper/心跳的端口假设，也不能改写目标主机或协议。
 
-Master 在恢复完成且已注册 FE 能力检查通过后持久生成部署 UUID。普通 GET 或 Follower 不生成 UUID。所有 FE 均未安装信任清单时也可初始化部署身份，但不能导入未受信任的证书。未就绪时先核对 FE 包、公钥清单和恢复日志；不能自行填入一个 UUID 代替集群申请。
+Master 在恢复完成、且确认全部已注册 FE 都带有许可模块后，持久生成部署 UUID（每个集群只发生一次）。这项检查不比较各 FE 的 JAR 和公钥清单，只防止从不带许可模块的旧版滚动升级时，旧 FE 回放到不认识的初始化记录。普通 GET 或 Follower 不生成 UUID。未就绪时先核对各 FE 是否都已升级、管理端口能否访问和恢复日志；不能自行填入一个 UUID 代替集群申请。
 
 管理员通过以下任一入口取得申请：
 
@@ -87,6 +87,8 @@ Basic 认证可用于接口调用。浏览器 Cookie POST 必须同时提供匹�
 例如旧证允许 3 个 FE、10 个 BE 且还有 40 天到期；成功缩容至 2 个 FE、5 个 BE 后，可立即导入同一部署、更高 `sequence`、允许 2/5 的新证。当前已注册用量按全部成员计算，停进程、离线或处于 DECOMMISSION 中尚未除名的节点仍占额度；原副本、WAL、FE quorum 等安全限制保留，不强制删除线上节点。
 
 生产 BE 缩容应沿用 `DECOMMISSION BACKEND`，等待数据迁移并确认成员真正除名；原版默认会拒绝直接 `DROP BACKEND`，本次不改变该保护。验收中的强制 `DROPP BACKEND` 仅清理自建、无 BE 进程且零 tablet 的离线测试身份，不作为线上缩容操作建议。
+
+**未来生效的证书不能降低额度（2026-10-16 起）。** `not_before` 晚于当前可信时间、且 FE 或 BE 额度低于当前证书或基础额度的证书，导入时返回 `LICENSE_RENEWAL_REDUCTION`（SQL 6201、HTTP 400），保旧、不消费序号。原因是 2026-10-15 之前的带许可 FE 版本恢复时不接受这种待生效状态，会直接退出；拒绝它可以保证混版本运行和整集群降级都不受证书影响。降额请让证书立即生效，或等到生效时间到达后再导入。到期更早、立即降额、丢弃 pending 等其他情况不受影响。
 
 **导入前先 VALIDATE，并核对返回的 `changes`。** validate 与 import 成功响应都有 `changes` 数组（SQL 结果集中为 `changes` 一行 JSON 字符串，HTTP 和页面直接展示）：
 
@@ -160,7 +162,7 @@ HTTP 对应 `POST /api/license/clock/challenge`（空正文或 `{}`）、`POST /
 
 部署身份、证书原文、激活事实、基础额度、序号、时间水位及回执通过 FE journal 和 image 保存。Checkpoint 使用独立 Env 历史截面，不生成新身份或追加授权日志。过期证书在恢复后正常显示 EXPIRED；可隔离的坏 pending/base 分别处理，未知格式和整体存储损坏遵循现有 FE 恢复机制。
 
-先使全部已注册 FE（含 Observer）具备相同的新格式能力，再导入首证书；首次能力检查不能跳过离线成员。管理员可访问各 FE 的只读 `GET /api/license/capability` 核对 `package_sha256`、`trust_sha256`、`trust_ready` 和节点身份；普通用户不能访问。成功能力检查保存程序包、公钥清单和 FE 成员身份的绑定；任一绑定变化要重新检查。已确认绑定未变化时，个别 FE 暂时离线不单独阻止续期。
+首次初始化前，全部已注册 FE（含 Observer）都须带有许可模块，离线成员也须先恢复；此后导入证书不再探测其他 FE，FE 离线、各 FE 的 JAR 字节不同（热修复或重新编译）或外部公钥文件不同都不阻止导入，也不再返回 `LICENSE_FE_UPGRADE_REQUIRED`（混版本期间若旧版 FE 仍是 Master，它仍按旧规则拒绝导入，请在新版 Master 上导入或全部升级后导入）。管理员可访问各 FE 的只读 `GET /api/license/capability` 核对模块、格式版本、`trust_sha256`（实际加载的公钥集合摘要）和节点身份；`package_sha256` 不再计算，返回 `null`。普通用户不能访问。导入不再检查的前提是：新版只写所有带许可旧版都能回放的记录（见第 2.1 节“未来证书不能降额”），且许可持久化格式保持不变。
 
 授权元数据采用 `massdbLicenseV1` 模块和 journal 6200–6205；包含新事实的 image 使用版本 141，旧 FE 不支持读取。不可用旧二进制直接加入已启用新格式的集群。跳过相关 journal、忽略模块或无法证明恢复完整性会保持 NOT_READY，不能把缺槽解释为未激活或免费额度。
 
@@ -174,7 +176,7 @@ HTTP 对应 `POST /api/license/clock/challenge`（空正文或 `{}`）、`POST /
 
 FE/BE 注册额度在 P2 显示和导入策略中校验；新增节点的权威准入由 P3 接入。未来 pending 到点可以改变有效证书状态，基础额度切换仍须单独持久提交；等待期 ADD 按第 2.1 节较小上限执行。
 
-取代式续期沿用既有格式，不新增 BE 协议要求；导入前须将全部已注册 FE 升级到同一新包并通过原有严格包摘要/信任集门禁，该门禁只在导入时检查，不阻止之后整集群回退二进制。回退到 2026-10-15 之前的 FE 包是不支持的运维操作：旧包恢复时若遇到与未到期 active/base 重叠的较低额度 pending 状态会拒绝并退出；立即取代和单纯缩短到期的状态旧包能够回放，回放后按旧规则处理后续导入。实际验证范围见[执行计划与验收记录](license-renewal-replacement-plan-20261015.md)。
+**升级、混版本与降级（2026-10-16 起）。** 许可持久化格式不变，新版写入的许可记录所有带许可的旧版都能回放，因此：滚动升级期间新旧 FE 可以混跑，新版 Master 上的导入直接成功，旧 FE 回放新记录正常；整集群降级到更早的带许可版本不受证书影响，降级后旧版按它自己的规则处理后续导入。降级时请保留 `conf/massdb-license-trust.json` 与 `fe.conf` 中的信任配置行（旧版只从外部文件读公钥）。例外是 2026-09-30 至 10-15 的版本可能已经写入过“低额未来 pending”；如存在，降级前先导入一张立即生效的证书替换它，并等其进入新的 image。降级到不带许可模块的版本不在支持范围内。实际验证见[降级兼容、内置公钥与取消导入前 FE 检查执行计划](license-downgrade-trust-compat-plan-20261015.md)。
 
 ### 5.1 手工导出镜像
 

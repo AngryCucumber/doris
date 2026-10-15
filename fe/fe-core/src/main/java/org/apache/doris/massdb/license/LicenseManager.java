@@ -20,8 +20,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Paths;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -65,6 +63,7 @@ public final class LicenseManager implements AutoCloseable {
 
         void commit(short operation, LicensePersistRecord record) throws IOException;
 
+        /** Before the one-time deployment initialization only: every registered FE carries the license module. */
         boolean activationReady();
 
         String trustStorePath();
@@ -263,11 +262,8 @@ public final class LicenseManager implements AutoCloseable {
         if (prepared.isIdempotent()) {
             return importReceipt(fingerprint);
         }
-        final long frontendVersion = host.frontendVersion();
-        final String packageDigest = (String) capability().get("package_sha256");
-        if (!committed.matchesRollout(packageDigest, trustDigest, frontendVersion) && !host.activationReady()) {
-            throw failure("LICENSE_FE_UPGRADE_REQUIRED", 503, "NOT_SUBMITTED", fingerprint);
-        }
+        // No other FE is probed: every licensed FE version can replay the records an import writes, because
+        // imports never write a state an older FE rejects (LicenseImportPolicy) and the persisted shape is frozen.
         return mutate(() -> {
             try {
                 LicensePersistRecord pending = committedPendingApply;
@@ -280,11 +276,8 @@ public final class LicenseManager implements AutoCloseable {
                 }
                 requireWritable();
                 LicenseImportPolicy.Prepared checked = policy.recheckForCommit(prepared, imports, context(), verifier);
-                if (frontendVersion != host.frontendVersion()) {
-                    throw failure("LICENSE_STALE_IMPORT_DECISION", 409, "NOT_SUBMITTED", fingerprint);
-                }
                 LicensePersistRecord next = committed.withImports(LicensePersistRecord.ACCEPT,
-                        checked.getToPersist(), true).withRollout(packageDigest, trustDigest, frontendVersion);
+                        checked.getToPersist(), true).withoutRollout();
                 persist(next, fingerprint);
                 // Changes describe this commit's decision; receipts are not extended or persisted with them.
                 LicenseManagementResult receipt = importReceipt(fingerprint);
@@ -717,8 +710,8 @@ public final class LicenseManager implements AutoCloseable {
         } else {
             throw new DdlException("LICENSE_BASE_CAPACITY_UNAVAILABLE", ErrorCode.ERR_LICENSE_NOT_READY);
         }
-        // An accepted smaller renewal reserves its ceiling until activation commits the new base.
-        // Larger pending limits never grant capacity early. This is only on the member ADD path.
+        // A smaller pending (only from metadata written before downgrade-safe imports) reserves its ceiling until
+        // activation commits the new base. Larger pending limits never grant capacity early. Member ADD path only.
         if (currentImports.getPending() != null) {
             LicenseDocument pending = currentImports.getPending().getDocument();
             maxFe = Math.min(maxFe, pending.getMaxFeNodes());
@@ -903,50 +896,47 @@ public final class LicenseManager implements AutoCloseable {
             return;
         }
         trustLoaded = true;
-        String path = host.trustStorePath();
-        if (path == null || path.isEmpty()) {
+        LicenseTrustStore trust = null;
+        try {
+            trust = LicenseTrustStore.builtIn();
+        } catch (LicenseException | RuntimeException e) {
             if (!checkpoint) {
-                LOG.warn("License trust is not configured; set massdb_license_trust_store_file and restart this FE");
+                LOG.warn("Built-in license public keys are unavailable (failure_type={}); "
+                        + "check the doris-fe.jar of this FE", e.getClass().getSimpleName());
             }
+        }
+        String path = host.trustStorePath();
+        if (path != null && !path.isEmpty()) {
+            // Optional additional keys. Earlier FE versions require this file, so packages keep shipping it.
+            try (InputStream input = Files.newInputStream(Paths.get(path))) {
+                ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+                byte[] chunk = new byte[4096];
+                int count;
+                while (buffer.size() <= 65536
+                        && (count = input.read(chunk, 0, Math.min(chunk.length, 65537 - buffer.size()))) != -1) {
+                    buffer.write(chunk, 0, count);
+                }
+                LicenseTrustStore external = LicenseTrustStore.parse(buffer.toByteArray());
+                trust = trust == null ? external : trust.merge(external);
+            } catch (IOException | LicenseException | RuntimeException e) {
+                // A missing, malformed or conflicting optional file never disables the built-in keys.
+                if (!checkpoint) {
+                    String reason = e instanceof LicenseException
+                            ? ((LicenseException) e).getErrorCode().name() : "TRUST_STORE_LOAD_FAILED";
+                    LOG.warn("License trust loading failed: reason={}, failure_type={}; built-in public keys "
+                                    + "remain in use; check massdb_license_trust_store_file and restart this FE",
+                            reason, e.getClass().getSimpleName());
+                }
+            }
+        }
+        if (trust == null || trust.getKeys(LicenseTrustStore.Purpose.LICENSE).isEmpty()) {
+            // No fallback key or implicit entitlement; management remains available for diagnostics.
+            trustDigest = null;
             return;
         }
-        try (InputStream input = Files.newInputStream(Paths.get(path))) {
-            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-            byte[] chunk = new byte[4096];
-            int count;
-            while (buffer.size() <= 65536
-                    && (count = input.read(chunk, 0, Math.min(chunk.length, 65537 - buffer.size()))) != -1) {
-                buffer.write(chunk, 0, count);
-            }
-            byte[] bytes = buffer.toByteArray();
-            LicenseTrustStore trust = LicenseTrustStore.parse(bytes);
-            verifier = trust.newLicenseVerifier();
-            repairVerifier = new LicenseClockRepairVerifier(trust.getKeys(LicenseTrustStore.Purpose.TIME_REPAIR));
-            trustDigest = digest(bytes);
-        } catch (IOException | LicenseException | RuntimeException e) {
-            // Management remains available for diagnostics; no fallback key or implicit entitlement.
-            trustDigest = null;
-            if (!checkpoint) {
-                String reason = e instanceof LicenseException
-                        ? ((LicenseException) e).getErrorCode().name() : "TRUST_STORE_LOAD_FAILED";
-                LOG.warn("License trust loading failed: reason={}, failure_type={}; "
-                                + "check massdb_license_trust_store_file and restart this FE",
-                        reason, e.getClass().getSimpleName());
-            }
-        }
-    }
-
-    private static String digest(byte[] bytes) {
-        try {
-            byte[] hash = MessageDigest.getInstance("SHA-256").digest(bytes);
-            StringBuilder result = new StringBuilder(64);
-            for (byte value : hash) {
-                result.append(String.format("%02x", value & 0xff));
-            }
-            return result.toString();
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 unavailable");
-        }
+        verifier = trust.newLicenseVerifier();
+        repairVerifier = new LicenseClockRepairVerifier(trust.getKeys(LicenseTrustStore.Purpose.TIME_REPAIR));
+        trustDigest = trust.digest();
     }
 
     private synchronized void publish() {

@@ -170,6 +170,37 @@ class LicensePersistRecordTest {
     }
 
     @Test
+    void persistedShapeIsFrozenSoEarlierLicensedFesCanReplayIt() throws Exception {
+        // Earlier licensed FEs reject any other top-level field set, rollout shape or journal operation.
+        List<String> released = Arrays.asList("format_version", "operation", "record_version", "deployment_id",
+                "bootstrap", "activated", "complete", "active", "pending", "base", "highest_sequence",
+                "license_version", "receipts", "clock", "submission_versions", "clock_suspect", "rollout");
+        LicensePersistRecord source = history(2);
+        LicensePersistRecord proof = source.withRollout(String.format("%064x", 10), String.format("%064x", 11), 1);
+        LicensePersistRecord cleared = proof.withoutRollout();
+        for (LicensePersistRecord record : new LicensePersistRecord[] {
+                LicensePersistRecord.initial(DEPLOYMENT, false, WALL), source, proof, cleared}) {
+            ObjectNode envelope = envelope(encode(record));
+            List<String> names = new ArrayList<>();
+            envelope.fieldNames().forEachRemaining(names::add);
+            Collections.sort(names);
+            List<String> expected = new ArrayList<>(released);
+            Collections.sort(expected);
+            Assertions.assertEquals(expected, names);
+            Assertions.assertEquals(1, envelope.get("format_version").intValue());
+        }
+        List<String> proofFields = new ArrayList<>();
+        envelope(encode(proof)).get("rollout").fieldNames().forEachRemaining(proofFields::add);
+        Assertions.assertEquals(Arrays.asList("package_sha256", "trust_sha256", "frontend_version"), proofFields);
+        Assertions.assertTrue(envelope(encode(cleared)).get("rollout").isNull());
+        Assertions.assertTrue(decode(encode(cleared)).sameAs(cleared));
+        Assertions.assertEquals(Arrays.asList(6200, 6201, 6202, 6203, 6204, 6205), Arrays.asList(
+                (int) LicensePersistRecord.INITIALIZE, (int) LicensePersistRecord.ACCEPT,
+                (int) LicensePersistRecord.BASE, (int) LicensePersistRecord.WATERMARK,
+                (int) LicensePersistRecord.REPAIR, (int) LicensePersistRecord.INTEGRITY));
+    }
+
+    @Test
     void replayMatchingStillRejectsDifferentFactsScalarValuesAndArrayOrder() throws Exception {
         LicensePersistRecord record = history(2);
         ObjectNode original = envelope(encode(record));
