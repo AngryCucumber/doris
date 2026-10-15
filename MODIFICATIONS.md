@@ -4,6 +4,21 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## HDFS table backup tooling (2026-10-12)
+
+- Add a Bash tool using mysql, HDFS CLI and jq under `tools/backup-restore/` for
+  per-table native HDFS backups, complete daily recovery-point manifests, and
+  reference-aware retention. Default to full backups; permit reuse of verified
+  unchanged tables only inside an explicitly maintained quiescent window.
+- Restore historical data and schema into a new table, wait for completion, and
+  generate a separate atomic swap statement that retains the previous table.
+  Add repository identity checks, an HDFS lock, pinned recovery points, and
+  failure-path tests. Register the independent tool and tests under the existing
+  company commercial source-header policy; preserve upstream database behavior.
+- Document deployment, credentials, scheduling, HDFS capacity, cleanup and real
+  restore-drill requirements. Offline checks do not establish production backup
+  throughput, live HDFS interoperability, or the requested recovery time.
+
 ## License code relocation (2026-10-10)
 
 - Move `LicenseCommand` and `LicenseController` from the upstream `nereids...commands` and

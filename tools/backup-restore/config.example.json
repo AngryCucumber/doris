@@ -1,0 +1,19 @@
+{
+  "database": "biz",
+  "repository": "daily_hdfs_repo",
+  "hdfs_location": "hdfs://nameservice1/backups/massdb_daily",
+  "tables": ["orders", "customers"],
+  "mysql": {
+    "binary": "/usr/bin/mysql",
+    "host": "fe.example.internal",
+    "port": 9030,
+    "defaults_extra_file": "/etc/massdb-backup/mysql.cnf"
+  },
+  "hdfs_binary": "/opt/hadoop/bin/hdfs",
+  "timezone": "Asia/Shanghai",
+  "retention_days": 30,
+  "job_timeout_seconds": 43200,
+  "run_timeout_seconds": 72000,
+  "poll_seconds": 30,
+  "command_timeout_seconds": 120
+}

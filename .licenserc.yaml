@@ -59,6 +59,8 @@ header:
     - "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseTrustStoreTest.java"
     - "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseVerifierTest.java"
     - "fe/fe-core/src/test/java/org/apache/doris/master/ReportHandlerTest.java"
+    - "tools/backup-restore/massdb_backup.sh"
+    - "tools/backup-restore/test_massdb_backup.sh"
     - "tools/fe-stall-collect.sh"
     - "tools/fe-thread-dump-summary.py"
     - "tools/license-checks/LicenseComplexPlanningFixture.java"

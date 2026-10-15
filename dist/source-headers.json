@@ -13,6 +13,8 @@
     "build-support/test_product_notices.py",
     "build-support/check-source-headers.py",
     "docker/compilation/Dockerfile.ui",
+    "tools/backup-restore/massdb_backup.sh",
+    "tools/backup-restore/test_massdb_backup.sh",
     "tools/fe-stall-collect.sh",
     "tools/fe-thread-dump-summary.py",
     "fe/fe-core/src/main/java/org/apache/doris/massdb/license/LicenseDocument.java",
