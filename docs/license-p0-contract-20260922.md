@@ -164,7 +164,7 @@ Checkpoint使用独立Env的历史截面，不能读线上静态快照；不生�
 
 ### H01/H02：2026-09-29 独立 HTTP 读取补充
 
-这两组独立于原 Q01–Q28/M01–M14/U01–U04，不改写原 46 组或历史 JSON。共同状态为“已实现，控制器定向测试及 FE 构建通过”，测试文件为 [LicenseExternalHttpAdmissionTest.java](/data/project/massdb-sql/fe/fe-core/src/test/java/org/apache/doris/httpv2/restv2/LicenseExternalHttpAdmissionTest.java)。本轮是控制器单测和模拟 HTTP 状态映射，真实 guard 配模拟外部依赖；12 项新测试与 30 项原回归均通过，见[v3 构建与测试回执](/data/project/massdb-sql/.build-records/license-http-admission-20260929/checks-v3/completion.json)。没有实际运行 HTTP/ES/broker 服务，不混用验证层级。
+这两组独立于原 Q01–Q28/M01–M14/U01–U04，不改写原 46 组或历史 JSON。共同状态为“已实现，控制器定向测试及 FE 构建通过”，测试文件为 [LicenseExternalHttpAdmissionTest.java](/data/project/massdb-sql/fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseExternalHttpAdmissionTest.java)。本轮是控制器单测和模拟 HTTP 状态映射，真实 guard 配模拟外部依赖；12 项新测试与 30 项原回归均通过，见[v3 构建与测试回执](/data/project/massdb-sql/.build-records/license-http-admission-20260929/checks-v3/completion.json)。没有实际运行 HTTP/ES/broker 服务，不混用验证层级。
 
 | ID | 输入和顺序 | 预期与观测 | 兼容与清理 |
 | --- | --- | --- | --- |

@@ -152,7 +152,8 @@
     "tools/license-checks/test_current_background_performance.py",
     "tools/license-checks/LicenseUiPerformance.cjs",
     "tools/license-checks/ui-performance-oracles.test.cjs",
-    "fe/fe-core/src/main/java/org/apache/doris/httpv2/rest/LicenseController.java",
+    "fe/fe-core/src/main/java/org/apache/doris/massdb/license/LicenseController.java",
+    "fe/fe-core/src/main/java/org/apache/doris/massdb/license/EnvLicenseHost.java",
     "fe/fe-core/src/main/java/org/apache/doris/massdb/license/LicenseFeCompatibility.java",
     "fe/fe-core/src/main/java/org/apache/doris/massdb/license/LicenseManagementException.java",
     "fe/fe-core/src/main/java/org/apache/doris/massdb/license/LicenseManagementResult.java",
@@ -160,8 +161,8 @@
     "fe/fe-core/src/main/java/org/apache/doris/massdb/license/LicensePersistRecord.java",
     "fe/fe-core/src/main/java/org/apache/doris/massdb/license/LicenseSqlException.java",
     "fe/fe-core/src/main/java/org/apache/doris/massdb/license/LicenseSqlRedactor.java",
-    "fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/LicenseCommand.java",
-    "fe/fe-core/src/test/java/org/apache/doris/httpv2/rest/LicenseControllerTest.java",
+    "fe/fe-core/src/main/java/org/apache/doris/massdb/license/LicenseCommand.java",
+    "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseControllerTest.java",
     "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseEnvPersistenceTest.java",
     "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseFeCompatibilityTest.java",
     "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseSqlCommandTest.java",
@@ -179,9 +180,9 @@
     "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseQueryGuardTest.java",
     "fe/fe-core/src/test/java/org/apache/doris/nereids/trees/plans/commands/LicenseCtasAdmissionTest.java",
     "fe/fe-core/src/test/java/org/apache/doris/qe/LicenseQueryExecutionTest.java",
-    "fe/fe-core/src/test/java/org/apache/doris/httpv2/rest/LicenseTableQueryPlanAdmissionTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseTableQueryPlanAdmissionTest.java",
     "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseQueryPlannerTest.java",
-    "fe/fe-core/src/test/java/org/apache/doris/nereids/trees/plans/commands/insert/LicenseOverwriteAdmissionTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseOverwriteAdmissionTest.java",
     "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseProcedureAdmissionTest.java",
     "fe/fe-core/src/test/java/org/apache/doris/nereids/trees/plans/commands/insert/LicenseInsertAdmissionTest.java",
     "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicensePreparedAdmissionTest.java",
@@ -193,7 +194,7 @@
     "ui/src/pages/license/model.ts",
     "ui/src/utils/session-events.ts",
     "ui/scripts/license.test.cjs",
-    "fe/fe-core/src/test/java/org/apache/doris/httpv2/restv2/LicenseExternalHttpAdmissionTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseExternalHttpAdmissionTest.java",
     "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicensePersistRecordTest.java",
     "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseManagerDiagnosticsTest.java"
   ],
@@ -637,6 +638,10 @@
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
     },
     "fe/fe-core/src/main/java/org/apache/doris/persist/meta/MetaWriter.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/httpv2/HttpServer.java": {
       "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
     }

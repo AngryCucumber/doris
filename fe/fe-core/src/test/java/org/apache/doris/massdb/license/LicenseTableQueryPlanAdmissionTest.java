@@ -5,7 +5,7 @@
 // Use is governed by LICENSE-MASSDB.txt and a separate agreement with the company.
 // Upstream and third-party components retain their respective licenses.
 
-package org.apache.doris.httpv2.rest;
+package org.apache.doris.massdb.license;
 
 import org.apache.doris.analysis.DescriptorTable;
 import org.apache.doris.analysis.UserIdentity;
@@ -16,9 +16,9 @@ import org.apache.doris.catalog.TableIf;
 import org.apache.doris.datasource.InternalCatalog;
 import org.apache.doris.httpv2.entity.ResponseBody;
 import org.apache.doris.httpv2.exception.UnauthorizedException;
+import org.apache.doris.httpv2.rest.RestApiStatusCode;
+import org.apache.doris.httpv2.rest.TableQueryPlanAction;
 import org.apache.doris.httpv2.rest.manager.HttpUtils;
-import org.apache.doris.massdb.license.LicenseQueryGuard;
-import org.apache.doris.massdb.license.LicenseSqlException;
 import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.nereids.NereidsPlanner;
 import org.apache.doris.nereids.StatementContext;

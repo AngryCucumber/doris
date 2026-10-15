@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.httpv2;
 
@@ -35,7 +36,7 @@ import org.springframework.context.ConfigurableApplicationContext;
 import java.util.HashMap;
 import java.util.Map;
 
-@SpringBootApplication
+@SpringBootApplication(scanBasePackages = {"org.apache.doris.httpv2", "org.apache.doris.massdb.license"})
 @EnableConfigurationProperties
 @ServletComponentScan
 public class HttpServer extends SpringBootServletInitializer {

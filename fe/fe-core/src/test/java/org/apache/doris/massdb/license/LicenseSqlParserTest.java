@@ -21,7 +21,6 @@ import org.apache.doris.nereids.exceptions.SyntaxParseException;
 import org.apache.doris.nereids.parser.Dialect;
 import org.apache.doris.nereids.parser.NereidsParser;
 import org.apache.doris.nereids.parser.SqlDialectHelper;
-import org.apache.doris.nereids.trees.plans.commands.LicenseCommand;
 import org.apache.doris.nereids.trees.plans.commands.info.BaseViewInfo;
 import org.apache.doris.plugin.DialectConverterPlugin;
 import org.apache.doris.plugin.PluginMgr;

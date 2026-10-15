@@ -5,7 +5,7 @@
 // Use is governed by LICENSE-MASSDB.txt and a separate agreement with the company.
 // Upstream and third-party components retain their respective licenses.
 
-package org.apache.doris.nereids.trees.plans.commands;
+package org.apache.doris.massdb.license;
 
 import org.apache.doris.analysis.RedirectStatus;
 import org.apache.doris.catalog.Column;
@@ -14,16 +14,11 @@ import org.apache.doris.catalog.ScalarType;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
 import org.apache.doris.common.UserException;
-import org.apache.doris.massdb.license.LicenseConfirmationIds;
-import org.apache.doris.massdb.license.LicenseException;
-import org.apache.doris.massdb.license.LicenseManagementException;
-import org.apache.doris.massdb.license.LicenseManagementResult;
 import org.apache.doris.massdb.license.LicenseManager.Action;
-import org.apache.doris.massdb.license.LicenseSqlException;
-import org.apache.doris.massdb.license.LicenseSqlRedactor;
-import org.apache.doris.massdb.license.LicenseVerifier;
 import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.nereids.trees.plans.PlanType;
+import org.apache.doris.nereids.trees.plans.commands.NeedAuditEncryption;
+import org.apache.doris.nereids.trees.plans.commands.ShowCommand;
 import org.apache.doris.nereids.trees.plans.visitor.PlanVisitor;
 import org.apache.doris.persist.gson.GsonUtils;
 import org.apache.doris.qe.ConnectContext;

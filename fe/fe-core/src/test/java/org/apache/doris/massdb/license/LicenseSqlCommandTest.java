@@ -15,7 +15,6 @@ import org.apache.doris.common.UserException;
 import org.apache.doris.massdb.license.LicenseManager.Action;
 import org.apache.doris.mysql.privilege.AccessControllerManager;
 import org.apache.doris.mysql.privilege.PrivPredicate;
-import org.apache.doris.nereids.trees.plans.commands.LicenseCommand;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.qe.ShowResultSet;
 

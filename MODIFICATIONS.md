@@ -4,6 +4,24 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License code relocation (2026-10-10)
+
+- Move `LicenseCommand` and `LicenseController` from the upstream `nereids...commands` and
+  `httpv2.rest` packages into `org.apache.doris.massdb.license`, together with the four license
+  tests that only use public API (`LicenseControllerTest`, `LicenseTableQueryPlanAdmissionTest`,
+  `LicenseExternalHttpAdmissionTest`, `LicenseOverwriteAdmissionTest`). Behaviour, SQL grammar,
+  HTTP routes and persisted formats are unchanged.
+- `fe/fe-core/src/main/java/org/apache/doris/httpv2/HttpServer.java`: declare
+  `scanBasePackages = {"org.apache.doris.httpv2", "org.apache.doris.massdb.license"}` so the
+  relocated controller is still registered; the original package stays in the scan.
+- `fe/fe-core/src/main/java/org/apache/doris/catalog/Env.java`: replace the anonymous
+  `LicenseManager.Host` with `org.apache.doris.massdb.license.EnvLicenseHost` and expose
+  `isLicenseLeadership()`; the host delegates to the same Env state as before.
+- `fe/check/checkstyle/checkstyle.xml`: the commercial-header allow list now names only the six
+  tests that must stay in upstream packages for package-private or protected access
+  (`LicenseCtasAdmissionTest`, `LicenseExportAdmissionTest`, `LicenseExportSchedulerTest`,
+  `LicenseInsertAdmissionTest`, `LicenseQueryExecutionTest`, `LicenseQueryRetryTest`).
+
 ## License operating-limit clarification (2026-10-05)
 
 - Document that manual image dumps occupy the management queue while waiting

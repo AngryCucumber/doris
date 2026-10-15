@@ -5,7 +5,7 @@
 // Use is governed by LICENSE-MASSDB.txt and a separate agreement with the company.
 // Upstream and third-party components retain their respective licenses.
 
-package org.apache.doris.httpv2.restv2;
+package org.apache.doris.massdb.license;
 
 import org.apache.doris.analysis.BrokerDesc;
 import org.apache.doris.catalog.Env;
@@ -18,8 +18,8 @@ import org.apache.doris.datasource.es.EsRestClient;
 import org.apache.doris.httpv2.entity.ResponseBody;
 import org.apache.doris.httpv2.exception.UnauthorizedException;
 import org.apache.doris.httpv2.rest.RestApiStatusCode;
-import org.apache.doris.massdb.license.LicenseManager;
-import org.apache.doris.massdb.license.LicenseQueryStatus;
+import org.apache.doris.httpv2.restv2.ESCatalogAction;
+import org.apache.doris.httpv2.restv2.ImportAction;
 import org.apache.doris.thrift.TBrokerFileStatus;
 
 import com.fasterxml.jackson.databind.JsonNode;

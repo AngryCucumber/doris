@@ -5,7 +5,7 @@
 // Use is governed by LICENSE-MASSDB.txt and a separate agreement with the company.
 // Upstream and third-party components retain their respective licenses.
 
-package org.apache.doris.nereids.trees.plans.commands.insert;
+package org.apache.doris.massdb.license;
 
 import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.TableIf;
@@ -13,11 +13,12 @@ import org.apache.doris.datasource.hive.HMSExternalTable;
 import org.apache.doris.datasource.iceberg.IcebergExternalTable;
 import org.apache.doris.insertoverwrite.InsertOverwriteManager;
 import org.apache.doris.insertoverwrite.InsertOverwriteUtil;
-import org.apache.doris.massdb.license.LicenseSqlException;
 import org.apache.doris.nereids.CascadesContext;
 import org.apache.doris.nereids.NereidsPlanner;
 import org.apache.doris.nereids.StatementContext;
 import org.apache.doris.nereids.properties.PhysicalProperties;
+import org.apache.doris.nereids.trees.plans.commands.insert.InsertOverwriteTableCommand;
+import org.apache.doris.nereids.trees.plans.commands.insert.InsertUtils;
 import org.apache.doris.nereids.trees.plans.logical.LogicalPlan;
 import org.apache.doris.nereids.trees.plans.physical.PhysicalHiveTableSink;
 import org.apache.doris.nereids.trees.plans.physical.PhysicalIcebergTableSink;

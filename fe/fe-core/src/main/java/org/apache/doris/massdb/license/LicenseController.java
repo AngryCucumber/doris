@@ -5,20 +5,15 @@
 // Use is governed by LICENSE-MASSDB.txt and a separate agreement with the company.
 // Upstream and third-party components retain their respective licenses.
 
-package org.apache.doris.httpv2.rest;
+package org.apache.doris.massdb.license;
 
 import org.apache.doris.analysis.UserIdentity;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.cluster.ClusterNamespace;
 import org.apache.doris.common.Config;
 import org.apache.doris.httpv2.exception.UnauthorizedException;
-import org.apache.doris.massdb.license.LicenseClockRepairVerifier;
-import org.apache.doris.massdb.license.LicenseConfirmationIds;
-import org.apache.doris.massdb.license.LicenseFeCompatibility;
-import org.apache.doris.massdb.license.LicenseManagementException;
-import org.apache.doris.massdb.license.LicenseManagementResult;
+import org.apache.doris.httpv2.rest.RestBaseController;
 import org.apache.doris.massdb.license.LicenseManager.Action;
-import org.apache.doris.massdb.license.LicenseVerifier;
 import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.system.Frontend;

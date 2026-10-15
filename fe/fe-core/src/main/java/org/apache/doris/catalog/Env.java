@@ -141,9 +141,8 @@ import org.apache.doris.load.loadv2.ProgressManager;
 import org.apache.doris.load.routineload.RoutineLoadManager;
 import org.apache.doris.load.routineload.RoutineLoadScheduler;
 import org.apache.doris.load.routineload.RoutineLoadTaskScheduler;
-import org.apache.doris.massdb.license.LicenseFeCompatibility;
+import org.apache.doris.massdb.license.EnvLicenseHost;
 import org.apache.doris.massdb.license.LicenseManager;
-import org.apache.doris.massdb.license.LicensePersistRecord;
 import org.apache.doris.master.Checkpoint;
 import org.apache.doris.master.MetaHelper;
 import org.apache.doris.master.PartitionInfoCollector;
@@ -852,45 +851,7 @@ public class Env {
         this.globalExternalTransactionInfoMgr = new GlobalExternalTransactionInfoMgr();
         this.tokenManager = new TokenManager();
         this.dictionaryManager = new DictionaryManager();
-        this.licenseManager = new LicenseManager(new LicenseManager.Host() {
-            @Override
-            public boolean isMaster() {
-                return licenseLeadership;
-            }
-
-            @Override
-            public LicenseManager.Membership membership() {
-                return LicenseFeCompatibility.membership(Env.this);
-            }
-
-            @Override
-            public long frontendVersion() {
-                return LicenseFeCompatibility.frontendVersion(Env.this);
-            }
-
-            @Override
-            public void commit(short operation, LicensePersistRecord record) throws IOException {
-                if (!licenseLeadership || isCheckpointCatalog) {
-                    throw new IOException("License commits require the current serving master");
-                }
-                editLog.logLicense(operation, record);
-            }
-
-            @Override
-            public boolean activationReady() {
-                return LicenseFeCompatibility.checkAll(Env.this, getLicenseManager().capability());
-            }
-
-            @Override
-            public String trustStorePath() {
-                return Config.massdb_license_trust_store_file;
-            }
-
-            @Override
-            public Map<String, Object> localCapability(String trustDigest) {
-                return LicenseFeCompatibility.localCapability(Env.this, trustDigest);
-            }
-        }, isCheckpointCatalog);
+        this.licenseManager = new LicenseManager(new EnvLicenseHost(this, isCheckpointCatalog), isCheckpointCatalog);
         if (Config.isNotCloudMode()) {
             this.systemInfo.setLicenseMembershipListener(licenseManager::onMembershipChanged);
         }
@@ -963,6 +924,11 @@ public class Env {
 
     public LicenseManager getLicenseManager() {
         return licenseManager;
+    }
+
+    /** True only while this Env serves as the replayed master; set after promotion replay completes. */
+    public boolean isLicenseLeadership() {
+        return licenseLeadership;
     }
 
     public void markLicenseRecoveryIncomplete() {
