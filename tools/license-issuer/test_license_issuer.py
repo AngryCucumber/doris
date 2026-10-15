@@ -382,10 +382,7 @@ class LicenseIssuerTest(unittest.TestCase):
         issuer.sign(self.openssl, self.claims_file, new_private, "rotated-key", output,
                     self.certificate, self.public, "test-key", 1700000100)
         self.assertTrue(issuer.verify(self.openssl, output, new_public, "rotated-key", 1800000000)["signature_valid"])
-        for field, value in [("sequence", 1), ("license_id", "test-license"),
-                             ("customer_id", "Other"), ("expires_at", 1799999999),
-                             ("features", []),
-                             ("limits", {"max_fe_nodes": 2, "max_be_nodes": 10})]:
+        for field, value in [("sequence", 1), ("license_id", "test-license"), ("customer_id", "Other")]:
             candidate = dict(renewed)
             candidate[field] = value
             self.claims_file.write_text(json.dumps(candidate), encoding="utf-8")
@@ -393,25 +390,49 @@ class LicenseIssuerTest(unittest.TestCase):
                 issuer.sign(self.openssl, self.claims_file, new_private, "rotated-key", self.root / "bad-renewal",
                             self.certificate, self.public, "test-key", 1700000100)
         self.assertFalse((self.root / "bad-renewal").exists())
+        # Reductions are replacement facts, not preflight failures.
+        for field, value, expected in [
+                ("expires_at", 1799999999, [{"code": "EXPIRY_SHORTENED", "previous_expires_at": 1800000000,
+                                            "expires_at": 1799999999}]),
+                ("features", [], [{"code": "FEATURES_REMOVED", "features": ["DATA_QUERY"]}]),
+                ("limits", {"max_fe_nodes": 2, "max_be_nodes": 10},
+                 [{"code": "FE_LIMIT_REDUCED", "previous_limit": 3, "limit": 2}])]:
+            candidate = dict(renewed)
+            candidate[field] = value
+            self.claims_file.write_text(json.dumps(candidate), encoding="utf-8")
+            target = self.root / ("reduced-" + field)
+            with self.subTest(field=field):
+                result = issuer.sign(self.openssl, self.claims_file, new_private, "rotated-key", target,
+                                     self.certificate, self.public, "test-key", 1700000100)
+                self.assertEqual("SIGNED", result["status"])
+                self.assertEqual(expected, result["changes"])
+                self.assertEqual(0, result["coverage_gap_seconds"])
+                self.assertTrue(target.exists())
         renewed["not_before"] = 1800000010
         self.claims_file.write_text(json.dumps(renewed), encoding="utf-8")
         with_gap = issuer.sign(self.openssl, self.claims_file, new_private, "rotated-key", self.root / "gap.license",
                                self.certificate, self.public, "test-key", 1700000100)
         self.assertEqual(10, with_gap["coverage_gap_seconds"])
+        self.assertEqual([{"code": "COVERAGE_GAP", "gap_seconds": 10}], with_gap["changes"])
 
-    def test_renewal_pending_coverage_and_expired_features(self):
+    def test_renewal_discards_pending_and_reports_gap_and_removed_features(self):
         old = claims()
         old["not_before"] = 1750000000
         candidate = claims()
         candidate.update(sequence=2, license_id="renewed-license", not_before=1750000001, expires_at=1900000000)
-        with self.assertRaises(issuer.IssuerError):
-            issuer.check_renewal(candidate, old, 1700000100)
+        discarded = [{"code": "PENDING_DISCARDED", "license_id": "test-license", "sequence": 1}]
+        self.assertEqual(discarded, issuer.check_renewal(candidate, old, 1700000100))
         candidate["not_before"] = 1750000000
-        issuer.check_renewal(candidate, old, 1700000100)
+        self.assertEqual(discarded, issuer.check_renewal(candidate, old, 1700000100))
         candidate.update(features=[], not_before=1800000001)
-        issuer.check_renewal(candidate, old, 1800000000)
+        self.assertEqual([{"code": "COVERAGE_GAP", "gap_seconds": 1},
+                          {"code": "FEATURES_REMOVED", "features": ["DATA_QUERY"]}],
+                         issuer.check_renewal(candidate, old, 1800000000))
+        # A gap already in the past is not reported: FE would make the candidate active immediately.
+        self.assertEqual([{"code": "FEATURES_REMOVED", "features": ["DATA_QUERY"]}],
+                         issuer.check_renewal(candidate, old, 1800000001))
 
-    def test_renewal_node_reduction_requires_previous_expiry(self):
+    def test_renewal_node_reduction_reports_changes_before_and_after_expiry(self):
         old = claims()
         for limits in ({"max_fe_nodes": 2, "max_be_nodes": 10},
                        {"max_fe_nodes": 3, "max_be_nodes": 5},
@@ -419,12 +440,15 @@ class LicenseIssuerTest(unittest.TestCase):
             candidate = claims()
             candidate.update(sequence=2, license_id="smaller-renewal", expires_at=1900000000,
                              limits=limits)
-            for at in (old["not_before"] - 1, old["expires_at"] - 1):
-                with self.subTest(limits=limits, at=at), self.assertRaises(issuer.IssuerError):
-                    issuer.check_renewal(candidate, old, at)
-            for at in (old["expires_at"], old["expires_at"] + 1):
+            reduced = [{"code": code, "previous_limit": old["limits"][key], "limit": limits[key]}
+                       for key, code in (("max_fe_nodes", "FE_LIMIT_REDUCED"), ("max_be_nodes", "BE_LIMIT_REDUCED"))
+                       if limits[key] < old["limits"][key]]
+            for at in (old["not_before"] - 1, old["expires_at"] - 1, old["expires_at"], old["expires_at"] + 1):
+                expected = list(reduced)
+                if at < old["not_before"]:
+                    expected.append({"code": "PENDING_DISCARDED", "license_id": "test-license", "sequence": 1})
                 with self.subTest(limits=limits, at=at):
-                    self.assertEqual(0, issuer.check_renewal(candidate, old, at))
+                    self.assertEqual(expected, issuer.check_renewal(candidate, old, at))
 
     def test_expired_renewal_keeps_identity_and_sequence_checks(self):
         old = claims()
@@ -444,14 +468,13 @@ class LicenseIssuerTest(unittest.TestCase):
                        expires_at=1900000000, limits={"max_fe_nodes": 2, "max_be_nodes": 5})
         self.claims_file.write_text(json.dumps(smaller), encoding="utf-8")
         output = self.root / "smaller.license"
-        with self.assertRaises(issuer.IssuerError):
-            issuer.sign(self.openssl, self.claims_file, self.private, "test-key", output,
-                        self.certificate, self.public, "test-key", 1799999999)
-        self.assertFalse(output.exists())
+        # One second before the previous certificate expires the reduced renewal is still signed.
         result = issuer.sign(self.openssl, self.claims_file, self.private, "test-key", output,
-                             self.certificate, self.public, "test-key", 1800000000)
+                             self.certificate, self.public, "test-key", 1799999999)
         self.assertEqual("SIGNED", result["status"])
         self.assertEqual(0, result["coverage_gap_seconds"])
+        self.assertEqual([{"code": "FE_LIMIT_REDUCED", "previous_limit": 3, "limit": 2},
+                          {"code": "BE_LIMIT_REDUCED", "previous_limit": 10, "limit": 5}], result["changes"])
         verified = issuer.verify(self.openssl, output, self.public, "test-key", 1800000000,
                                  smaller["deployment_id"])
         self.assertTrue(verified["signature_valid"])
@@ -587,6 +610,20 @@ class LicenseIssuerTest(unittest.TestCase):
                      "--output", self.root / "renewed", "--previous", self.certificate,
                      "--previous-public-key", self.public, "--previous-kid", "test-key", "--at", "1767225600")
         self.assertEqual(0, result["coverage_gap_seconds"])
+        self.assertEqual([], result["changes"])
+        shorter = dict(renewal, sequence=3, license_id="cli-shorter", expires_at=1790000000,
+                       limits={"max_fe_nodes": 3, "max_be_nodes": 7})
+        prepared.write_text(json.dumps(shorter), encoding="utf-8")
+        noticed = subprocess.run([*command, "sign", "--claims", str(prepared), "--private-key", str(self.private),
+                                  "--kid", "test-key", "--output", str(self.root / "shorter"),
+                                  "--previous", str(self.root / "renewed"), "--previous-public-key",
+                                  str(self.public), "--previous-kid", "test-key", "--at", "1767225600"],
+                                 capture_output=True, text=True, check=False)
+        self.assertEqual(0, noticed.returncode, noticed.stderr)
+        self.assertEqual(["EXPIRY_SHORTENED", "BE_LIMIT_REDUCED"],
+                         [change["code"] for change in json.loads(noticed.stdout)["changes"]])
+        self.assertEqual("License issuer notice: renewal changes EXPIRY_SHORTENED, BE_LIMIT_REDUCED\n",
+                         noticed.stderr)
         self.assertEqual("TRUST_EXPORTED", run("export-trust", "--public-key", self.public,
                          "--kid", "test-key", "--purpose", "license", "--output", self.root / "trust.json")["status"])
         challenge_file = self.root / "challenge.json"

@@ -24,6 +24,30 @@ const SAFE_REASONS = new Set([
 ]);
 const SAFE_STATUSES = new Set(['VALID', 'EXPIRING', 'EXPIRED', 'MISSING', 'NOT_YET_VALID', 'INVALID',
     'FEATURE_NOT_LICENSED', 'CLOCK_SUSPECT', 'LICENSE_NOT_READY', 'LIMIT_EXCEEDED']);
+const CHANGE_NUMBERS = ['previous_expires_at', 'expires_at', 'gap_seconds', 'previous_limit', 'limit', 'sequence'];
+
+function safeNumber(value: any): any {
+    return value === null || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0)
+        || (typeof value === 'string' && /^(?:0|[1-9]\d{0,18})$/.test(value)) ? value : null;
+}
+
+/** Replacement facts from validate/import. Only a fixed code shape and known fields reach the page. */
+function licenseChanges(value: any): LicenseFields[] | undefined {
+    if (!Array.isArray(value) || value.length > 16) return undefined;
+    return value.filter(item => item && typeof item === 'object' && !Array.isArray(item)
+        && typeof item.code === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(item.code)).map(item => {
+        const change: LicenseFields = { code: item.code };
+        CHANGE_NUMBERS.forEach(key => {
+            if (Object.prototype.hasOwnProperty.call(item, key)) change[key] = safeNumber(item[key]);
+        });
+        if (typeof item.license_id === 'string' && item.license_id.length <= 256) change.license_id = item.license_id;
+        if (Array.isArray(item.features)) {
+            change.features = item.features.filter((feature: any) => typeof feature === 'string'
+                && feature.length <= 128).slice(0, 64);
+        }
+        return change;
+    });
+}
 
 const JSONbig = require('json-bigint')({ storeAsString: true });
 export type LicenseFields = { [key: string]: any };
@@ -71,7 +95,7 @@ export async function licenseRequest(path: string, signal: AbortSignal, certific
             'max_fe_nodes', 'max_be_nodes', 'base_max_fe_nodes', 'base_max_be_nodes', 'active', 'pending',
             'highest_sequence', 'applied_version', 'committed_version', 'retryable', 'idempotent',
             'coverage_gap_seconds', 'expected_license_version', 'expected_membership_version',
-            'license_id', 'license_version', 'sequence'];
+            'license_id', 'license_version', 'sequence', 'changes'];
         const booleanFields = new Set(['administrator', 'activated', 'recovery_ready', 'retryable', 'idempotent']);
         const numericFields = new Set(['expires_at', 'trusted_utc', 'clock_epoch', 'registered_fe_nodes',
             'registered_be_nodes', 'max_fe_nodes', 'max_be_nodes', 'base_max_fe_nodes', 'base_max_be_nodes',
@@ -83,8 +107,10 @@ export async function licenseRequest(path: string, signal: AbortSignal, certific
             if (booleanFields.has(key)) {
                 if (typeof value === 'boolean') body[key] = value;
             } else if (numericFields.has(key)) {
-                body[key] = value === null || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0)
-                    || (typeof value === 'string' && /^(?:0|[1-9]\d{0,18})$/.test(value)) ? value : null;
+                body[key] = safeNumber(value);
+            } else if (key === 'changes') {
+                const changes = licenseChanges(value);
+                if (changes) body.changes = changes;
             } else {
                 body[key] = value;
             }

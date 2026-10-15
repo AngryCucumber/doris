@@ -134,9 +134,8 @@ public final class LicenseImportState {
                 || (pending != null && effectiveBase.document.getSequence() >= pending.document.getSequence()))) {
             throw new IllegalArgumentException("Base marker does not match active and pending order");
         }
-        requireNondecreasingCapacity(effectiveBase, active);
-        requirePendingCapacity(active, pending);
-        requirePendingCapacity(effectiveBase, pending);
+        // Capacity is not compared across slots: a higher accepted sequence replaces older promises,
+        // including a lower quota or an earlier expiry. Each slot is still independently verified.
         for (int first = 0; first < slots.length; first++) {
             for (int second = first + 1; second < slots.length; second++) {
                 if (slots[first] != null && slots[second] != null) {
@@ -171,22 +170,6 @@ public final class LicenseImportState {
         this.highestSequence = highestSequence;
         this.licenseVersion = licenseVersion;
         this.receipts = Collections.unmodifiableList(copy);
-    }
-
-    private static void requireNondecreasingCapacity(Slot older, Slot newer) {
-        if (older != null && newer != null && (older.document.getMaxFeNodes() > newer.document.getMaxFeNodes()
-                || older.document.getMaxBeNodes() > newer.document.getMaxBeNodes())) {
-            throw new IllegalArgumentException("Restored license capacity decreases across accepted slots");
-        }
-    }
-
-    private static void requirePendingCapacity(Slot older, Slot pending) {
-        // A lower future renewal is committed only after the older promise has expired.
-        // Its signed start must therefore follow that expiry; overlapping promises still cannot shrink.
-        if (older != null && pending != null
-                && older.document.getExpiresAt() > pending.document.getNotBefore()) {
-            requireNondecreasingCapacity(older, pending);
-        }
     }
 
     private static void requireCompatibleIdentity(Receipt first, Receipt second) {

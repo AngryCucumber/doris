@@ -31,6 +31,34 @@ function Fields({ value, names }: { value: LicenseFields; names: string[] }) {
     </React.Fragment>)}</dl>;
 }
 
+function changeText(change: LicenseFields): { [key: string]: any } {
+    const previous = timestamp(change.previous_expires_at);
+    const current = timestamp(change.expires_at);
+    return {
+        previous: previous ? previous.utc : displayValue(change.previous_expires_at),
+        current: current ? current.utc : displayValue(change.expires_at),
+        gap: displayValue(change.gap_seconds), previousLimit: displayValue(change.previous_limit),
+        limit: displayValue(change.limit), licenseId: displayValue(change.license_id),
+        sequence: displayValue(change.sequence), features: displayValue(change.features),
+    };
+}
+
+/** Server facts about what a replacement changes; they inform the operator and never change admission. */
+function ChangeList({ changes, testId }: { changes: any; testId: string }) {
+    const { t } = useTranslation();
+    if (!Array.isArray(changes)) return null;
+    return <div className={styles.changes} data-testid={testId}
+        data-change-codes={changes.map(change => change.code).join(',')}>
+        {changes.length === 0 ? <p className={styles.muted}>{t('license.changes.none')}</p> : <>
+            <Alert type="warning" showIcon message={t('license.changes.title')} description={t('license.changes.warning')} />
+            <ul>{changes.map((change, index) => <li key={index} data-change-code={change.code}>
+                <Tag color="orange">{change.code}</Tag>
+                <span>{t(`license.changes.codes.${change.code}`, { defaultValue: change.code, ...changeText(change) })}</span>
+            </li>)}</ul>
+        </>}
+    </div>;
+}
+
 function CertificateCard({ name, certificate }: { name: string; certificate: LicenseFields | null }) {
     const { t } = useTranslation();
     return <section className={styles.card} data-testid={`license-${name}`}>
@@ -53,6 +81,8 @@ export default function LicensePage() {
     const [validation, setValidation] = useState<LicenseResponse | null>(null);
     const [fingerprint, setFingerprint] = useState('');
     const [receipt, setReceipt] = useState<LicenseResponse | null>(null);
+    // Import responses carry the committed decision's changes; receipt queries do not, so keep them apart.
+    const [importChanges, setImportChanges] = useState<LicenseFields[] | null>(null);
     const [pollStatus, setPollStatus] = useState('idle');
     const [cooldown, setCooldown] = useState(0);
     const mounted = useRef(false);
@@ -95,6 +125,7 @@ export default function LicensePage() {
         clearInput();
         setSnapshot(null);
         setReceipt(null);
+        setImportChanges(null);
         setFingerprint('');
         setError(null);
         setPollStatus('stopped');
@@ -172,6 +203,7 @@ export default function LicensePage() {
                 });
                 if (!value.administrator) {
                     setReceipt(null);
+                    setImportChanges(null);
                     setFingerprint('');
                 }
             } else {
@@ -352,12 +384,18 @@ export default function LicensePage() {
         setNotice('');
         setPollStatus('idle');
         setFingerprint(id);
+        setImportChanges(null);
         setReceipt({ httpStatus: 0, retryAfterSeconds: null, body: { fingerprint: id, submission_status: 'UNKNOWN' } });
         try {
             const result = await request('/import', run, input);
             if (!result) return;
             clearInput();
-            if (receiptResult(result, id) !== 'pending') return;
+            const outcome = receiptResult(result, id);
+            const acknowledged = result.body.submission_status === 'APPLIED' || result.body.submission_status === 'COMMITTED';
+            if (outcome !== 'invalid' && acknowledged && Array.isArray(result.body.changes)) {
+                setImportChanges(result.body.changes);
+            }
+            if (outcome !== 'pending') return;
             if (result.body.submission_status === 'COMMITTED' || result.body.submission_status === 'UNKNOWN') {
                 startPolling(id, result);
             } else {
@@ -441,6 +479,7 @@ export default function LicensePage() {
                     onChange={event => {
                         setFingerprint(event.target.value.toLowerCase().replace(/[^0-9a-f]/g, ''));
                         setReceipt(null);
+                        setImportChanges(null);
                         setNotice('');
                         setError(null);
                         setPollStatus('idle');
@@ -450,6 +489,7 @@ export default function LicensePage() {
             </div>
             {receipt && <Fields value={{ ...receipt.body, http_status: receipt.httpStatus || null, retry_after: receipt.retryAfterSeconds }}
                 names={['submission_status', 'reason', 'committed_version', 'applied_version', 'http_status', 'retry_after']} />}
+            {importChanges && <ChangeList changes={importChanges} testId="license-import-changes" />}
             <p role="status" data-testid="license-poll-status" data-poll-status={pollStatus}>{t(`license.poll.${pollStatus}`)}</p>
         </section>}
         <Modal visible={dialog && administrator} title={t('license.import')} destroyOnClose maskClosable={false}
@@ -467,6 +507,7 @@ export default function LicensePage() {
                     <Alert type="success" message={t('license.validated')} />
                     <Fields value={validation.body} names={['fingerprint', 'coverage_gap_seconds', 'idempotent',
                         'expected_license_version', 'expected_membership_version']} />
+                    <ChangeList changes={validation.body.changes} testId="license-validation-changes" />
                     <p>{t('license.confirmHelp')}</p>
                 </div>}
                 <div className={styles.actions}>

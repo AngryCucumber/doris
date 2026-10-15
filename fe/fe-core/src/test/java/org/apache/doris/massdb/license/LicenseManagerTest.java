@@ -445,31 +445,42 @@ class LicenseManagerTest {
     }
 
     @Test
-    void expiredRenewalCanLowerBothLimitsOnlyAfterMembershipShrinksAndPersistsTheNewBase() throws Exception {
+    void lowerRenewalIsAcceptedBeforeExpiryOnlyAfterMembershipShrinksAndPersistsTheNewBase() throws Exception {
         start();
         String old = certificate(1, 900, 1100);
         run(LicenseManager.Action.IMPORT, old);
         manager.runMembershipMutation(2, 5, () -> host.changeMembers(3, 5));
         String lower = certificateWithLimits(2, 1000, 2000, 2, 3);
-        manager.runMembershipMutation(0, 0, () -> host.changeMembers(2, 3));
+        // M17-03: the old certificate is unexpired and membership has not shrunk.
         assertCapacityImportRejected(lower);
+        manager.runMembershipMutation(0, 0, () -> host.changeMembers(2, 3));
+        Map<String, Object> validated = run(LicenseManager.Action.VALIDATE, lower).getBody();
+        Assertions.assertEquals(Arrays.asList("FE_LIMIT_REDUCED", "BE_LIMIT_REDUCED"), codes(validated));
+        // M17-13b: validate is not a reservation; membership growth before import is judged again.
         manager.runMembershipMutation(1, 2, () -> host.changeMembers(3, 5));
-        time.advance(100_000);
-        Assertions.assertEquals(LicenseQueryStatus.EXPIRED, manager.queryStatus());
         assertCapacityImportRejected(lower);
         manager.runMembershipMutation(0, 0, () -> host.changeMembers(2, 5));
         assertCapacityImportRejected(lower);
         manager.runMembershipMutation(0, 0, () -> host.changeMembers(2, 3));
-        Assertions.assertEquals("APPLIED", run(LicenseManager.Action.IMPORT, lower)
-                .getBody().get("submission_status"));
+        Assertions.assertTrue(manager.queryStatus().permitsNewQuery());
+        Map<String, Object> imported = run(LicenseManager.Action.IMPORT, lower).getBody();
+        Assertions.assertEquals("APPLIED", imported.get("submission_status"));
+        // M17-17: the same candidate and facts produce the same changes from validate and import.
+        Assertions.assertEquals(validated.get("changes"), imported.get("changes"));
         Assertions.assertTrue(manager.queryStatus().permitsNewQuery());
         Assertions.assertEquals(2, manager.getSnapshot().getBaseMaxFeNodes());
         Assertions.assertEquals(3, manager.getSnapshot().getBaseMaxBeNodes());
+        Map<String, Object> status = run(LicenseManager.Action.STATUS, null).getBody();
+        Assertions.assertEquals(2000L, status.get("expires_at"));
+        Assertions.assertEquals(2, status.get("max_fe_nodes"));
+        Assertions.assertEquals(3, status.get("base_max_be_nodes"));
         assertAdditionalNodesRejected(manager);
         long version = manager.getAppliedVersion();
-        run(LicenseManager.Action.IMPORT, old);
+        Map<String, Object> retry = run(LicenseManager.Action.IMPORT, old).getBody();
+        Assertions.assertNull(retry.get("changes"));
         Assertions.assertEquals(version, manager.getAppliedVersion());
         Assertions.assertEquals(3, manager.getSnapshot().getBaseMaxBeNodes());
+        Assertions.assertEquals(2L, run(LicenseManager.Action.STATUS, null).getBody().get("highest_sequence"));
 
         try (LicenseManager restored = new LicenseManager(host, false, time)) {
             restored.loadImage(input(image(manager)));
@@ -1482,13 +1493,11 @@ class LicenseManagerTest {
                 "LICENSE_IMPORT_HISTORY_UNAVAILABLE");
         candidates.put(sign(claims(deployment, 5, 900, 4000), "issuer", "massdb-license+jws", issuer),
                 "LICENSE_IMPORT_CONFLICT");
-        candidates.put(sign(valid.deepCopy().put("expires_at", 1600), "issuer", "massdb-license+jws", issuer),
-                "LICENSE_RENEWAL_REDUCTION");
-        candidates.put(sign(valid.deepCopy().put("not_before", 1900), "issuer", "massdb-license+jws", issuer),
-                "LICENSE_RENEWAL_REDUCTION");
-        ObjectNode reduced = valid.deepCopy();
-        ((ObjectNode) reduced.get("limits")).put("max_fe_nodes", 2);
-        candidates.put(sign(reduced, "issuer", "massdb-license+jws", issuer), "LICENSE_NODE_LIMIT_TOO_SMALL");
+        // Two registered FEs exceed a one-FE quota; this is actual usage, not a replaced promise.
+        manager.runMembershipMutation(1, 0, () -> host.changeMembers(2, 0));
+        ObjectNode oneFrontend = valid.deepCopy();
+        ((ObjectNode) oneFrontend.get("limits")).put("max_fe_nodes", 1);
+        candidates.put(sign(oneFrontend, "issuer", "massdb-license+jws", issuer), "LICENSE_NODE_LIMIT_TOO_SMALL");
         String[] tampered = sign(valid, "issuer", "massdb-license+jws", issuer).split("\\.");
         byte[] signature = Base64.getUrlDecoder().decode(tampered[2]);
         signature[0] ^= 1;
@@ -1509,6 +1518,197 @@ class LicenseManagerTest {
                 Assertions.assertEquals(3, host.records.size());
             }
         }
+    }
+
+    @Test
+    void formerReductionCandidatesAreAcceptedWithTheSameChangesFromValidateAndImport() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(5, 900, 1700));
+        run(LicenseManager.Action.IMPORT, certificate(6, 1800, 3000));
+        String deployment = run(LicenseManager.Action.DEPLOYMENT, null).getBody().get("deployment_id").toString();
+        ObjectNode valid = claims(deployment, 7, 900, 4000);
+        ObjectNode reduced = valid.deepCopy();
+        ((ObjectNode) reduced.get("limits")).put("max_fe_nodes", 2);
+        Map<String, List<String>> candidates = new LinkedHashMap<>();
+        candidates.put(sign(valid.deepCopy().put("expires_at", 1600), "issuer", "massdb-license+jws", issuer),
+                Arrays.asList("EXPIRY_SHORTENED", "PENDING_DISCARDED"));
+        candidates.put(sign(valid.deepCopy().put("not_before", 1900), "issuer", "massdb-license+jws", issuer),
+                Arrays.asList("COVERAGE_GAP", "PENDING_DISCARDED"));
+        candidates.put(sign(reduced, "issuer", "massdb-license+jws", issuer),
+                Arrays.asList("FE_LIMIT_REDUCED", "PENDING_DISCARDED"));
+        byte[] before = image(manager);
+        Map<String, Object> last = null;
+        for (Map.Entry<String, List<String>> candidate : candidates.entrySet()) {
+            last = run(LicenseManager.Action.VALIDATE, candidate.getKey()).getBody();
+            Assertions.assertEquals("LICENSE_VALIDATED", last.get("reason"));
+            Assertions.assertEquals(candidate.getValue(), codes(last));
+            Assertions.assertArrayEquals(before, image(manager));
+        }
+        Map<String, Object> gap = run(LicenseManager.Action.VALIDATE,
+                (String) candidates.keySet().toArray()[1]).getBody();
+        Assertions.assertEquals(200L, gap.get("coverage_gap_seconds"));
+        Assertions.assertEquals(200L, change(gap, "COVERAGE_GAP").get("gap_seconds"));
+        Assertions.assertEquals("license-6", change(last, "PENDING_DISCARDED").get("license_id"));
+        Assertions.assertEquals(3, change(last, "FE_LIMIT_REDUCED").get("previous_limit"));
+        Assertions.assertEquals(2, change(last, "FE_LIMIT_REDUCED").get("limit"));
+        String lowerFrontend = (String) candidates.keySet().toArray()[2];
+        Map<String, Object> imported = run(LicenseManager.Action.IMPORT, lowerFrontend).getBody();
+        Assertions.assertEquals("APPLIED", imported.get("submission_status"));
+        Assertions.assertEquals(last.get("changes"), imported.get("changes"));
+        Assertions.assertEquals(0L, imported.get("coverage_gap_seconds"));
+        Map<String, Object> status = run(LicenseManager.Action.STATUS, null).getBody();
+        Assertions.assertNull(status.get("pending"));
+        Assertions.assertEquals(7L, status.get("highest_sequence"));
+        Assertions.assertEquals(2, status.get("base_max_fe_nodes"));
+        // M17-07: the discarded pending keeps its original durable receipt.
+        Map<String, Object> discarded = run(LicenseManager.Action.IMPORT_RECEIPT,
+                LicenseVerifier.fingerprint(certificate(6, 1800, 3000))).getBody();
+        Assertions.assertEquals("APPLIED", discarded.get("submission_status"));
+        Assertions.assertEquals(6L, discarded.get("sequence"));
+        Assertions.assertEquals(2L, discarded.get("license_version"));
+    }
+
+    @Test
+    void shorterRenewalMovesExpiryAndExpiringWarningToTheNewCertificate() throws Exception {
+        start();
+        long day = 24L * 60 * 60;
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 1000 + 60 * day));
+        Assertions.assertEquals("VALID", run(LicenseManager.Action.STATUS, null).getBody().get("status"));
+        String shorter = certificate(2, 900, 1000 + 10 * day);
+        Map<String, Object> imported = run(LicenseManager.Action.IMPORT, shorter).getBody();
+        Assertions.assertEquals(Collections.singletonList("EXPIRY_SHORTENED"), codes(imported));
+        Assertions.assertEquals(1000 + 60 * day, change(imported, "EXPIRY_SHORTENED").get("previous_expires_at"));
+        Assertions.assertEquals(1000 + 10 * day, change(imported, "EXPIRY_SHORTENED").get("expires_at"));
+        Map<String, Object> status = run(LicenseManager.Action.STATUS, null).getBody();
+        Assertions.assertEquals("EXPIRING", status.get("status"));
+        Assertions.assertEquals(1000 + 10 * day, status.get("expires_at"));
+        Assertions.assertEquals(LicenseQueryStatus.EXPIRING, manager.queryStatus());
+        time.advance(10 * day * 1000 - 1000);
+        Assertions.assertTrue(manager.queryStatus().permitsNewQuery());
+        time.advance(1000);
+        Assertions.assertEquals(LicenseQueryStatus.EXPIRED, manager.queryStatus());
+        Assertions.assertEquals("EXPIRED", run(LicenseManager.Action.STATUS, null).getBody().get("status"));
+        // The old longer certificate only confirms its receipt; it does not restore the old expiry.
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 1000 + 60 * day));
+        Assertions.assertEquals(LicenseQueryStatus.EXPIRED, manager.queryStatus());
+        run(LicenseManager.Action.IMPORT, certificate(3, 900, 1000 + 90 * day));
+        Assertions.assertEquals("VALID", run(LicenseManager.Action.STATUS, null).getBody().get("status"));
+    }
+
+    @Test
+    void lowerFuturePendingCapsAddsNowAndActivatesOnlyAfterRecheckingUsage() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 100_000));
+        manager.runMembershipMutation(1, 3, () -> host.changeMembers(2, 3));
+        Map<String, Object> pending = run(LicenseManager.Action.IMPORT,
+                certificateWithLimits(2, 2000, 200_000, 2, 3)).getBody();
+        Assertions.assertEquals(Arrays.asList("FE_LIMIT_REDUCED", "BE_LIMIT_REDUCED"), codes(pending));
+        Assertions.assertEquals(3, manager.getSnapshot().getBaseMaxFeNodes());
+        Assertions.assertEquals(5, manager.getSnapshot().getBaseMaxBeNodes());
+        assertAdditionalNodesRejected(manager);
+        Assertions.assertTrue(manager.queryStatus().permitsNewQuery());
+        time.advance(1_000_000);
+        // Usage that bypassed admission (for example a replayed member) blocks activation; base stays old.
+        host.changeMembers(3, 3);
+        manager.maintenance();
+        Assertions.assertEquals(3, manager.getSnapshot().getBaseMaxFeNodes());
+        Assertions.assertNotNull(run(LicenseManager.Action.STATUS, null).getBody().get("pending"));
+        host.changeMembers(2, 3);
+        manager.maintenance();
+        Assertions.assertEquals(2, manager.getSnapshot().getBaseMaxFeNodes());
+        Assertions.assertEquals(3, manager.getSnapshot().getBaseMaxBeNodes());
+        Assertions.assertNull(run(LicenseManager.Action.STATUS, null).getBody().get("pending"));
+        assertAdditionalNodesRejected(manager);
+    }
+
+    @Test
+    void membershipChangeBetweenValidateAndImportIsJudgedAgainAtImport() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 100_000));
+        run(LicenseManager.Action.IMPORT, certificate(2, 1500, 200_000));
+        String lower = certificateWithLimits(3, 900, 150_000, 2, 4);
+        Map<String, Object> validated = run(LicenseManager.Action.VALIDATE, lower).getBody();
+        Assertions.assertEquals(Arrays.asList("FE_LIMIT_REDUCED", "BE_LIMIT_REDUCED", "PENDING_DISCARDED"),
+                codes(validated));
+        // M17-13a: a member change that still fits does not invalidate the later import.
+        manager.runMembershipMutation(1, 4, () -> host.changeMembers(2, 4));
+        time.advance(600_000);
+        Map<String, Object> imported = run(LicenseManager.Action.IMPORT, lower).getBody();
+        Assertions.assertEquals("APPLIED", imported.get("submission_status"));
+        // The pending started before import, so the decision now reports reductions from that certificate.
+        Assertions.assertEquals(Arrays.asList("EXPIRY_SHORTENED", "FE_LIMIT_REDUCED", "BE_LIMIT_REDUCED",
+                "PENDING_DISCARDED"), codes(imported));
+        Assertions.assertNotEquals(validated.get("changes"), imported.get("changes"));
+        Assertions.assertEquals(200_000L, change(imported, "EXPIRY_SHORTENED").get("previous_expires_at"));
+        Assertions.assertEquals(2, manager.getSnapshot().getBaseMaxFeNodes());
+        Assertions.assertEquals(4, manager.getSnapshot().getBaseMaxBeNodes());
+    }
+
+    @Test
+    void replacementStatesSurviveJournalReplayImageAndCheckpointWithIdenticalStatus() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 100_000));
+        manager.runMembershipMutation(1, 2, () -> host.changeMembers(2, 2));
+        run(LicenseManager.Action.IMPORT, certificateWithLimits(2, 900, 50_000, 2, 2));
+        run(LicenseManager.Action.IMPORT, certificateWithLimits(3, 30_000, 80_000, 2, 2));
+        Map<String, Object> expected = run(LicenseManager.Action.STATUS, null).getBody();
+        Assertions.assertEquals(50_000L, expected.get("expires_at"));
+        Assertions.assertEquals(2, expected.get("base_max_fe_nodes"));
+        Assertions.assertNotNull(expected.get("pending"));
+        List<LicensePersistRecord> journal = new ArrayList<>(host.records);
+        try (LicenseManager replayed = new LicenseManager(host, false, time);
+                LicenseManager checkpoint = new LicenseManager(host, true, time);
+                LicenseManager reloaded = new LicenseManager(host, false, time)) {
+            for (LicensePersistRecord record : journal) {
+                replayed.replay(coldRecord(record));
+                checkpoint.replay(coldRecord(record));
+            }
+            replayed.onReplayComplete();
+            assertSameLicenseFacts(expected, replayed.execute(LicenseManager.Action.STATUS, null, "admin", true)
+                    .getBody());
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            checkpoint.saveImage(new DataOutputStream(bytes));
+            Assertions.assertArrayEquals(image(manager), bytes.toByteArray());
+            reloaded.loadImage(input(bytes.toByteArray()));
+            reloaded.onReplayComplete();
+            Map<String, Object> restored = reloaded.execute(LicenseManager.Action.STATUS, null, "admin", true)
+                    .getBody();
+            assertSameLicenseFacts(expected, restored);
+            Map<String, String> sql = new LinkedHashMap<>();
+            for (List<String> row : LicenseCommand.resultSet(restored).getResultRows()) {
+                sql.put(row.get(0), row.get(1));
+            }
+            for (String key : new String[] {"max_fe_nodes", "max_be_nodes", "base_max_fe_nodes",
+                    "base_max_be_nodes", "expires_at", "highest_sequence"}) {
+                Assertions.assertEquals(String.valueOf(restored.get(key)), sql.get(key), key);
+            }
+        }
+    }
+
+    private static void assertSameLicenseFacts(Map<String, Object> expected, Map<String, Object> actual) {
+        for (String key : new String[] {"status", "expires_at", "max_fe_nodes", "max_be_nodes", "base_max_fe_nodes",
+                "base_max_be_nodes", "active", "pending", "highest_sequence", "applied_version"}) {
+            Assertions.assertEquals(expected.get(key), actual.get(key), key);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<String> codes(Map<String, Object> body) {
+        List<String> result = new ArrayList<>();
+        for (Map<String, Object> change : (List<Map<String, Object>>) body.get("changes")) {
+            result.add((String) change.get("code"));
+        }
+        return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> change(Map<String, Object> body, String code) {
+        for (Map<String, Object> change : (List<Map<String, Object>>) body.get("changes")) {
+            if (code.equals(change.get("code"))) {
+                return change;
+            }
+        }
+        throw new AssertionError("Missing change " + code);
     }
 
     @Test

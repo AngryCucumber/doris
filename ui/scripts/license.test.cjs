@@ -932,6 +932,68 @@ test('P2U License browser contracts (controlled API, not FE integration)', { tim
             });
         }
 
+        const replacementChanges = () => [
+            { code: 'EXPIRY_SHORTENED', previous_expires_at: fixedEpoch + 60 * 86400, expires_at: fixedEpoch + 10 * 86400 },
+            { code: 'FE_LIMIT_REDUCED', previous_limit: 4, limit: 2 },
+            { code: 'BE_LIMIT_REDUCED', previous_limit: 8, limit: 3, message: certificate },
+            { code: 'PENDING_DISCARDED', license_id: 'browser-license-12', sequence: 12 },
+        ];
+        for (const language of ['en', 'zh-CN']) {
+            await run('U05-replacement-changes-validate-and-import-' + language, async f => {
+                f.model.status.pending = { ...details(12), not_before: fixedEpoch + 3600, expires_at: fixedEpoch + 90 * 86400 };
+                f.model.validate.body.changes = replacementChanges();
+                f.model.imported = { status: 200, body: receipt('APPLIED', { changes: replacementChanges(),
+                    coverage_gap_seconds: 0, license_id: 'browser-license-13', sequence: 13, license_version: 13 }) };
+                const codes = 'EXPIRY_SHORTENED,FE_LIMIT_REDUCED,BE_LIMIT_REDUCED,PENDING_DISCARDED';
+                await f.enter(); await f.open(); await f.validate();
+                const validation = f.id('license-validation-changes');
+                assert.equal(await validation.getAttribute('data-change-codes'), codes);
+                const shown = await validation.innerText();
+                assert.match(shown, language === 'en' ? /Expiry moves earlier/ : /到期时间提前/);
+                assert.match(shown, /2026-11-28 12:00:00 UTC → 2026-10-09 12:00:00 UTC/);
+                assert.match(shown, /4 → 2/);
+                assert.match(shown, /8 → 3/);
+                assert.match(shown, /browser-license-12/);
+                assert.match(shown, language === 'en' ? /replaces the current active and pending/ : /取代当前 active 和 pending/);
+                assert.ok(!shown.includes(CANARY), 'unknown change fields must not reach the page');
+                await f.id('license-import-dialog').screenshot({ path: path.join(artifacts, `license-changes-validate-${language}.png`) });
+                await f.confirm();
+                await f.id('license-import-changes').waitFor();
+                assert.equal(await f.id('license-import-changes').getAttribute('data-change-codes'), codes);
+                assert.equal(await f.id('license-poll-status').getAttribute('data-poll-status'), 'complete');
+                assert.match(await f.id('license-import-changes').innerText(), /browser-license-12/);
+                await f.id('license-import-dialog').waitFor({ state: 'hidden' });
+                await f.page.locator('.ant-modal-mask').waitFor({ state: 'hidden' });
+                await f.page.screenshot({ path: path.join(artifacts, `license-changes-imported-${language}.png`), fullPage: true });
+                // A receipt query proves the commit only; it neither invents nor keeps changes for another fingerprint.
+                await f.id('license-receipt-fingerprint').fill('0'.repeat(64));
+                assert.equal(await f.id('license-import-changes').count(), 0);
+            }, { language });
+        }
+
+        await run('U05-no-changes-and-untrusted-change-shapes', async f => {
+            f.model.validate.body.changes = [];
+            await f.enter(); await f.open(); await f.validate();
+            assert.equal(await f.id('license-validation-changes').getAttribute('data-change-codes'), '');
+            assert.match(await f.id('license-validation-changes').innerText(), /No earlier expiry/);
+            await f.id('license-import-cancel').click();
+            for (const changes of [{ code: 'EXPIRY_SHORTENED' }, 'EXPIRY_SHORTENED', new Array(17).fill({ code: 'COVERAGE_GAP' })]) {
+                f.model.validate.body.changes = changes;
+                await f.open(); await f.validate();
+                assert.equal(await f.id('license-validation-changes').count(), 0, 'malformed changes are not displayed');
+                await f.id('license-import-cancel').click();
+            }
+            f.model.validate.body.changes = [{ code: 'COVERAGE_GAP', gap_seconds: 3600 }, { code: '<b>raw</b>' },
+                { code: 'FUTURE_CODE', gap_seconds: certificate }, { code: 'FEATURES_REMOVED', features: ['EXPORT', 7] }];
+            await f.open(); await f.validate();
+            const shown = f.id('license-validation-changes');
+            assert.equal(await shown.getAttribute('data-change-codes'), 'COVERAGE_GAP,FUTURE_CODE,FEATURES_REMOVED');
+            const text = await shown.innerText();
+            assert.match(text, /3600-second coverage gap/);
+            assert.match(text, /Features removed: EXPORT/);
+            assert.ok(!text.includes(CANARY) && !text.includes('<b>'), 'untrusted values must not be echoed');
+        });
+
         await run('U03-unknown-submission-receipt', async f => {
             f.model.imported = { status: 503, body: receipt('UNKNOWN') };
             f.model.received = { status: 503, body: receipt('UNKNOWN') };

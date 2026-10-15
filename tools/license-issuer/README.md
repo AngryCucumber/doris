@@ -164,10 +164,18 @@ python3 tools/license-issuer/license_issuer.py --openssl /usr/bin/openssl sign \
 ```
 
 前三项必须一起提供；`--at` 可省略而使用签发机当前 UTC 秒。工具要求部署、产品及客户匹配、序号严格增加，并使用新的 `license_id`；数据库拒绝已知 ID 对应不同内容。
-旧证未过期时，工具拒绝降低 FE/BE 节点额度、缩短截止时间或削减能力；若上一个证书尚未生效，还拒绝推迟其起始时间。
-当 `at >= 旧证 expires_at` 时，允许降低 FE、BE 中任一项或两项额度。客户可在旧证到期后先完成缩容、成功 `DROP` 多余节点，再导入较低额度的新证；离线但未移除的节点仍计入注册数。`prepare-claims` 仍要求新额度不少于部署申请中的注册数，不会因为续期降额而跳过该检查。
-对于已开始生效的旧证，新证可以未来生效，数据库需要保留旧 active 直到生效切换；起止间隙不会自动延长旧证，签发结果的 `coverage_gap_seconds` 明示两张证书之间的空档。
-本工具只预检传入的一张旧证，不能代替 FE 对实时注册数及全部 active/pending 证书的检查：其他未到期证书承诺的额度仍需保留，导入时也会检查更高序号和有效期覆盖等全状态。`--at` 是离线预检时间，不改变 FE 的可信时间；签发方仍须维护签发登记。省略旧证参数仅执行单证检查，不意味着续期策略已通过。
+2026-10-15 起数据库采用取代式续期：更高序号的新证导入后完全取代当前 active 和 pending，不再要求保留旧证的期限、起始时间、额度或能力，只要求新额度容纳导入时的实际已注册+预留数量（离线但未移除的节点仍计数）。预检因此只检查上述身份、序号和 `license_id`，缩短、降额、推迟起始或减少能力都不再拒绝，而是在签发结果的 `changes` 中列出，并在标准错误输出一行 `License issuer notice: renewal changes ...`：
+
+| code | 相对 `--previous` 的条件 | 字段 |
+| --- | --- | --- |
+| `EXPIRY_SHORTENED` | 新证 `expires_at` 更早 | `previous_expires_at`、`expires_at` |
+| `COVERAGE_GAP` | 新证在 `--at` 之后、且晚于旧证到期才生效 | `gap_seconds`（同 `coverage_gap_seconds`） |
+| `FE_LIMIT_REDUCED` / `BE_LIMIT_REDUCED` | 新证额度更低 | `previous_limit`、`limit` |
+| `PENDING_DISCARDED` | 旧证在 `--at` 时尚未生效，导入后作为 pending 被替换 | `license_id`、`sequence` |
+| `FEATURES_REMOVED` | 旧证能力不在新证中 | `features` |
+
+这些是签发前要与客户确认的事实，签发仍然成功；导入后被取代的旧证不能用来恢复旧期限或额度，误签只能再签更高序号的新证纠正。`prepare-claims` 仍要求新额度不少于部署申请中的注册数，不会因为续期降额而跳过该检查。
+本工具只比较传入的一张旧证，不知道 FE 当时的 active、基础额度和实时成员：数据库 VALIDATE 与 IMPORT 响应中的 `changes` 按 FE 实际状态计算，以导入响应为准。`--at` 是离线预检时间，不改变 FE 的可信时间；签发方仍须维护签发登记。省略旧证参数仅执行单证检查。
 
 ## 4. 离线验证
 
@@ -261,5 +269,5 @@ MASSDB_TEST_OPENSSL=/usr/bin/openssl python3 tools/license-issuer/test_license_i
 ```
 
 测试在临时目录动态生成密钥，结束后删除，不提交密钥 fixture。
-覆盖额度/有效期/签名篡改、错误密钥和 `kid`、原始 JSON 签名输入、有效期边界、类型混淆、重复字段、未知头、编码与大小限制、固定 Unicode 规则、显式时区换算、真实申请字段准备、已验签续期、pending 起始保护、到期降额边界及后续续签、信任清单及用途隔离、修复票据绑定/篡改/高水位独立验证，以及拒绝覆盖文件和失败后的输出清理。
-运行本工具测试不代表数据库授权准入、发行包安装、节点通信或业务性能已完成验证。本机Java验证器/OpenSSL双向验证记录见[首批实施记录](/data/project/massdb-sql/docs/license-implementation-progress-20260922.md)；本轮到期后缩容续期的分层测试与真实单 FE 验证见[补充验收记录](/data/project/massdb-sql/docs/license-expired-renewal-20260930.md)。麒麟/openEuler及多架构发行矩阵暂不属于本轮目标。
+覆盖额度/有效期/签名篡改、错误密钥和 `kid`、原始 JSON 签名输入、有效期边界、类型混淆、重复字段、未知头、编码与大小限制、固定 Unicode 规则、显式时区换算、真实申请字段准备、已验签续期、取代式续期的变更提示（缩短、空档、降额、丢弃 pending、移除能力）及后续续签、信任清单及用途隔离、修复票据绑定/篡改/高水位独立验证，以及拒绝覆盖文件和失败后的输出清理。
+运行本工具测试不代表数据库授权准入、发行包安装、节点通信或业务性能已完成验证。本机Java验证器/OpenSSL双向验证记录见[首批实施记录](/data/project/massdb-sql/docs/license-implementation-progress-20260922.md)；取代式续期的分层测试与真实单 FE 验证见[执行计划与验收记录](/data/project/massdb-sql/docs/license-renewal-replacement-plan-20261015.md)；2026-09-30 的到期后缩容续期记录保留为历史。麒麟/openEuler及多架构发行矩阵暂不属于本轮目标。

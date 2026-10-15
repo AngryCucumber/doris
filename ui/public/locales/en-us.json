@@ -108,7 +108,20 @@
         "text": "Certificate text",
         "memoryOnly": "The certificate is held only in this dialog’s temporary memory and cleared when closed, submitted, or signed out.",
         "validated": "Server validation passed. No certificate has been submitted yet.",
-        "confirmHelp": "Confirm to persist this certificate. The server rechecks it at import time; a coverage gap may leave queries unavailable.",
+        "confirmHelp": "Confirm to persist this certificate and replace the current active and pending certificates. The server rechecks it against the state at import time and returns the actual changes; a coverage gap may leave queries unavailable.",
+        "changes": {
+            "title": "Importing replaces the current license with these changes",
+            "warning": "The new certificate replaces the current active and pending certificates. These changes take effect on import; re-importing an older certificate cannot undo them, only a new certificate with a higher sequence can. The import response is authoritative.",
+            "none": "No earlier expiry, lower limit, removed feature, coverage gap or discarded pending certificate compared with the current license.",
+            "codes": {
+                "EXPIRY_SHORTENED": "Expiry moves earlier: {{previous}} → {{current}}",
+                "COVERAGE_GAP": "{{gap}}-second coverage gap before the new certificate starts; queries are treated as expired during the gap",
+                "FE_LIMIT_REDUCED": "FE node limit reduced: {{previousLimit}} → {{limit}}",
+                "BE_LIMIT_REDUCED": "BE node limit reduced: {{previousLimit}} → {{limit}}",
+                "PENDING_DISCARDED": "Pending certificate {{licenseId}} (sequence {{sequence}}) is replaced and discarded",
+                "FEATURES_REMOVED": "Features removed: {{features}}"
+            }
+        },
         "cancel": "Close",
         "validate": "Validate",
         "confirm": "Confirm import",

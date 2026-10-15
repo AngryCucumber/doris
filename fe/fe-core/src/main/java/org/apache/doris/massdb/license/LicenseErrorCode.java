@@ -29,6 +29,7 @@ public enum LicenseErrorCode {
     CERTIFICATE_EXPIRED,
     FEATURE_NOT_LICENSED,
     NODE_LIMIT_TOO_SMALL,
+    // No longer produced by replacement renewal; retained for older clients and historical logs.
     RENEWAL_REDUCTION,
     IMPORT_CONFLICT,
     IMPORT_HISTORY_UNAVAILABLE,

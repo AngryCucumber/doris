@@ -4,6 +4,35 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License replacement renewal (2026-10-15)
+
+- `LicenseImportPolicy`: a valid certificate with a higher sequence now replaces every accepted active and
+  pending promise. Remove the coverage, feature and quota preservation checks (`preserveCoverage`,
+  `requireCoverage`), the unexpired-quota floor in `requireCapacity` and the quota comparison in
+  `promotedBase`; admission keeps every other check and requires only registered plus reserved members to fit.
+  `Prepared` now carries fixed `changes` (`EXPIRY_SHORTENED`, `COVERAGE_GAP`, `FE_LIMIT_REDUCED`,
+  `BE_LIMIT_REDUCED`, `PENDING_DISCARDED`, `FEATURES_REMOVED`) that report reductions without rejecting them.
+- `LicenseImportState`: recovery no longer compares quotas across slots; per-slot verification, sequence order,
+  base marker and receipt identity checks are unchanged. `RENEWAL_REDUCTION` is no longer produced but stays in
+  `LicenseErrorCode` and the UI reason list for older clients and historical logs.
+- `LicenseManager`: validate and fresh import responses include `changes` (SQL shows it as one JSON value row,
+  HTTP and forwarding pass it through); import also reports `coverage_gap_seconds`. Receipts, persisted record
+  format, query admission, ADD capacity and the FE package gate are unchanged.
+- `tools/license-issuer`: `check_renewal` keeps identity, sequence and `license_id` checks and returns the same
+  change codes relative to `--previous`; `sign` prints them in its JSON result and a stderr notice.
+- UI License page: the response whitelist accepts a validated `changes` list; the import dialog and the receipt
+  card show it with Chinese and English texts. Browser contract cases cover shortened, reduced and discarded
+  pending hints and malformed change shapes.
+- Rewrite the policy, manager and issuer tests that asserted the old preservation rules, add M17 cases, and
+  update the P0 contract, import-core and management documents, the execution plan, the issuer README and the
+  2026-09-30 record (kept as history). The execution plan and acceptance record is
+  `docs/license-renewal-replacement-plan-20261015.md`.
+- Validation on JDK 17.0.4: Checkstyle, FE package and 352 tests in 33 `License*Test` classes pass; issuer
+  tests (32) pass; the UI build, notice check, legal test and 45 License browser cases pass. A real single-FE run
+  covered SQL, HTTP and the real License page, restarts from journal and a checkpoint image, and replay by the
+  previous package (accepted for an immediate shortened replacement, refused with process exit for an overlapping
+  lower pending). Live BE migration, multi-FE failover, mixed packages and performance were not run.
+
 ## HDFS table backup tooling (2026-10-12)
 
 - Add a Bash tool using mysql, HDFS CLI and jq under `tools/backup-restore/` for

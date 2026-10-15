@@ -25,6 +25,10 @@
 .alert { margin-bottom: 16px; }
 .receiptActions { display: flex; gap: 12px; margin: 8px 0 16px; }
 .validation { margin: 20px 0; }
+.changes { margin: 16px 0; }
+.changes ul { margin: 12px 0 0; padding: 0; list-style: none; }
+.changes li { display: flex; align-items: baseline; gap: 8px; margin: 8px 0; overflow-wrap: anywhere; }
+.changes li :global(.ant-tag) { flex: none; margin: 0; }
 :global([data-testid='license-import-dialog']) label { display: block; margin: 16px 0 8px; }
 :global([data-testid='license-certificate-file']) { max-width: 100%; }
 :global([data-testid='license-certificate-input']) { font-family: monospace; }

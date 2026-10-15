@@ -23,9 +23,11 @@ import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.Signature;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 class LicenseImportPolicyTest {
@@ -81,87 +83,153 @@ class LicenseImportPolicyTest {
     }
 
     @Test
-    void currentImportMustPreserveActiveAndFuturePendingCoverageAndFeatures() throws Exception {
-        LicenseImportState active = accept(empty, claims(1, 900, 2000), 1000);
+    void currentImportReplacesActiveAndFuturePendingAndReportsReductions() throws Exception {
+        ObjectNode activeClaims = claims(1, 900, 2000);
+        activeClaims.withArray("features").add("ACTIVE_FEATURE");
+        LicenseImportState active = accept(empty, activeClaims, 1000);
         ObjectNode pendingClaims = claims(2, 1800, 4000);
         pendingClaims.withArray("features").add("FUTURE_FEATURE");
         LicenseImportState state = accept(active, pendingClaims, 1000);
-        reject(LicenseErrorCode.RENEWAL_REDUCTION, state, claims(3, 900, 3999), now(1000));
-        reject(LicenseErrorCode.RENEWAL_REDUCTION, state, claims(3, 900, 5000), now(1000));
-        ObjectNode full = claims(3, 900, 5000);
-        full.withArray("features").add("FUTURE_FEATURE");
-        LicenseImportState replaced = accept(state, full, 1000);
+        Prepared shorter = policy.prepare(sign(claims(3, 900, 1500)), state, now(1000), verifier);
+        Assertions.assertEquals(Arrays.asList("EXPIRY_SHORTENED", "PENDING_DISCARDED", "FEATURES_REMOVED"),
+                codes(shorter));
+        Assertions.assertEquals(2000L, change(shorter, "EXPIRY_SHORTENED").get("previous_expires_at"));
+        Assertions.assertEquals(1500L, change(shorter, "EXPIRY_SHORTENED").get("expires_at"));
+        Assertions.assertEquals("license-2", change(shorter, "PENDING_DISCARDED").get("license_id"));
+        Assertions.assertEquals(2L, change(shorter, "PENDING_DISCARDED").get("sequence"));
+        Assertions.assertEquals(Collections.singletonList("ACTIVE_FEATURE"),
+                change(shorter, "FEATURES_REMOVED").get("features"));
+        LicenseImportState replaced = shorter.getToPersist();
         Assertions.assertNull(replaced.getPending());
         Assertions.assertEquals(3, replaced.getActive().getDocument().getSequence());
-        Assertions.assertEquals(3, replaced.getEffectiveBase().getDocument().getSequence());
+        Assertions.assertSame(replaced.getActive(), replaced.getEffectiveBase());
+        Assertions.assertEquals(3, replaced.getHighestSequence());
+        Assertions.assertEquals(3, replaced.getReceipts().size());
+        Assertions.assertEquals(LicenseQueryStatus.EXPIRING, snapshot(replaced).queryStatus(1499));
+        Assertions.assertEquals(LicenseQueryStatus.EXPIRED, snapshot(replaced).queryStatus(1500));
         Assertions.assertSame(active.getActive(), state.getActive());
         Assertions.assertEquals(2, state.getPending().getDocument().getSequence());
+        ObjectNode full = claims(3, 900, 5000);
+        full.withArray("features").add("ACTIVE_FEATURE");
+        Prepared longer = policy.prepare(sign(full), state, now(1000), verifier);
+        Assertions.assertEquals(Collections.singletonList("PENDING_DISCARDED"), codes(longer));
+        Assertions.assertEquals(0, longer.getCoverageGapSeconds());
     }
 
     @Test
-    void futureReplacementCannotLosePendingStartButEquivalentActiveCanBridge() throws Exception {
+    void futureReplacementMayDelayPendingStartAndReportsTheGap() throws Exception {
         LicenseImportState active = accept(empty, claims(1, 900, 1200), 1000);
         LicenseImportState pending = accept(active, claims(2, 1100, 4000), 1000);
-        reject(LicenseErrorCode.RENEWAL_REDUCTION, pending, claims(3, 1201, 5000), now(1000));
-        LicenseImportState bridged = accept(pending, claims(3, 1150, 5000), 1000);
-        Assertions.assertEquals(1150, bridged.getPending().getDocument().getNotBefore());
+        Prepared later = policy.prepare(sign(claims(3, 1201, 5000)), pending, now(1000), verifier);
+        Assertions.assertEquals(Arrays.asList("COVERAGE_GAP", "PENDING_DISCARDED"), codes(later));
+        Assertions.assertEquals(1L, change(later, "COVERAGE_GAP").get("gap_seconds"));
+        Assertions.assertEquals(1, later.getCoverageGapSeconds());
+        LicenseImportState delayed = later.getToPersist();
+        Assertions.assertEquals(3, delayed.getPending().getDocument().getSequence());
+        Assertions.assertSame(active.getActive(), delayed.getActive());
+        Assertions.assertSame(active.getEffectiveBase(), delayed.getEffectiveBase());
+        Assertions.assertEquals(LicenseQueryStatus.EXPIRING, snapshot(delayed).queryStatus(1199));
+        Assertions.assertEquals(LicenseQueryStatus.EXPIRED, snapshot(delayed).queryStatus(1200));
+        Assertions.assertEquals(LicenseQueryStatus.EXPIRING, snapshot(delayed).queryStatus(1201));
+        Prepared bridged = policy.prepare(sign(claims(3, 1150, 5000)), pending, now(1000), verifier);
+        Assertions.assertEquals(Collections.singletonList("PENDING_DISCARDED"), codes(bridged));
+        Assertions.assertEquals(1150, bridged.getToPersist().getPending().getDocument().getNotBefore());
         ObjectNode expanded = claims(2, 1100, 4000);
         expanded.withArray("features").add("EXTRA");
         LicenseImportState withFeature = accept(active, expanded, 1000);
-        ObjectNode later = claims(3, 1150, 5000);
-        later.withArray("features").add("EXTRA");
-        reject(LicenseErrorCode.RENEWAL_REDUCTION, withFeature, later, now(1000));
-        later.put("not_before", 1100);
-        Assertions.assertNotNull(accept(withFeature, later, 1000).getPending());
+        // Features promised only by the discarded pending are not compared with the current active.
+        Prepared withoutExtra = policy.prepare(sign(claims(3, 1150, 5000)), withFeature, now(1000), verifier);
+        Assertions.assertEquals(Collections.singletonList("PENDING_DISCARDED"), codes(withoutExtra));
+        Assertions.assertFalse(withoutExtra.getToPersist().getPending().getDocument().hasFeature("EXTRA"));
     }
 
     @Test
-    void pendingHigherCapacityCannotBeBridgedBySmallerActive() throws Exception {
+    void pendingReplacementAndLowerLimitsAreAcceptedWithinActualUsage() throws Exception {
         LicenseImportState active = accept(empty, claims(1, 900, 3000), 1000);
         ObjectNode larger = claims(2, 1100, 4000);
         larger.with("limits").put("max_be_nodes", 9);
         LicenseImportState state = accept(active, larger, 1000);
         ObjectNode later = claims(3, 1150, 5000);
         later.with("limits").put("max_be_nodes", 9);
-        reject(LicenseErrorCode.RENEWAL_REDUCTION, state, later, now(1000));
-        later.put("not_before", 1100);
-        Assertions.assertNotNull(accept(state, later, 1000).getPending());
+        Prepared replacing = policy.prepare(sign(later), state, now(1000), verifier);
+        Assertions.assertEquals(Collections.singletonList("PENDING_DISCARDED"), codes(replacing));
+        for (long notBefore : new long[] {1150, 900}) {
+            ObjectNode lower = claims(3, notBefore, 5000);
+            lower.with("limits").put("max_fe_nodes", 2).put("max_be_nodes", 5);
+            reject(LicenseErrorCode.NODE_LIMIT_TOO_SMALL, state, lower, now(1000));
+            reject(LicenseErrorCode.NODE_LIMIT_TOO_SMALL, state, lower,
+                    new Context(1000, false, true, 2, 5, 0, 1, 1));
+            Prepared reduced = policy.prepare(sign(lower), state,
+                    new Context(1000, false, true, 2, 5, 0, 0, 1), verifier);
+            Assertions.assertEquals(Arrays.asList("FE_LIMIT_REDUCED", "BE_LIMIT_REDUCED", "PENDING_DISCARDED"),
+                    codes(reduced));
+            Assertions.assertEquals(3, change(reduced, "FE_LIMIT_REDUCED").get("previous_limit"));
+            Assertions.assertEquals(2, change(reduced, "FE_LIMIT_REDUCED").get("limit"));
+            Assertions.assertEquals(8, change(reduced, "BE_LIMIT_REDUCED").get("previous_limit"));
+            Assertions.assertEquals(5, change(reduced, "BE_LIMIT_REDUCED").get("limit"));
+            LicenseImportState next = reduced.getToPersist();
+            if (notBefore <= 1000) {
+                Assertions.assertNull(next.getPending());
+                Assertions.assertSame(next.getActive(), next.getEffectiveBase());
+                Assertions.assertEquals(5, next.getEffectiveBase().getDocument().getMaxBeNodes());
+            } else {
+                Assertions.assertEquals(5, next.getPending().getDocument().getMaxBeNodes());
+                Assertions.assertSame(active.getEffectiveBase(), next.getEffectiveBase());
+            }
+        }
     }
 
     @Test
-    void unexpiredFutureCapsAndReservationsCountWithoutOverflow() throws Exception {
+    void reservationsCountWithoutOverflowButUnexpiredAcceptedCapsDoNot() throws Exception {
         LicenseImportState state = accept(empty, claims(1, 900, 1100), 1000);
         ObjectNode larger = claims(2, 1050, 3000);
         larger.with("limits").put("max_fe_nodes", 4);
         LicenseImportState withPending = accept(state, larger, 1000);
-        reject(LicenseErrorCode.NODE_LIMIT_TOO_SMALL, withPending, claims(3, 1050, 4000), now(1000));
+        Prepared smaller = policy.prepare(sign(claims(3, 1050, 4000)), withPending, now(1000), verifier);
+        Assertions.assertEquals(Collections.singletonList("PENDING_DISCARDED"), codes(smaller));
+        Assertions.assertEquals(3, smaller.getToPersist().getPending().getDocument().getMaxFeNodes());
         reject(LicenseErrorCode.NODE_LIMIT_TOO_SMALL, empty, claims(1, 900, 2000),
                 new Context(1000, false, true, 3, 8, 1, 0, 1));
+        reject(LicenseErrorCode.NODE_LIMIT_TOO_SMALL, empty, claims(1, 900, 2000),
+                new Context(1000, false, true, 3, 8, 0, 1, 1));
         ObjectNode maximum = claims(1, 900, 2000);
         maximum.with("limits").put("max_fe_nodes", Integer.MAX_VALUE).put("max_be_nodes", Integer.MAX_VALUE);
         reject(LicenseErrorCode.NODE_LIMIT_TOO_SMALL, empty, maximum,
                 new Context(1000, false, true, Integer.MAX_VALUE, 0, 1, 0, 1));
+        reject(LicenseErrorCode.NODE_LIMIT_TOO_SMALL, empty, maximum,
+                new Context(1000, false, true, 0, Integer.MAX_VALUE, 0, 1, 1));
     }
 
     @Test
-    void reducedFeAndBeRenewalsBecomeAdmissibleExactlyAtExpiry() throws Exception {
+    void reducedFeAndBeRenewalsAreAdmissibleBeforeExpiryWhenActualUsageFits() throws Exception {
         LicenseImportState state = accept(empty, claims(1, 900, 1100), 1000);
         for (int[] limits : new int[][] {{2, 8}, {3, 5}, {2, 5}}) {
             ObjectNode reduced = claims(2, 900, 3000);
             reduced.with("limits").put("max_fe_nodes", limits[0]).put("max_be_nodes", limits[1]);
-            // A backdated new not_before does not restore the old certificate's expired promise.
-            reject(LicenseErrorCode.NODE_LIMIT_TOO_SMALL, state, reduced,
-                    new Context(1099, false, true, limits[0], 5, 0, 0, 1));
-            Prepared accepted = policy.prepare(sign(reduced), state,
-                    new Context(1100, false, true, limits[0], 5, 0, 0, 1), verifier);
-            LicenseImportState renewed = accepted.getToPersist();
-            Assertions.assertSame(renewed.getActive(), renewed.getEffectiveBase());
-            Assertions.assertNull(renewed.getPending());
-            Assertions.assertEquals(limits[0], renewed.getEffectiveBase().getDocument().getMaxFeNodes());
-            Assertions.assertEquals(limits[1], renewed.getEffectiveBase().getDocument().getMaxBeNodes());
-            Assertions.assertEquals(2, renewed.getHighestSequence());
-            Assertions.assertEquals(2, renewed.getLicenseVersion());
-            Assertions.assertEquals(2, renewed.getReceipts().size());
+            for (long at : new long[] {1000, 1099, 1100}) {
+                reject(LicenseErrorCode.NODE_LIMIT_TOO_SMALL, state, reduced,
+                        new Context(at, false, true, limits[0] + 1, limits[1], 0, 0, 1));
+                reject(LicenseErrorCode.NODE_LIMIT_TOO_SMALL, state, reduced,
+                        new Context(at, false, true, limits[0], limits[1] + 1, 0, 0, 1));
+                Prepared accepted = policy.prepare(sign(reduced), state,
+                        new Context(at, false, true, limits[0], limits[1], 0, 0, 1), verifier);
+                List<String> expected = new ArrayList<>();
+                if (limits[0] < 3) {
+                    expected.add("FE_LIMIT_REDUCED");
+                }
+                if (limits[1] < 8) {
+                    expected.add("BE_LIMIT_REDUCED");
+                }
+                Assertions.assertEquals(expected, codes(accepted));
+                LicenseImportState renewed = accepted.getToPersist();
+                Assertions.assertSame(renewed.getActive(), renewed.getEffectiveBase());
+                Assertions.assertNull(renewed.getPending());
+                Assertions.assertEquals(limits[0], renewed.getEffectiveBase().getDocument().getMaxFeNodes());
+                Assertions.assertEquals(limits[1], renewed.getEffectiveBase().getDocument().getMaxBeNodes());
+                Assertions.assertEquals(2, renewed.getHighestSequence());
+                Assertions.assertEquals(2, renewed.getLicenseVersion());
+                Assertions.assertEquals(2, renewed.getReceipts().size());
+            }
         }
         Assertions.assertEquals(3, state.getEffectiveBase().getDocument().getMaxFeNodes());
         Assertions.assertEquals(8, state.getEffectiveBase().getDocument().getMaxBeNodes());
@@ -187,13 +255,16 @@ class LicenseImportPolicyTest {
                 new Context(1100, false, true, 3, 5, 0, 0, 2), verifier);
         assertCommitFailure(LicenseErrorCode.NODE_LIMIT_TOO_SMALL, admitted, state,
                 new Context(1100, false, true, 3, 5, 0, 0, 1), verifier);
-        assertCommitFailure(LicenseErrorCode.NODE_LIMIT_TOO_SMALL, admitted, state,
+        // An unexpired old certificate no longer reserves its quota; this commit becomes a lower pending.
+        Prepared beforeExpiry = policy.recheckForCommit(admitted, state,
                 new Context(1099, false, true, 2, 5, 0, 0, 1), verifier);
+        Assertions.assertEquals(2, beforeExpiry.getToPersist().getPending().getDocument().getMaxFeNodes());
+        Assertions.assertSame(state.getEffectiveBase(), beforeExpiry.getToPersist().getEffectiveBase());
         Assertions.assertEquals(1, state.getHighestSequence());
     }
 
     @Test
-    void unexpiredPendingPromiseSurvivesActiveExpiryUntilItsOwnExpiry() throws Exception {
+    void lowerRenewalReplacesAnUnexpiredHigherPendingAtAnyTime() throws Exception {
         LicenseImportState active = accept(empty, claims(1, 900, 1100), 1000);
         ObjectNode expanded = claims(2, 1500, 2500);
         expanded.with("limits").put("max_fe_nodes", 4).put("max_be_nodes", 10);
@@ -201,15 +272,77 @@ class LicenseImportPolicyTest {
         ObjectNode reduced = claims(3, 1100, 3000);
         reduced.with("limits").put("max_fe_nodes", 2).put("max_be_nodes", 5);
         for (long at : new long[] {1100, 1499, 1500, 2499}) {
-            reject(LicenseErrorCode.NODE_LIMIT_TOO_SMALL, state, reduced,
-                    new Context(at, false, true, 2, 5, 0, 0, 1));
+            Prepared accepted = policy.prepare(sign(reduced), state,
+                    new Context(at, false, true, 2, 5, 0, 0, 1), verifier);
+            LicenseImportState renewed = accepted.getToPersist();
+            Assertions.assertNull(renewed.getPending());
+            Assertions.assertSame(renewed.getActive(), renewed.getEffectiveBase());
+            Assertions.assertEquals(3, renewed.getEffectiveBase().getDocument().getSequence());
+            Assertions.assertEquals(2, renewed.getEffectiveBase().getDocument().getMaxFeNodes());
+            Assertions.assertEquals(5, renewed.getEffectiveBase().getDocument().getMaxBeNodes());
+            Assertions.assertEquals(Arrays.asList("FE_LIMIT_REDUCED", "BE_LIMIT_REDUCED", "PENDING_DISCARDED"),
+                    codes(accepted));
+            // Before its start the old pending is not current; afterwards it is the replaced current certificate.
+            Assertions.assertEquals(at < 1500 ? 3 : 4, change(accepted, "FE_LIMIT_REDUCED").get("previous_limit"));
+            Assertions.assertEquals(at < 1500 ? 8 : 10, change(accepted, "BE_LIMIT_REDUCED").get("previous_limit"));
+            Assertions.assertEquals(2L, change(accepted, "PENDING_DISCARDED").get("sequence"));
         }
-        LicenseImportState renewed = policy.prepare(sign(reduced), state,
-                new Context(2500, false, true, 2, 5, 0, 0, 1), verifier).getToPersist();
-        Assertions.assertNull(renewed.getPending());
-        Assertions.assertEquals(3, renewed.getEffectiveBase().getDocument().getSequence());
-        Assertions.assertEquals(2, renewed.getEffectiveBase().getDocument().getMaxFeNodes());
-        Assertions.assertEquals(5, renewed.getEffectiveBase().getDocument().getMaxBeNodes());
+        reject(LicenseErrorCode.NODE_LIMIT_TOO_SMALL, state, reduced, new Context(1499, false, true, 3, 5, 0, 0, 1));
+    }
+
+    @Test
+    void higherSequenceRestoresLongerAndLargerCoverageAfterReduction() throws Exception {
+        LicenseImportState original = accept(empty, claims(1, 900, 5000), 1000);
+        ObjectNode reduced = claims(2, 900, 1500);
+        reduced.with("limits").put("max_fe_nodes", 2).put("max_be_nodes", 5);
+        Prepared shrinking = policy.prepare(sign(reduced), original,
+                new Context(1000, false, true, 2, 5, 0, 0, 1), verifier);
+        Assertions.assertEquals(Arrays.asList("EXPIRY_SHORTENED", "FE_LIMIT_REDUCED", "BE_LIMIT_REDUCED"),
+                codes(shrinking));
+        LicenseImportState small = shrinking.getToPersist();
+        Prepared restored = policy.prepare(sign(claims(3, 900, 6000)), small,
+                new Context(1200, false, true, 2, 5, 0, 0, 1), verifier);
+        Assertions.assertTrue(restored.getChanges().isEmpty());
+        LicenseImportState large = restored.getToPersist();
+        Assertions.assertSame(large.getActive(), large.getEffectiveBase());
+        Assertions.assertEquals(3, large.getEffectiveBase().getDocument().getMaxFeNodes());
+        Assertions.assertEquals(8, large.getEffectiveBase().getDocument().getMaxBeNodes());
+        Assertions.assertEquals(6000, large.getActive().getDocument().getExpiresAt());
+        // Re-importing either superseded certificate confirms its receipt without restoring its facts.
+        for (Slot superseded : new Slot[] {original.getActive(), small.getActive()}) {
+            Prepared retry = policy.prepare(superseded.getCompact(), large, now(1300), verifier);
+            Assertions.assertTrue(retry.isIdempotent());
+            Assertions.assertTrue(retry.getChanges().isEmpty());
+            Assertions.assertSame(large, retry.getToPersist());
+        }
+        Assertions.assertEquals(3, large.getHighestSequence());
+    }
+
+    @Test
+    void changesAreFactsOfTheCommittedDecisionAndAreRecomputedAtCommit() throws Exception {
+        Prepared initial = policy.prepare(sign(claims(1, 900, 2000)), empty, now(1000), verifier);
+        Assertions.assertTrue(initial.getChanges().isEmpty());
+        LicenseImportState active = initial.getToPersist();
+        LicenseImportState pending = accept(active, claims(2, 1500, 3000), 1000);
+        ObjectNode shorter = claims(3, 900, 1800);
+        shorter.with("limits").put("max_be_nodes", 5);
+        Prepared validated = policy.prepare(sign(shorter), pending, now(1000), verifier);
+        Prepared committed = policy.recheckForCommit(validated, pending, now(1000), verifier);
+        Assertions.assertEquals(codes(validated), codes(committed));
+        for (int i = 0; i < validated.getChanges().size(); i++) {
+            Assertions.assertEquals(validated.getChanges().get(i).toMap(), committed.getChanges().get(i).toMap());
+        }
+        Assertions.assertEquals(Arrays.asList("EXPIRY_SHORTENED", "BE_LIMIT_REDUCED", "PENDING_DISCARDED"),
+                codes(committed));
+        // Time can still move between preparation and commit; the commit reports its own decision.
+        Prepared later = policy.recheckForCommit(validated, pending, now(1600), verifier);
+        Assertions.assertEquals(3000L, change(later, "EXPIRY_SHORTENED").get("previous_expires_at"));
+        Assertions.assertEquals(8, change(later, "BE_LIMIT_REDUCED").get("previous_limit"));
+        Assertions.assertEquals(2L, change(later, "PENDING_DISCARDED").get("sequence"));
+        Assertions.assertTrue(policy.prepareBaseActivation(pending, now(1600)).getChanges().isEmpty());
+        Assertions.assertThrows(UnsupportedOperationException.class, () -> committed.getChanges().clear());
+        Assertions.assertThrows(UnsupportedOperationException.class,
+                () -> committed.getChanges().get(0).toMap().clear());
     }
 
     @Test
@@ -522,7 +655,7 @@ class LicenseImportPolicyTest {
     }
 
     @Test
-    void restorationRejectsMixedBaseOrderAndOverlappingQuotaReductionWithoutInferringReplacement() throws Exception {
+    void restorationRejectsMixedBaseOrderWithoutInferringReplacement() throws Exception {
         Slot first = Slot.verify(sign(claims(1, 900, 2000)), 1, verifier);
         Slot second = Slot.verify(sign(claims(2, 1100, 3000)), 2, verifier);
         Assertions.assertThrows(IllegalArgumentException.class,
@@ -534,9 +667,11 @@ class LicenseImportPolicyTest {
         ObjectNode smaller = claims(2, 1100, 3000);
         smaller.with("limits").put("max_be_nodes", 7);
         Slot smallerPending = Slot.verify(sign(smaller), 2, verifier);
-        Assertions.assertThrows(IllegalArgumentException.class,
-                () -> LicenseImportState.restore(DEPLOYMENT, first, smallerPending, first, 2, 2,
-                        Collections.emptyList()));
+        // An overlapping lower pending is a committed replacement, not corruption; slots still verify alone.
+        LicenseImportState overlapping = LicenseImportState.restore(DEPLOYMENT, first, smallerPending, first, 2, 2,
+                Collections.emptyList());
+        Assertions.assertSame(first, overlapping.getEffectiveBase());
+        Assertions.assertEquals(7, overlapping.getPending().getDocument().getMaxBeNodes());
         // P2 can isolate a damaged base and retain the independently verified query slots.
         LicenseImportState isolated = LicenseImportState.restore(DEPLOYMENT, first, second, null,
                 2, 2, Collections.emptyList());
@@ -546,26 +681,27 @@ class LicenseImportPolicyTest {
     }
 
     @Test
-    void restorationAllowsLowerPendingAtExpiryWithoutInferringAnActivatedBase() throws Exception {
+    void restorationAllowsLowerPendingOrActiveAtAnyTimeWithoutInferringAnActivatedBase() throws Exception {
         Slot first = Slot.verify(sign(claims(1, 900, 2000)), 1, verifier);
         for (String limit : new String[] {"max_fe_nodes", "max_be_nodes"}) {
-            ObjectNode reduced = claims(2, 2000, 3000);
-            reduced.with("limits").put(limit, 2);
-            Slot next = Slot.verify(sign(reduced), 2, verifier);
-            LicenseImportState restored = LicenseImportState.restore(DEPLOYMENT, first, next, first,
-                    2, 2, Collections.emptyList());
-            Assertions.assertSame(first, restored.getActive());
-            Assertions.assertSame(first, restored.getEffectiveBase());
-            Assertions.assertSame(next, restored.getPending());
-            reduced.put("not_before", 1999);
-            Slot overlapping = Slot.verify(sign(reduced), 2, verifier);
-            Assertions.assertThrows(IllegalArgumentException.class,
-                    () -> LicenseImportState.restore(DEPLOYMENT, first, overlapping, first,
-                            2, 2, Collections.emptyList()));
-            // A lower active with an older, larger base is not a committed renewal replacement.
-            Assertions.assertThrows(IllegalArgumentException.class,
-                    () -> LicenseImportState.restore(DEPLOYMENT, next, null, first,
-                            2, 2, Collections.emptyList()));
+            for (long notBefore : new long[] {2000, 1999, 900}) {
+                ObjectNode reduced = claims(2, notBefore, notBefore + 500);
+                reduced.with("limits").put(limit, 2);
+                Slot next = Slot.verify(sign(reduced), 2, verifier);
+                LicenseImportState restored = LicenseImportState.restore(DEPLOYMENT, first, next, first,
+                        2, 2, Collections.emptyList());
+                Assertions.assertSame(first, restored.getActive());
+                Assertions.assertSame(first, restored.getEffectiveBase());
+                Assertions.assertSame(next, restored.getPending());
+                LicenseImportState replaced = LicenseImportState.restore(DEPLOYMENT, next, null, next,
+                        2, 2, Collections.emptyList());
+                Assertions.assertEquals(2, replaced.getEffectiveBase().getDocument().getSequence());
+                // An older larger base is retained as stored; restoration never infers base activation.
+                LicenseImportState olderBase = LicenseImportState.restore(DEPLOYMENT, next, null, first,
+                        2, 2, Collections.emptyList());
+                Assertions.assertSame(first, olderBase.getEffectiveBase());
+                Assertions.assertSame(next, olderBase.getActive());
+            }
         }
     }
 
@@ -619,6 +755,24 @@ class LicenseImportPolicyTest {
             Context context, LicenseVerifier currentVerifier) {
         Assertions.assertEquals(reason, Assertions.assertThrows(LicenseException.class,
                 () -> policy.recheckForCommit(prepared, state, context, currentVerifier)).getErrorCode());
+    }
+
+    private static List<String> codes(Prepared prepared) {
+        List<String> result = new ArrayList<>();
+        for (LicenseImportPolicy.Change change : prepared.getChanges()) {
+            Assertions.assertEquals(change.getCode().name(), change.toMap().get("code"));
+            result.add(change.getCode().name());
+        }
+        return result;
+    }
+
+    private static Map<String, Object> change(Prepared prepared, String code) {
+        for (LicenseImportPolicy.Change change : prepared.getChanges()) {
+            if (change.getCode().name().equals(code)) {
+                return change.toMap();
+            }
+        }
+        throw new AssertionError("Missing change " + code);
     }
 
     private static Context now(long seconds) {

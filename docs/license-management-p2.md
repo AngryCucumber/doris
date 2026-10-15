@@ -80,21 +80,35 @@ Basic 认证可用于接口调用。浏览器 Cookie POST 必须同时提供匹�
 
 管理员详情包含 active/pending、最高接受序号、FE/BE 注册用量、当前证书额度、已提交基础额度、可信 UTC 和本地应用版本。普通用户看不到客户信息、部署标识或完整证书详情。所有到期字段为 UTC Unix 秒；`SET time_zone` 不改变许可时间，`now == expires_at` 即到期。
 
-### 2.1 到期后缩容续期
+### 2.1 取代式续期、缩短与降额
 
-**2026-09-30 新增规则已实现。** 旧证到期不会禁止正常缩容与证书管理。按原安全流程完成 FE/BE 缩容、确认成员已成功 DROP 后，可以导入较低额度的新证书；旧证已经到期的历史额度不再是永久下限。该规则需要本轮更新后的 FE，之前交付的版本仍保留旧限制。定向回归与真实单 FE SQL/HTTP、注册身份缩容及重启结果见[验收记录](license-expired-renewal-20260930.md)；不以此代替线上 BE 数据迁移或真实多 FE 缩容验证。
+**2026-10-15 起的规则。** 同一部署内 sequence 更高的合法证书一经导入，就完全取代当前 active 和 pending 的全部承诺。FE 不再比较新旧证书的到期时间、生效时间、额度和功能集，只要求新证 FE、BE 额度分别容纳当前已注册+预留用量。因此可以导入到期更早的证书，也可以在旧证尚未到期、集群已真正缩容后导入额度更低的证书。该规则需要本轮更新后的 FE；验收结果见[执行计划与验收记录](license-renewal-replacement-plan-20261015.md)。
 
-例如旧证允许 3 个 FE、10 个 BE，授权覆盖已经结束；成功缩容至 2 个 FE、5 个 BE 后，可申请同一部署、更高 `sequence` 且允许 2 个 FE、5 个 BE 的续期证书，再执行 VALIDATE/IMPORT。仍然有效或尚未开始但未到期的已接受授权承诺不能被削减。当前已注册用量按全部成员计算，离线或处于 DECOMMISSION 中尚未 DROP 的节点仍占额度，原副本、WAL、FE quorum 等安全限制保留，不强制删除线上节点。
+例如旧证允许 3 个 FE、10 个 BE 且还有 40 天到期；成功缩容至 2 个 FE、5 个 BE 后，可立即导入同一部署、更高 `sequence`、允许 2/5 的新证。当前已注册用量按全部成员计算，停进程、离线或处于 DECOMMISSION 中尚未除名的节点仍占额度；原副本、WAL、FE quorum 等安全限制保留，不强制删除线上节点。
 
-生产 BE 缩容应沿用 `DECOMMISSION BACKEND`，等待数据迁移并确认成员真正除名；原版默认会拒绝直接 `DROP BACKEND`，本次不改变该保护。验收中的强制 `DROPP BACKEND` 仅清理本轮自建、无 BE 进程且零 tablet 的离线测试身份，不作为线上缩容操作建议。
+生产 BE 缩容应沿用 `DECOMMISSION BACKEND`，等待数据迁移并确认成员真正除名；原版默认会拒绝直接 `DROP BACKEND`，本次不改变该保护。验收中的强制 `DROPP BACKEND` 仅清理自建、无 BE 进程且零 tablet 的离线测试身份，不作为线上缩容操作建议。
 
-新证任一节点额度小于实际已注册+预留用量，或削减未过期 active/pending/base 额度承诺，仍以 `LICENSE_NODE_LIMIT_TOO_SMALL` 拒绝：SQL 6201 / SQLState 45000，HTTP 400，`retryable=false`、`submission_status=NOT_SUBMITTED`，原证书、基础额度、最高序号和成功回执不变。立即生效的新证成功提交时同步采用新的基础额度；导入失败不能恢复过期证书的读取资格。
+**导入前先 VALIDATE，并核对返回的 `changes`。** validate 与 import 成功响应都有 `changes` 数组（SQL 结果集中为 `changes` 一行 JSON 字符串，HTTP 和页面直接展示）：
 
-若新证在未来生效，导入后至生效之间查询仍按当时许可状态决定。ADD 的 FE/BE 上限分别取已提交基础额度与已接受 pending 额度的较小值，防止缩容后再次扩容超过新额；这不会提前开放较高额度 pending 的扩容能力。到点重新检查注册+预留用量并持久提交新的基础额度，不能把预检、导入回执或到达生效时间本身当作基础额度已切换。
+| code | 含义 | 字段 |
+| --- | --- | --- |
+| `EXPIRY_SHORTENED` | 新证到期早于当前 active | `previous_expires_at`、`expires_at` |
+| `COVERAGE_GAP` | 旧 active 到期后新 pending 才生效，空档内查询按 EXPIRED 受限 | `gap_seconds`（与 `coverage_gap_seconds` 一致） |
+| `FE_LIMIT_REDUCED` / `BE_LIMIT_REDUCED` | 新证额度低于当前 active 或基础额度 | `previous_limit`、`limit` |
+| `PENDING_DISCARDED` | 已接受的 pending 被新证替换 | `license_id`、`sequence` |
+| `FEATURES_REMOVED` | 新证功能少于当前 active | `features` |
+
+`changes` 只是事实提示，不阻止导入。validate 不预留任何东西：import 会按当时的成员和时间重新裁决，额度仍满足就成功并返回当时重新计算的 `changes`，以 import 响应为准；不满足则拒绝。幂等重试和回执查询不携带 `changes`。
+
+已消费的序号不可回退。重新导入被取代的旧证只返回原回执，不恢复旧期限或额度；误导入短期或低额证书时，只能由签发方签发更高序号的新证纠正，需要恢复更长期限或更高额度时同样导入一张新证即可。
+
+新证任一节点额度小于实际已注册+预留用量时，以 `LICENSE_NODE_LIMIT_TOO_SMALL` 拒绝：SQL 6201 / SQLState 45000，HTTP 400，`retryable=false`、`submission_status=NOT_SUBMITTED`，原证书、基础额度、最高序号和成功回执不变。立即生效的新证成功提交时成为 active 并同步成为基础额度，旧 pending 被丢弃；导入失败不能恢复过期证书的读取资格。
+
+若新证在未来生效，它替换已有 pending，active 不变。导入后至生效之间查询仍按当时许可状态决定。ADD 的 FE/BE 上限分别取已提交基础额度与已接受 pending 额度的较小值，较低 pending 立即约束新增，较高 pending 不提前开放扩容。到点重新检查注册+预留用量并持久提交新的基础额度，不能把预检、导入回执或到达生效时间本身当作基础额度已切换。
 
 ## 3. 超时、重试和错误
 
-保存证书原始字节及其 SHA-256 指纹。相同指纹重试确认原提交，不会重新覆盖更新的证书。序号和已有授权覆盖受保护；拒绝的候选不改变已接受证书、最高序号、基础额度或成功回执。
+保存证书原始字节及其 SHA-256 指纹。相同指纹重试确认原提交，不会重新覆盖更新的证书，也不恢复被取代证书的期限或额度。最高序号单调不回退；拒绝的候选不改变已接受证书、最高序号、基础额度或成功回执。
 
 | 结果 | 客户端处理 |
 | --- | --- |
@@ -160,7 +174,7 @@ HTTP 对应 `POST /api/license/clock/challenge`（空正文或 `{}`）、`POST /
 
 FE/BE 注册额度在 P2 显示和导入策略中校验；新增节点的权威准入由 P3 接入。未来 pending 到点可以改变有效证书状态，基础额度切换仍须单独持久提交；等待期 ADD 按第 2.1 节较小上限执行。
 
-到期后降额续期沿用既有格式，不新增 BE 协议要求；导入前须将全部已注册 FE 升级到同一新包并通过原有严格包摘要/信任集门禁。新版本恢复仅允许不重叠 active/base→pending 的降额，不放宽 base→active 的校验。不得使用旧 FE 二进制恢复已经写入较低 pending 的元数据；本轮实际验证范围见[验收记录](license-expired-renewal-20260930.md)。
+取代式续期沿用既有格式，不新增 BE 协议要求；导入前须将全部已注册 FE 升级到同一新包并通过原有严格包摘要/信任集门禁，该门禁只在导入时检查，不阻止之后整集群回退二进制。回退到 2026-10-15 之前的 FE 包是不支持的运维操作：旧包恢复时若遇到与未到期 active/base 重叠的较低额度 pending 状态会拒绝并退出；立即取代和单纯缩短到期的状态旧包能够回放，回放后按旧规则处理后续导入。实际验证范围见[执行计划与验收记录](license-renewal-replacement-plan-20261015.md)。
 
 ### 5.1 手工导出镜像
 

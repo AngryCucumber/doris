@@ -23,9 +23,11 @@ import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -252,6 +254,8 @@ public final class LicenseManager implements AutoCloseable {
             Map<String, Object> body = response("LICENSE_VALIDATED", "NOT_SUBMITTED", fingerprint, 0);
             body.put("idempotent", prepared.isIdempotent());
             body.put("coverage_gap_seconds", prepared.getCoverageGapSeconds());
+            body.put("changes", changes(prepared));
+            // Hints only: import re-runs prepare and its own commit recheck; it does not accept these versions.
             body.put("expected_license_version", prepared.getExpectedLicenseVersion());
             body.put("expected_membership_version", prepared.getExpectedMembershipVersion());
             return new LicenseManagementResult(200, body);
@@ -282,7 +286,12 @@ public final class LicenseManager implements AutoCloseable {
                 LicensePersistRecord next = committed.withImports(LicensePersistRecord.ACCEPT,
                         checked.getToPersist(), true).withRollout(packageDigest, trustDigest, frontendVersion);
                 persist(next, fingerprint);
-                return importReceipt(fingerprint);
+                // Changes describe this commit's decision; receipts are not extended or persisted with them.
+                LicenseManagementResult receipt = importReceipt(fingerprint);
+                Map<String, Object> body = new LinkedHashMap<>(receipt.getBody());
+                body.put("coverage_gap_seconds", checked.getCoverageGapSeconds());
+                body.put("changes", changes(checked));
+                return new LicenseManagementResult(receipt.getHttpStatus(), body);
             } catch (LicenseException e) {
                 throw importFailure(e, fingerprint);
             } catch (IOException e) {
@@ -419,6 +428,14 @@ public final class LicenseManager implements AutoCloseable {
             body.put("applied_version", getAppliedVersion());
         }
         return new LicenseManagementResult(200, body);
+    }
+
+    private static List<Map<String, Object>> changes(LicenseImportPolicy.Prepared prepared) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (LicenseImportPolicy.Change change : prepared.getChanges()) {
+            result.add(change.toMap());
+        }
+        return result;
     }
 
     private static LicenseDocument currentCertificate(LicenseImportState state, long seconds) {

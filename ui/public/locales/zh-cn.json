@@ -108,7 +108,20 @@
         "text": "证书文本",
         "memoryOnly": "证书原文仅保存在弹窗临时内存，关闭、完成提交或注销时清除。",
         "validated": "服务端预检通过，尚未提交证书。",
-        "confirmHelp": "确认后将持久化导入此证书，服务端会再次校验。有授权空档时，查询可能暂时不可用。",
+        "confirmHelp": "确认后将持久化导入此证书并取代当前 active 和 pending 证书。服务端会按导入时的状态再次校验并返回实际变化；有授权空档时，查询可能暂时不可用。",
+        "changes": {
+            "title": "导入将取代当前授权并产生以下变化",
+            "warning": "新证书会取代当前 active 和 pending 证书。以下变化在导入后生效，重新导入旧证书不能恢复，只能由签发方签发更高序列号的新证书纠正。请以导入响应中的变化为准。",
+            "none": "与当前授权相比，没有到期提前、额度降低、功能移除、授权空档或待生效证书丢弃。",
+            "codes": {
+                "EXPIRY_SHORTENED": "到期时间提前：{{previous}} → {{current}}",
+                "COVERAGE_GAP": "新证书生效前有 {{gap}} 秒授权空档，空档内查询按已过期处理",
+                "FE_LIMIT_REDUCED": "FE 节点上限降低：{{previousLimit}} → {{limit}}",
+                "BE_LIMIT_REDUCED": "BE 节点上限降低：{{previousLimit}} → {{limit}}",
+                "PENDING_DISCARDED": "待生效证书 {{licenseId}}（序列号 {{sequence}}）被取代并丢弃",
+                "FEATURES_REMOVED": "移除功能：{{features}}"
+            }
+        },
         "cancel": "关闭",
         "validate": "预检",
         "confirm": "确认导入",

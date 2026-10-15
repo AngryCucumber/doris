@@ -11,16 +11,53 @@ import org.apache.doris.massdb.license.LicenseImportState.Receipt;
 import org.apache.doris.massdb.license.LicenseImportState.Slot;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
  * Pure import and pending-capacity admission. No journal, HTTP/SQL entry point or publication hook.
  * A caller must serialize the final recheck with license, membership and trust changes; persist
  * the returned facts; then publish exactly those committed facts without a second admission check.
+ *
+ * <p>A valid certificate with a higher sequence replaces every accepted active and pending promise.
+ * Expiry, start time, quota and features are not compared with the replaced certificates; only the
+ * registered plus reserved membership limits admission. Reductions are reported as changes.
  */
 public final class LicenseImportPolicy {
     private static final long ISSUED_AT_TOLERANCE_SECONDS = 300;
+
+    /** Fixed operator-facing change codes; they never reject or alter an import. */
+    public enum ChangeCode {
+        EXPIRY_SHORTENED, COVERAGE_GAP, FE_LIMIT_REDUCED, BE_LIMIT_REDUCED, PENDING_DISCARDED, FEATURES_REMOVED
+    }
+
+    /** A factual difference between the current committed promises and the accepted candidate. */
+    public static final class Change {
+        private final ChangeCode code;
+        private final Map<String, Object> value;
+
+        private Change(ChangeCode code, Object... fields) {
+            this.code = code;
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("code", code.name());
+            for (int i = 0; i < fields.length; i += 2) {
+                result.put((String) fields[i], fields[i + 1]);
+            }
+            this.value = Collections.unmodifiableMap(result);
+        }
+
+        public ChangeCode getCode() {
+            return code;
+        }
+
+        /** Response form: {@code code} followed by the code-specific numeric or identity fields. */
+        public Map<String, Object> toMap() {
+            return value;
+        }
+    }
 
     /** State sampled in the caller's import/membership serialization domain. */
     public static final class Context {
@@ -59,9 +96,16 @@ public final class LicenseImportPolicy {
         private final boolean idempotent;
         private final String compact;
         private final long coverageGapSeconds;
+        private final List<Change> changes;
 
         private Prepared(LicenseImportState original, Context context, LicenseImportState toPersist,
                 Receipt receipt, boolean idempotent, String compact, long coverageGapSeconds) {
+            this(original, context, toPersist, receipt, idempotent, compact, coverageGapSeconds,
+                    Collections.emptyList());
+        }
+
+        private Prepared(LicenseImportState original, Context context, LicenseImportState toPersist,
+                Receipt receipt, boolean idempotent, String compact, long coverageGapSeconds, List<Change> changes) {
             this.expectedLicenseVersion = original.getLicenseVersion();
             this.expectedMembershipVersion = context.membershipVersion;
             this.toPersist = toPersist;
@@ -69,6 +113,7 @@ public final class LicenseImportPolicy {
             this.idempotent = idempotent;
             this.compact = compact;
             this.coverageGapSeconds = coverageGapSeconds;
+            this.changes = Collections.unmodifiableList(new ArrayList<>(changes));
         }
 
         public long getExpectedLicenseVersion() {
@@ -98,6 +143,11 @@ public final class LicenseImportPolicy {
 
         public long getCoverageGapSeconds() {
             return coverageGapSeconds;
+        }
+
+        /** Empty for idempotent receipts and base activation; never a second admission rule. */
+        public List<Change> getChanges() {
+            return changes;
         }
     }
 
@@ -133,29 +183,28 @@ public final class LicenseImportPolicy {
         if (!candidate.hasFeature("DATA_QUERY")) {
             reject(LicenseErrorCode.FEATURE_NOT_LICENSED);
         }
-        requireCapacity(candidate, state, context);
+        requireCapacity(candidate, context);
         long version = nextVersion(state);
         Slot normalizedActive = state.getActive();
         Slot normalizedPending = state.getPending();
         Slot base = state.getEffectiveBase();
         if (normalizedPending != null && now >= normalizedPending.getDocument().getNotBefore()) {
             normalizedActive = normalizedPending;
-            base = promotedBase(base, normalizedPending, now);
+            base = promotedBase(base, normalizedPending);
         }
+        Slot currentBase = base;
         Slot accepted = new Slot(candidate, compact, version);
         Slot active;
         Slot pending;
+        // The candidate replaces both promises. The committed pending survives only as the new active.
         if (candidate.getNotBefore() <= now) {
             active = accepted;
             pending = null;
-            base = promotedBase(base, accepted, now);
+            base = promotedBase(base, accepted);
         } else {
             active = normalizedActive;
             pending = accepted;
         }
-        // Compare with the original accepted promises, not a mutation made during normalization.
-        preserveCoverage(state.getActive(), active, pending, now);
-        preserveCoverage(state.getPending(), active, pending, now);
         List<Receipt> receipts = new ArrayList<>(state.getReceipts());
         Receipt receipt = accepted.receipt();
         receipts.add(receipt);
@@ -166,7 +215,9 @@ public final class LicenseImportPolicy {
                 candidate.getSequence(), version, receipts);
         long gap = pending != null && active != null
                 ? Math.max(0, pending.getDocument().getNotBefore() - active.getDocument().getExpiresAt()) : 0;
-        return new Prepared(state, context, proposed, receipt, false, compact, gap);
+        Slot discarded = state.getPending() != null && active != state.getPending() ? state.getPending() : null;
+        return new Prepared(state, context, proposed, receipt, false, compact, gap,
+                changes(candidate, normalizedActive, currentBase, discarded, gap));
     }
 
     /**
@@ -197,24 +248,66 @@ public final class LicenseImportPolicy {
         if (pending == null || context.trustedNowSeconds < pending.getDocument().getNotBefore()) {
             return new Prepared(state, context, state, null, true, null, 0);
         }
-        requireCapacity(pending.getDocument(), state, context);
-        Slot base = promotedBase(state.getEffectiveBase(), pending, context.trustedNowSeconds);
+        requireCapacity(pending.getDocument(), context);
+        Slot base = promotedBase(state.getEffectiveBase(), pending);
         LicenseImportState proposed = LicenseImportState.restore(state.getDeploymentId(), pending, null, base,
                 state.getHighestSequence(), nextVersion(state), state.getReceipts());
         return new Prepared(state, context, proposed, null, false, null, 0);
     }
 
-    private static Slot promotedBase(Slot base, Slot candidate, long now) throws LicenseException {
+    /** Capacity is not compared: the newer accepted certificate replaces the base by sequence alone. */
+    private static Slot promotedBase(Slot base, Slot candidate) {
         if (base == null) {
             return candidate;
         }
-        LicenseDocument previous = base.getDocument();
-        LicenseDocument next = candidate.getDocument();
-        if (previous.getExpiresAt() > now && (next.getMaxFeNodes() < previous.getMaxFeNodes()
-                || next.getMaxBeNodes() < previous.getMaxBeNodes())) {
-            reject(LicenseErrorCode.NODE_LIMIT_TOO_SMALL);
+        return candidate.getDocument().getSequence() > base.getDocument().getSequence() ? candidate : base;
+    }
+
+    private static List<Change> changes(LicenseDocument candidate, Slot current, Slot base, Slot discarded,
+            long gap) {
+        List<Change> result = new ArrayList<>();
+        LicenseDocument active = current == null ? null : current.getDocument();
+        if (active != null && candidate.getExpiresAt() < active.getExpiresAt()) {
+            result.add(new Change(ChangeCode.EXPIRY_SHORTENED, "previous_expires_at", active.getExpiresAt(),
+                    "expires_at", candidate.getExpiresAt()));
         }
-        return next.getSequence() > previous.getSequence() ? candidate : base;
+        if (gap > 0) {
+            result.add(new Change(ChangeCode.COVERAGE_GAP, "gap_seconds", gap));
+        }
+        LicenseDocument committedBase = base == null ? null : base.getDocument();
+        int previousFe = -1;
+        int previousBe = -1;
+        for (LicenseDocument document : new LicenseDocument[] {active, committedBase}) {
+            if (document != null) {
+                previousFe = Math.max(previousFe, document.getMaxFeNodes());
+                previousBe = Math.max(previousBe, document.getMaxBeNodes());
+            }
+        }
+        if (candidate.getMaxFeNodes() < previousFe) {
+            result.add(new Change(ChangeCode.FE_LIMIT_REDUCED, "previous_limit", previousFe,
+                    "limit", candidate.getMaxFeNodes()));
+        }
+        if (candidate.getMaxBeNodes() < previousBe) {
+            result.add(new Change(ChangeCode.BE_LIMIT_REDUCED, "previous_limit", previousBe,
+                    "limit", candidate.getMaxBeNodes()));
+        }
+        if (discarded != null) {
+            LicenseDocument pending = discarded.getDocument();
+            result.add(new Change(ChangeCode.PENDING_DISCARDED, "license_id", pending.getLicenseId(),
+                    "sequence", pending.getSequence()));
+        }
+        if (active != null) {
+            List<String> removed = new ArrayList<>();
+            for (String feature : active.getFeatures()) {
+                if (!candidate.hasFeature(feature)) {
+                    removed.add(feature);
+                }
+            }
+            if (!removed.isEmpty()) {
+                result.add(new Change(ChangeCode.FEATURES_REMOVED, "features", removed));
+            }
+        }
+        return result;
     }
 
     private static long nextVersion(LicenseImportState state) throws LicenseException {
@@ -234,53 +327,12 @@ public final class LicenseImportPolicy {
         }
     }
 
-    private static void requireCapacity(LicenseDocument candidate, LicenseImportState state, Context context)
-            throws LicenseException {
+    /** Only actual registered members plus in-flight ADD reservations; stopped or offline nodes still count. */
+    private static void requireCapacity(LicenseDocument candidate, Context context) throws LicenseException {
         long requiredFe = (long) context.registeredFe + context.reservedFe;
         long requiredBe = (long) context.registeredBe + context.reservedBe;
-        for (Slot old : new Slot[] {state.getActive(), state.getPending(), state.getEffectiveBase()}) {
-            // An expired promise must not prevent renewal after the registered membership has shrunk.
-            // Unexpired active and future promises still protect their full accepted capacity.
-            if (old != null && old.getDocument().getExpiresAt() > context.trustedNowSeconds) {
-                requiredFe = Math.max(requiredFe, old.getDocument().getMaxFeNodes());
-                requiredBe = Math.max(requiredBe, old.getDocument().getMaxBeNodes());
-            }
-        }
         if (candidate.getMaxFeNodes() < requiredFe || candidate.getMaxBeNodes() < requiredBe) {
             reject(LicenseErrorCode.NODE_LIMIT_TOO_SMALL);
-        }
-    }
-
-    private static void preserveCoverage(Slot old, Slot active, Slot pending, long now) throws LicenseException {
-        if (old == null) {
-            return;
-        }
-        LicenseDocument promised = old.getDocument();
-        long start = Math.max(now, promised.getNotBefore());
-        long end = promised.getExpiresAt();
-        if (start >= end) {
-            return;
-        }
-        long split = pending == null ? end : pending.getDocument().getNotBefore();
-        if (start < split) {
-            requireCoverage(active, promised, start, Math.min(end, split));
-        }
-        if (end > split) {
-            requireCoverage(pending, promised, Math.max(start, split), end);
-        }
-    }
-
-    private static void requireCoverage(Slot slot, LicenseDocument promised, long start, long end)
-            throws LicenseException {
-        if (slot == null) {
-            reject(LicenseErrorCode.RENEWAL_REDUCTION);
-        }
-        LicenseDocument actual = slot.getDocument();
-        if (actual.getNotBefore() > start || actual.getExpiresAt() < end
-                || !actual.getFeatures().containsAll(promised.getFeatures())
-                || actual.getMaxFeNodes() < promised.getMaxFeNodes()
-                || actual.getMaxBeNodes() < promised.getMaxBeNodes()) {
-            reject(LicenseErrorCode.RENEWAL_REDUCTION);
         }
     }
 

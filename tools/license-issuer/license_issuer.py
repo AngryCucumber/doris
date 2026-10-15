@@ -399,6 +399,12 @@ def _now(at):
 
 
 def check_renewal(candidate, previous, at):
+    """Return FE change codes for replacing the one known previous certificate; reductions never reject.
+
+    A higher sequence replaces every accepted promise in FE, so only identity, sequence and license_id are
+    checked. The previous certificate is the commitment being replaced: before its not_before it is a
+    pending certificate that will be discarded. FE validate also sees the live active, base and membership.
+    """
     for name in ("product", "deployment_id", "customer_id"):
         if candidate[name] != previous[name]:
             raise IssuerError("Renewal identity does not match the previous certificate")
@@ -406,29 +412,41 @@ def check_renewal(candidate, previous, at):
         raise IssuerError("Renewal sequence must strictly increase")
     if candidate["license_id"] == previous["license_id"]:
         raise IssuerError("Renewal must use a new license_id")
-    if previous["expires_at"] > at:
-        if (candidate["expires_at"] < previous["expires_at"]
-                or (previous["not_before"] > at and candidate["not_before"] > previous["not_before"])
-                or not set(previous["features"]).issubset(candidate["features"])
-                or any(candidate["limits"][key] < value for key, value in previous["limits"].items())):
-            raise IssuerError("Renewal must preserve unexpired coverage, features and node limits")
-    return max(0, candidate["not_before"] - previous["expires_at"])
+    changes = []
+    if candidate["expires_at"] < previous["expires_at"]:
+        changes.append({"code": "EXPIRY_SHORTENED", "previous_expires_at": previous["expires_at"],
+                        "expires_at": candidate["expires_at"]})
+    if candidate["not_before"] > max(at, previous["expires_at"]):
+        changes.append({"code": "COVERAGE_GAP", "gap_seconds": candidate["not_before"] - previous["expires_at"]})
+    for key, code in (("max_fe_nodes", "FE_LIMIT_REDUCED"), ("max_be_nodes", "BE_LIMIT_REDUCED")):
+        if candidate["limits"][key] < previous["limits"][key]:
+            changes.append({"code": code, "previous_limit": previous["limits"][key],
+                            "limit": candidate["limits"][key]})
+    if previous["not_before"] > at:
+        changes.append({"code": "PENDING_DISCARDED", "license_id": previous["license_id"],
+                        "sequence": previous["sequence"]})
+    removed = [feature for feature in previous["features"] if feature not in candidate["features"]]
+    if removed:
+        changes.append({"code": "FEATURES_REMOVED", "features": removed})
+    return changes
 
 
 def sign(openssl, claims_path, private_key, kid, output, previous=None,
          previous_public_key=None, previous_kid=None, at=None):
     claims = validate_claims(parse_json(read_bounded(claims_path, MAX_CERTIFICATE_BYTES)))
-    gap = None
+    changes = None
     if any(item is not None for item in (previous, previous_public_key, previous_kid)):
         if any(item is None for item in (previous, previous_public_key, previous_kid)):
             raise IssuerError("Previous certificate, public key and kid must be provided together")
         old = _verify_signature(openssl, read_bounded(previous, MAX_CERTIFICATE_BYTES),
                                 previous_public_key, previous_kid)
-        gap = check_renewal(claims, old, _now(at))
+        changes = check_renewal(claims, old, _now(at))
     result = _sign_claims(openssl, claims, private_key, kid, output, "massdb-license+jws",
                           MAX_CERTIFICATE_BYTES)
-    if gap is not None:
-        result["coverage_gap_seconds"] = gap
+    if changes is not None:
+        result["changes"] = changes
+        result["coverage_gap_seconds"] = next(
+            (change["gap_seconds"] for change in changes if change["code"] == "COVERAGE_GAP"), 0)
     return result
 
 
@@ -661,6 +679,10 @@ def main(argv=None):
         elif args.command == "export-trust":
             result = export_trust(openssl, args.public_key, args.kid, args.purpose, args.output, args.existing)
         print(json.dumps(result, ensure_ascii=True, sort_keys=True))
+        if result.get("changes"):
+            # Facts only: signing succeeded. Confirm them with the customer and with FE validate before import.
+            print("License issuer notice: renewal changes " + ", ".join(
+                change["code"] for change in result["changes"]), file=sys.stderr)
         return 0
     except IssuerError as error:
         print("License issuer error: " + str(error), file=sys.stderr)
