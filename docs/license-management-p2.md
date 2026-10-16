@@ -176,7 +176,7 @@ HTTP 对应 `POST /api/license/clock/challenge`（空正文或 `{}`）、`POST /
 
 FE/BE 注册额度在 P2 显示和导入策略中校验；新增节点的权威准入由 P3 接入。未来 pending 到点可以改变有效证书状态，基础额度切换仍须单独持久提交；等待期 ADD 按第 2.1 节较小上限执行。
 
-**升级、混版本与降级（2026-10-16 起）。** 许可持久化格式不变，新版写入的许可记录所有带许可的旧版都能回放，因此：滚动升级期间新旧 FE 可以混跑，新版 Master 上的导入直接成功，旧 FE 回放新记录正常；整集群降级到更早的带许可版本不受证书影响，降级后旧版按它自己的规则处理后续导入。降级时请保留 `conf/massdb-license-trust.json` 与 `fe.conf` 中的信任配置行（旧版只从外部文件读公钥）。例外是 2026-09-30 至 10-15 的版本可能已经写入过“低额未来 pending”；如存在，降级前先导入一张立即生效的证书替换它，并等其进入新的 image。降级到不带许可模块的版本不在支持范围内。实际验证见[降级兼容、内置公钥与取消导入前 FE 检查执行计划](license-downgrade-trust-compat-plan-20261015.md)。
+**升级、混版本与降级（2026-10-16 起）。** 许可持久化格式不变，新版写入的许可记录所有带许可的旧版都能回放，因此：滚动升级期间新旧 FE 可以混跑，新版 Master 上的导入直接成功，旧 FE 回放新记录正常；整集群降级到更早的带许可版本不受证书影响，降级后旧版按它自己的规则处理后续导入。降级时请保留 `conf/massdb-license-trust.json` 与 `fe.conf` 中的信任配置行（旧版只从外部文件读公钥）。例外是 2026-09-30 至 10-15 的版本可能已经写入过“低额未来 pending”；降级到 2026-10-05 及更早的版本前，先按[第 5.2 节](#52-降级前处理遗留的低额未来-pending)检查和处理。降级到不带许可模块的版本不在支持范围内。实际验证见[降级兼容、内置公钥与取消导入前 FE 检查执行计划](license-downgrade-trust-compat-plan-20261015.md)。
 
 ### 5.1 手工导出镜像
 
@@ -188,3 +188,46 @@ FE/BE 注册额度在 P2 显示和导入策略中校验；新增节点的权威�
 - HTTP 等待目前没有 dump 专用服务端完成超时。客户端超时或断开连接不能证明任务取消，也不能证明文件完整；先核对 FE 日志和原请求对应结果，不立即反复重试。仅给 `future.get()` 加超时不会停止已开始的锁等待或 I/O。
 
 普通查询的授权状态检查不获取这条变更队列，但 dump 原有元数据锁、磁盘负载及副本回放滞后仍可能影响其他工作，不能据此承诺 dump 对业务毫无影响。当前 `LicenseManager.close()` 的排队取消仅在明确调用该方法时生效；生产 DorisFE 退出钩子尚未调用它，不能把该 API 的单测当作生产退出行为保证。
+
+### 5.2 降级前处理遗留的低额未来 pending
+
+只有一种许可状态会让更早的带许可 FE 无法启动：pending 中有一张**尚未生效、FE 或 BE 额度低于当前 active 或基础额度**的证书。2026-10-16 起的版本拒绝导入这种证书（第 2.1 节），但更早的版本可能已经写入过：`c9b69a9a6b0`（2026-10-15 发行包）接受任何低额未来证书；2026-09-30 至 10-05 的版本在当前证书已经到期之后，接受晚于其到期时间生效的低额证书。新版能正常恢复和显示这种状态。降级目标是下表中会退出的版本时，必须先按本节处理。
+
+| 低额 pending 的生效时间 | 降级到 2026-09-29 及更早 | 降级到 2026-09-30 至 10-05 | 降级到 `c9b69a9a6b0` 及之后 |
+| --- | --- | --- | --- |
+| 早于 active（或基础额度证书）的到期时间，与当前证书重叠 | FE 启动时退出 | FE 启动时退出 | 正常 |
+| 不早于该到期时间，中间有空档 | FE 启动时退出 | 正常 | 正常 |
+
+旧版不看当前时间，只比较记录里的生效时间、到期时间和额度。旧 FE 先加载本机最新的 image，再回放其后的全部 journal，两处任何一处带有这种状态都会退出（退出码 255）：在 image 中时，`fe.log` 先有 `start load image from …/image.N`，随后是 `Caused by: java.io.IOException: Invalid MassDB license metadata envelope`；在 journal 中时是 `replay Operation Type 6201, log id: N` 加同一个异常。因此**只把 pending 替换掉还不够，必须等每台 FE 都有一个覆盖替换记录的新 image**。
+
+**1. 判断是否存在。** 用管理员账号在任一 FE 执行 `SHOW LICENSE`，或 `curl -u <admin> http://<fe_host>:<http_port>/api/license`（两者字段相同），也可以看页面“授权证书”中的“续期证书（pending）”卡片。以下三条同时成立即为该状态：
+
+- `pending` 不为 `null`；
+- `pending.not_before` 大于 `trusted_utc`，即尚未生效；
+- `pending.max_fe_nodes` 小于 `active.max_fe_nodes` 与 `base_max_fe_nodes` 中的较大者，或 `pending.max_be_nodes` 小于 `active.max_be_nodes` 与 `base_max_be_nodes` 中的较大者。
+
+再按上表判断影响哪些目标：`pending.not_before` 早于 `active.expires_at` 时，降级到 2026-10-05 及更早都会退出；否则只影响 2026-09-29 及更早。集群在上述版本上导入过这种证书、但它已经到点生效或已被替换时，当前状态不再满足上面三条，最新 image 之后的 journal 里却可能仍有那条记录，降级前同样执行第 3–5 步。
+
+**2. 替换。** 请签发方签发同一部署、`sequence` 大于当前 `highest_sequence`、**立即生效**（`not_before` 不晚于当前时间）的证书。额度可以保持当前值，到原定降额日期再导入一张立即生效的降额证书；也可以直接是降低后的额度，但须先完成缩容（第 2.1 节）。在 Master 上先 VALIDATE，确认 `changes` 包含 `PENDING_DISCARDED`，再 IMPORT；之后各 FE 的 `pending` 为 `null`。在新版或仍在运行的 `c9b69a9a6b0` 上导入都可以，两者都已实测；在 `c9b69a9a6b0` 上不要再导入未来生效的低额证书。
+
+**3. 记下替换后的 journal 号 J。** 在 Master 上执行 `SHOW FRONTENDS`，取 `IsMaster` 为 `true` 那一行的 `ReplayedJournalId`，记为 J。J 不小于替换证书那条 journal 的编号。
+
+**4. 生成覆盖 J 的 image。** Checkpoint 只处理已经切换（roll）的 journal 库：当前库写满 `edit_log_roll_num` 条（默认 50000），或 Master 重启、切主时才会 roll，之后约 1 分钟内 Master 写出 `image.N`（`fe.log`：`checkpoint finished save image.N`），再推送给其他 FE（`push image.N to other nodes. totally X nodes, push succeeded Y nodes`）。写入频繁的集群可以直接等待；写入很少的集群可能很久都没有新 image，演练中替换后等了 150 秒，最新 image 仍早于 J。这时在 Master 上临时调小阈值，再做一次元数据写入：
+
+```sql
+SHOW FRONTEND CONFIG LIKE 'edit_log_roll_num';             -- 记下原值，默认 50000
+ADMIN SET FRONTEND CONFIG ("edit_log_roll_num" = "1");
+CREATE DATABASE massdb_image_roll;                          -- 选一个不存在的库名；写入后立即 roll
+ADMIN SET FRONTEND CONFIG ("edit_log_roll_num" = "50000");  -- 立即恢复为原值
+DROP DATABASE massdb_image_roll;
+```
+
+`ADMIN SET FRONTEND CONFIG` 只改这台 FE 运行时的值，FE 重启后恢复为 `fe.conf` 中的值；阈值为 1 时每次写入都会 roll，所以要马上恢复。也可以用当前运行的版本（不是降级目标）重启 Master，让它在接任时 roll；多 FE 集群会因此切主。元数据越大，checkpoint 和推送越慢，以第 5 步的检查结果为准。
+
+**5. 逐台确认 image。** 在每台 FE（Master、Follower、Observer）的主机上查看 `<meta_dir>/image/`，最新的 `image.N` 必须满足 N > J；Master 日志中这次推送的 `push succeeded` 数应等于其他 FE 的数量。推送时离线、正在启动或推送失败的 FE 拿不到这个 image，重新加入后也要等下一次 checkpoint 才会收到：演练中推送时停机的 Observer 重新加入 90 秒后仍只有旧 image，用 2026-10-05 版启动即退出；Master 切换后立即生成的 image 也没有推到当时正在启动的 FE。处理方法是先用当前版本把它启动并跟上，再在 Master 上重做第 4 步，直到每台 FE 都满足 N > J。
+
+**6. 降级。** 停止全部 FE，换上目标版本的 JAR，保留 `conf/massdb-license-trust.json` 和 `fe.conf` 中的信任配置行，再启动。各 FE 的 `fe.log` 应显示从 `image.N`（N > J）加载；许可状态与降级前一致，`pending` 为 `null`，查询正常。
+
+**已经尝试降级、FE 退出时。** 换回原来版本的 JAR 重新启动即可，许可状态不变；然后从第 2 步做起。演练中 2026-10-05 版在真实元数据上退出后，换回 `c9b69a9a6b0` 正常就绪，pending、额度和查询都与之前一致；多 FE 演练中一台旧版 Observer 退出时，其余 FE 照常运行。
+
+上述步骤的单 FE 与 3 FE（2 Follower + 1 Observer）实测结果见[执行计划第 7.6 节](license-downgrade-trust-compat-plan-20261015.md#76-补充演练遗留低额未来-pending-的降级2026-10-16)。

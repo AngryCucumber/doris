@@ -26,6 +26,9 @@ This inventory describes distribution changes, not a claim that all changes are 
   for initialization. UI: add Chinese and English text for the future-reduction rejection.
 - Update the P0 contract, import core, management manual, earlier plans, the issuer README (lower limits must start
   immediately; key rotation keeps old keys) and add `docs/license-downgrade-trust-compat-plan-20261015.md`.
+- Management manual: add the operator procedure for a lower future pending that an earlier FE already wrote (detect
+  it, replace it with an immediate certificate, roll the journal, confirm a covering image on every FE, then
+  downgrade), with the affected downgrade targets, and record the real single-FE and three-FE drill in the plan.
 
 ## License replacement renewal (2026-10-15)
 

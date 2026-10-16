@@ -167,7 +167,7 @@ V1–V11 每个关键步骤保留命令、返回码和终端样式截图，证�
 | 混版本时旧版 Master 仍按旧规则拒绝导入 | 旧代码行为，无法改变；文档写明在新版 Master 上导入，或全部升级后导入 |
 | 内置公钥后换钥需要发版 | 自用密钥长期不变；换钥按 D4，外部文件可临时追加公钥 |
 | 外部清单被篡改追加公钥 | 与现状相同：能改 FE 配置目录者本就能替换 JAR；追加不能覆盖内置 kid（冲突即拒绝） |
-| 生产已存在低额未来 pending（若已部署本轮基线包） | 降级前先导入立即生效证书替换，并等待覆盖该记录的新 image；运维文档给出检查步骤 |
+| 生产已存在低额未来 pending（若已部署本轮基线包） | 降级前先导入立即生效证书替换，并等待覆盖该记录的新 image；运维文档给出检查步骤（[管理说明第 5.2 节](license-management-p2.md#52-降级前处理遗留的低额未来-pending)，实测见 7.6） |
 | 多 FE 测试环境较重 | 沿用已验证的 Docker 网络方案（每个 FE 独立 IP），记录资源与耗时 |
 
 ## 7. 验收记录（2026-10-16）
@@ -219,3 +219,18 @@ V1–V11 每个关键步骤保留命令、返回码和终端样式截图，证�
 ### 7.5 未执行
 
 V12（BE 二进制升级/降级，旧 BE 二进制不可得）、V13（麒麟 / 64 KiB 页内核，本机没有）、V14（Cloud Meta Service、Broker、Hive UDF、CDC 客户端实际运行，与许可无关）、V15（性能，未改查询热路径）、V16（降级到无许可模块的版本，范围外）。多 FE 场景都在同一主机的 Docker 网络中，未覆盖跨主机网络。
+
+### 7.6 补充演练：遗留低额未来 pending 的降级（2026-10-16）
+
+证据目录 `.build-records/license-legacy-pending-downgrade-20261016/`（README、转写、截图、各变体日志摘录）。写入方是 `c9b69a9a6b0` 发行包 FE JAR，替换在 `4f53a3e9585` 发行包或 `c9b69a9a6b0` 上进行，降级目标是 2026-10-05 与 2026-09-29 FE JAR；每个降级变体在元数据副本上运行。据此写出[管理说明第 5.2 节](license-management-p2.md#52-降级前处理遗留的低额未来-pending)的操作步骤。
+
+| 场景 | 结果 | 记录 |
+| --- | --- | --- |
+| 写入与识别 | `c9b69a9a6b0` 导入 C1（FE 3/BE 3，40 天）后再导入 1 天后生效、FE 2/BE 2 的 P，APPLIED；换新版后正常恢复，`/api/license`、`SHOW LICENSE` 与页面都显示该 pending（未生效、额度低于 active 与基础额度）；同类证书 SQL 返回 6201、HTTP 400，状态不变 | `single-v3/` A、B |
+| 直接降级 | P 只在 journal 中或已进入 image 时，2026-10-05、2026-09-29 FE 都在启动时退出（退出码 255，`replay Operation Type 6201` 或加载 image 时 `Invalid MassDB license metadata envelope`）；在真实元数据上失败后换回 `c9b69a9a6b0` JAR，状态与查询不变 | `single-v3/` N1–N4，`c9b-v1/` H1b |
+| 替换但无新 image | 导入立即生效、序号更高的 R（`changes` 含 `PENDING_DISCARDED`）后马上降级，两个旧版仍退出 | `single-v3/` E、N5、N6 |
+| 替换并生成 image | 替换后 150 秒内无覆盖 J 的 image；`edit_log_roll_num` 运行时设 1 并写一次元数据后约 20 秒出现 image.88 > J = 50；两个旧版从 image.88 恢复就绪，事实不变，查询正常。在 `c9b69a9a6b0` 上直接替换同样可行 | `single-v3/` F、N7、N8，`c9b-v1/` H2、H3 |
+| 有空档的变体 | pending 晚于 active 到期才生效时，2026-09-29 退出、2026-10-05 就绪 | `gap-v1/` |
+| 3 FE | 2 Follower + 1 Observer + BE 从 `c9b69a9a6b0` 逐台升级，各 FE 都显示该 pending；在 Master 上替换并 roll 时 Observer 离线，它没有收到 image.120（`push succeeded 1 nodes`），用 2026-10-05 JAR 启动即退出；换回新版重新加入、再 roll 一次后三台都持有 image.158 > J = 98；整体降级到 2026-10-05、再到 2026-09-29 均就绪，事实不变，经各 FE 查询正常 | `multi-v1/` |
+
+脚本缺陷导致的重跑（`single-v1`、`single-v2`）和 `single-v3` 末尾的清理报错原样保留，原因见证据 README。未验证：生产规模元数据下 checkpoint 与推送的耗时、跨主机网络、2026-09-30 至 10-05 FE 自己写入的空档变体、pending 到点生效后再降级、滚动降级。
