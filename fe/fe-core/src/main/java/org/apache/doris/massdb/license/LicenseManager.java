@@ -67,13 +67,29 @@ public final class LicenseManager implements AutoCloseable {
         /** Before the one-time deployment initialization only: every registered FE carries the license module. */
         boolean activationReady();
 
+        /** The plain manifest earlier FEs read; this version only compares it with the built-in keys. */
         String trustStorePath();
+
+        /** The issuer-signed manifest that may add keys; empty or null when none is configured. */
+        default String signedTrustManifestPath() {
+            return Config.massdb_license_trust_manifest_signed;
+        }
+
+        /** The trust root; tests substitute their own, production always uses the keys compiled into the jar. */
+        default LicenseTrustStore builtInTrust() throws LicenseException {
+            return LicenseTrustStore.builtIn();
+        }
 
         Map<String, Object> localCapability(String trustDigest);
 
         /** What the other FEs' wall clocks say about ours; UNKNOWN without a majority to compare with. */
         default LicenseClock.PeerVerdict peerClockVerdict(long selfWallMillis, long toleranceMillis) {
             return LicenseClock.PeerVerdict.UNKNOWN;
+        }
+
+        /** Registered FEs whose trust digest differs from ours, as "node=digest-prefix"; unreachable ones skipped. */
+        default List<String> trustDigestMismatches(String localDigest) {
+            return Collections.emptyList();
         }
     }
 
@@ -104,6 +120,7 @@ public final class LicenseManager implements AutoCloseable {
     /** A settled local suspicion must hold this long on the master before it is persisted for the cluster. */
     static final long SUSPECT_PERSIST_NANOS = TimeUnit.MINUTES.toNanos(5);
     private static final long PEER_CLOCK_CHECK_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(60);
+    private static final long TRUST_CHECK_INTERVAL_NANOS = TimeUnit.HOURS.toNanos(1);
 
     /**
      * A journal this FE did not apply. Every license record is a full snapshot, so the next record closes the gap;
@@ -157,6 +174,7 @@ public final class LicenseManager implements AutoCloseable {
     private volatile boolean trustLoaded;
     private volatile boolean recoveryComplete;
     private volatile boolean invalidSlots;
+    private volatile List<Map<String, Object>> isolatedSlots = Collections.emptyList();
     private volatile boolean leader;
     private volatile boolean bootstrapEligible;
     private volatile boolean closed;
@@ -174,6 +192,8 @@ public final class LicenseManager implements AutoCloseable {
     private long suspectSinceNanos = Long.MIN_VALUE;
     private long nextPeerClockCheckNanos;
     private final AtomicBoolean peerClockCheckRunning = new AtomicBoolean();
+    private long nextTrustCheckNanos;
+    private final AtomicBoolean trustCheckRunning = new AtomicBoolean();
 
     public LicenseManager(Host host, boolean checkpoint) {
         this(host, checkpoint, LicenseClock.SYSTEM);
@@ -186,6 +206,7 @@ public final class LicenseManager implements AutoCloseable {
         this.clockSettings = clockSettings();
         nextProbeNanos = time.monotonicNanos();
         nextPeerClockCheckNanos = nextProbeNanos;
+        nextTrustCheckNanos = nextProbeNanos;
         verification = checkpoint ? null : executor(2, "license-verification");
         mutations = checkpoint ? null : executor(1, "license-commit");
         snapshot = new LicenseSnapshot(UNINITIALIZED, null, null, null, 0, 0,
@@ -508,6 +529,8 @@ public final class LicenseManager implements AutoCloseable {
             body.put("pending", state == null ? null : details(state.getPending()));
             body.put("highest_sequence", state == null ? 0 : state.getHighestSequence());
             body.put("applied_version", getAppliedVersion());
+            body.put("trust_sha256", trustDigest);
+            body.put("invalid_slots", isolatedSlots);
             body.put("replay_gaps", replayGapCount);
             body.put("ignored_records", ignoredRecordCount);
             List<Map<String, Object>> gaps = new ArrayList<>();
@@ -1006,6 +1029,18 @@ public final class LicenseManager implements AutoCloseable {
         repair = nextRepair;
         imports = restored.imports;
         invalidSlots = restored.invalidSlots;
+        if (!restored.isolated.equals(isolatedSlots)) {
+            for (Map<String, Object> detail : restored.isolated) {
+                LOG.warn("License slot isolated on this FE: slot={}, key_id={}, reason={}, trust_sha256={}, "
+                        + "record_version={}; compare trust_sha256 with the master and check the trust configuration",
+                        detail.get("slot"), detail.get("key_id"), detail.get("reason"), trustDigest,
+                        record.getVersion());
+            }
+            if (restored.isolated.isEmpty() && !isolatedSlots.isEmpty()) {
+                LOG.info("License slots are no longer isolated on this FE: record_version={}", record.getVersion());
+            }
+        }
+        isolatedSlots = restored.isolated;
         committed = record;
         if (!record.isComplete()) {
             LOG.warn("License record {} carries the legacy incomplete flag; ignored", record.getVersion());
@@ -1058,34 +1093,59 @@ public final class LicenseManager implements AutoCloseable {
         trustLoaded = true;
         LicenseTrustStore trust = null;
         try {
-            trust = LicenseTrustStore.builtIn();
+            trust = host.builtInTrust();
+            if (trust == null) {
+                trust = LicenseTrustStore.builtIn();
+            }
         } catch (LicenseException | RuntimeException e) {
             if (!checkpoint) {
                 LOG.warn("Built-in license public keys are unavailable (failure_type={}); "
                         + "check the doris-fe.jar of this FE", e.getClass().getSimpleName());
             }
         }
+        // Keys are added only through a manifest the issuer signed with a built-in trust key.
+        String signedPath = host.signedTrustManifestPath();
+        if (signedPath != null && !signedPath.isEmpty()) {
+            try {
+                if (trust == null) {
+                    throw new LicenseException(LicenseErrorCode.UNTRUSTED_KEY);
+                }
+                trust = trust.merge(trust.verifySigned(readManifest(signedPath)));
+            } catch (IOException | LicenseException | RuntimeException e) {
+                if (!checkpoint) {
+                    LOG.warn("Signed license trust manifest rejected: reason={}, failure_type={}; built-in public keys "
+                                    + "remain in use; check massdb_license_trust_manifest_signed and restart this FE",
+                            failureReason(e, "TRUST_MANIFEST_LOAD_FAILED"), e.getClass().getSimpleName());
+                }
+            }
+        }
+        // The plain manifest is kept for earlier FE versions. It no longer extends trust: entries that match the
+        // built-in keys are fine, anything else is ignored with a warning. Only an FE without built-in keys (a
+        // damaged jar) still falls back to it, so that such an FE is at least diagnosable.
         String path = host.trustStorePath();
         if (path != null && !path.isEmpty()) {
-            // Optional additional keys. Earlier FE versions require this file, so packages keep shipping it.
-            try (InputStream input = Files.newInputStream(Paths.get(path))) {
-                ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-                byte[] chunk = new byte[4096];
-                int count;
-                while (buffer.size() <= 65536
-                        && (count = input.read(chunk, 0, Math.min(chunk.length, 65537 - buffer.size()))) != -1) {
-                    buffer.write(chunk, 0, count);
+            try {
+                LicenseTrustStore plain = LicenseTrustStore.parse(readManifest(path));
+                if (trust == null) {
+                    trust = plain;
+                    if (!checkpoint) {
+                        LOG.warn("Built-in license public keys are unavailable; using the plain manifest "
+                                + "massdb_license_trust_store_file as a fallback");
+                    }
+                } else {
+                    List<String> extra = trust.extraKeys(plain);
+                    if (!extra.isEmpty() && !checkpoint) {
+                        LOG.warn("Plain license trust manifest names {} key(s) that are not built in: {}; they are "
+                                + "ignored because a plain file cannot extend trust. Install an issuer-signed manifest "
+                                + "through massdb_license_trust_manifest_signed instead", extra.size(), extra);
+                    }
                 }
-                LicenseTrustStore external = LicenseTrustStore.parse(buffer.toByteArray());
-                trust = trust == null ? external : trust.merge(external);
             } catch (IOException | LicenseException | RuntimeException e) {
                 // A missing, malformed or conflicting optional file never disables the built-in keys.
                 if (!checkpoint) {
-                    String reason = e instanceof LicenseException
-                            ? ((LicenseException) e).getErrorCode().name() : "TRUST_STORE_LOAD_FAILED";
                     LOG.warn("License trust loading failed: reason={}, failure_type={}; built-in public keys "
                                     + "remain in use; check massdb_license_trust_store_file and restart this FE",
-                            reason, e.getClass().getSimpleName());
+                            failureReason(e, "TRUST_STORE_LOAD_FAILED"), e.getClass().getSimpleName());
                 }
             }
         }
@@ -1097,6 +1157,23 @@ public final class LicenseManager implements AutoCloseable {
         verifier = trust.newLicenseVerifier();
         repairVerifier = new LicenseClockRepairVerifier(trust.getKeys(LicenseTrustStore.Purpose.TIME_REPAIR));
         trustDigest = trust.digest();
+    }
+
+    private static byte[] readManifest(String path) throws IOException {
+        try (InputStream input = Files.newInputStream(Paths.get(path))) {
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            byte[] chunk = new byte[4096];
+            int count;
+            while (buffer.size() <= 65536
+                    && (count = input.read(chunk, 0, Math.min(chunk.length, 65537 - buffer.size()))) != -1) {
+                buffer.write(chunk, 0, count);
+            }
+            return buffer.toByteArray();
+        }
+    }
+
+    private static String failureReason(Exception e, String fallback) {
+        return e instanceof LicenseException ? ((LicenseException) e).getErrorCode().name() : fallback;
     }
 
     private synchronized void publish() {
@@ -1306,6 +1383,7 @@ public final class LicenseManager implements AutoCloseable {
                 }
                 persist(LicensePersistRecord.initial(UUID.randomUUID(), bootstrapEligible, wall), null);
             }
+            checkTrustDigests();
             persistClockSuspicion();
             if (ready()) {
                 if (!clock.isSuspect()) {
@@ -1323,6 +1401,48 @@ public final class LicenseManager implements AutoCloseable {
             // Never log a certificate/provider message. Retry only from the current committed facts.
             warnMaintenance(e);
         }
+    }
+
+    /** Once an hour the master compares every FE's effective trust digest with its own and only warns. */
+    private void checkTrustDigests() {
+        String local = trustDigest;
+        if (local == null || closed) {
+            return;
+        }
+        long now = time.monotonicNanos();
+        synchronized (this) {
+            if (now - nextTrustCheckNanos < 0 || !trustCheckRunning.compareAndSet(false, true)) {
+                return;
+            }
+            nextTrustCheckNanos = now + TRUST_CHECK_INTERVAL_NANOS;
+        }
+        try {
+            verification.execute(() -> {
+                try {
+                    List<String> mismatches = host.trustDigestMismatches(local);
+                    if (!mismatches.isEmpty()) {
+                        LOG.warn("License trust differs between FEs: local trust_sha256={}, mismatched={}; "
+                                + "a certificate accepted by the master may be isolated on those FEs",
+                                local, mismatches);
+                    }
+                } catch (RuntimeException e) {
+                    warnMaintenance(e);
+                } finally {
+                    trustCheckRunning.set(false);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            trustCheckRunning.set(false);
+        }
+    }
+
+    /** Readiness for protected reads on this FE, for load-balancer health checks; no detail beyond yes or no. */
+    public boolean isReadyForReads() {
+        return ready() && clock != null;
+    }
+
+    public int getInvalidSlotCount() {
+        return isolatedSlots.size();
     }
 
     /**
@@ -1392,8 +1512,11 @@ public final class LicenseManager implements AutoCloseable {
         try {
             verification.execute(() -> {
                 try {
+                    // Peers normally agree within seconds; the small startup tolerance tells a cluster-wide
+                    // correction from one FE that moved alone. The 12 h rollback tolerance would call a lone
+                    // one-hour jump "agreed" and confirm it at once (seen in the 2026-10-23 drill).
                     LicenseClock.PeerVerdict verdict = host.peerClockVerdict(time.wallTimeMillis(),
-                            clockSettings.getRollbackToleranceMillis());
+                            clockSettings.getStartupToleranceMillis());
                     current.setPeerVerdict(verdict);
                     if (verdict != LicenseClock.PeerVerdict.UNKNOWN) {
                         LOG.warn("License clock peer check: this master's wall clock is {} with the majority of FEs",

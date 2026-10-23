@@ -336,14 +336,15 @@ public final class LicensePersistRecord implements Writable {
 
     /** Reuse only exact slots verified by the same immutable verifier in the preceding state. */
     Restored restore(LicenseVerifier verifier, Restored previous) throws IOException {
-        boolean invalidSlot = false;
+        List<Map<String, Object>> isolated = new ArrayList<>();
         LicenseImportState.Slot[] slots = new LicenseImportState.Slot[3];
         String[] names = {"active", "pending", "base"};
         for (int i = 0; i < names.length; i++) {
             JsonNode value = data.get(names[i]);
             if (!value.isNull()) {
+                String compact = value.get("compact").textValue();
+                String reason;
                 try {
-                    String compact = value.get("compact").textValue();
                     long version = value.get("committed_version").longValue();
                     LicenseImportState.Slot slot = matchingSlot(slots, compact, version);
                     if (slot == null && previous != null && previous.verifier == verifier) {
@@ -352,22 +353,33 @@ public final class LicensePersistRecord implements Writable {
                     if (slot == null) {
                         slot = LicenseImportState.Slot.verify(compact, version, verifier);
                     }
-                    if (!getDeploymentId().equals(slot.getDocument().getDeploymentId())
-                            || slot.getDocument().getSequence() > data.get("highest_sequence").longValue()
-                            || slot.getCommittedVersion() > data.get("license_version").longValue()) {
-                        invalidSlot = true;
+                    if (!getDeploymentId().equals(slot.getDocument().getDeploymentId())) {
+                        reason = "DEPLOYMENT_MISMATCH";
+                    } else if (slot.getDocument().getSequence() > data.get("highest_sequence").longValue()) {
+                        reason = "SEQUENCE_ABOVE_HIGHEST";
+                    } else if (slot.getCommittedVersion() > data.get("license_version").longValue()) {
+                        reason = "VERSION_ABOVE_LICENSE_VERSION";
                     } else {
                         slots[i] = slot;
+                        continue;
                     }
-                } catch (LicenseException | IllegalArgumentException e) {
-                    invalidSlot = true;
+                } catch (LicenseException e) {
+                    reason = e.getErrorCode().name();
+                } catch (IllegalArgumentException e) {
+                    reason = "INVALID_SLOT";
                 }
+                // Diagnostics only: the slot name, the key id the certificate names and the reason. Never the text.
+                Map<String, Object> detail = new LinkedHashMap<>();
+                detail.put("slot", names[i]);
+                detail.put("key_id", LicenseConfirmationIds.keyIdHint(compact));
+                detail.put("reason", reason);
+                isolated.add(detail);
             }
         }
         try {
             return new Restored(LicenseImportState.restore(getDeploymentId(), slots[0], slots[1], slots[2],
                     data.get("highest_sequence").longValue(), data.get("license_version").longValue(),
-                    importReceipts()), invalidSlot, verifier);
+                    importReceipts()), isolated, verifier);
         } catch (IllegalArgumentException e) {
             throw invalid();
         }
@@ -386,12 +398,15 @@ public final class LicensePersistRecord implements Writable {
     static final class Restored {
         final LicenseImportState imports;
         final boolean invalidSlots;
+        /** Isolated slots as {slot, key_id, reason}; immutable, free of certificate text. */
+        final List<Map<String, Object>> isolated;
         private final LicenseVerifier verifier;
         private final LicenseImportState.Slot[] verifiedSlots;
 
-        private Restored(LicenseImportState imports, boolean invalidSlots, LicenseVerifier verifier) {
+        private Restored(LicenseImportState imports, List<Map<String, Object>> isolated, LicenseVerifier verifier) {
             this.imports = imports;
-            this.invalidSlots = invalidSlots;
+            this.isolated = Collections.unmodifiableList(new ArrayList<>(isolated));
+            this.invalidSlots = !isolated.isEmpty();
             this.verifier = verifier;
             this.verifiedSlots = new LicenseImportState.Slot[] {
                     imports.getActive(), imports.getPending(), imports.getEffectiveBase()};

@@ -12,6 +12,7 @@ import org.apache.doris.catalog.Env;
 import org.apache.doris.common.Config;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 
 /** Binds the serving {@link Env} to the license manager; kept outside Env to limit upstream changes. */
@@ -58,6 +59,11 @@ public final class EnvLicenseHost implements LicenseManager.Host {
     }
 
     @Override
+    public String signedTrustManifestPath() {
+        return Config.massdb_license_trust_manifest_signed;
+    }
+
+    @Override
     public Map<String, Object> localCapability(String trustDigest) {
         return LicenseFeCompatibility.localCapability(env, trustDigest);
     }
@@ -65,5 +71,10 @@ public final class EnvLicenseHost implements LicenseManager.Host {
     @Override
     public LicenseClock.PeerVerdict peerClockVerdict(long selfWallMillis, long toleranceMillis) {
         return LicenseFeCompatibility.peerClockVerdict(env, selfWallMillis, toleranceMillis);
+    }
+
+    @Override
+    public List<String> trustDigestMismatches(String localDigest) {
+        return LicenseFeCompatibility.trustDigestMismatches(env, localDigest);
     }
 }

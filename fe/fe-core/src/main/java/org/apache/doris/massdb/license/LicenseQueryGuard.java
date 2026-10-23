@@ -45,6 +45,9 @@ import java.util.Map;
 
 /** Shared FE read admission. Caller owns execution lifetime and trusted top-level write purpose. */
 public final class LicenseQueryGuard {
+    /** A follower catching up on a large backlog needs this long; clients back off instead of forming a storm. */
+    public static final int NOT_READY_RETRY_AFTER_SECONDS = 30;
+
     private LicenseQueryGuard() {
     }
 
@@ -98,6 +101,9 @@ public final class LicenseQueryGuard {
         body.put("reason", reason);
         body.put("message", reason);
         body.put("retryable", status == LicenseQueryStatus.LICENSE_NOT_READY);
+        if (status == LicenseQueryStatus.LICENSE_NOT_READY) {
+            body.put("retry_after_seconds", NOT_READY_RETRY_AFTER_SECONDS);
+        }
         throw new LicenseSqlException(6200, body);
     }
 

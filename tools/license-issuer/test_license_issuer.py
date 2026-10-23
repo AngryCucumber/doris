@@ -626,6 +626,33 @@ class LicenseIssuerTest(unittest.TestCase):
                          noticed.stderr)
         self.assertEqual("TRUST_EXPORTED", run("export-trust", "--public-key", self.public,
                          "--kid", "test-key", "--purpose", "license", "--output", self.root / "trust.json")["status"])
+        # A trust manifest only counts for FEs once the issuer's trust key has signed it.
+        trust_private = self.root / "trust-private.pem"
+        trust_public = self.root / "trust-public.pem"
+        run("keygen", "--private-key", trust_private, "--public-key", trust_public)
+        signed_trust = self.root / "trust.jws"
+        signed = run("trust-sign", "--manifest", self.root / "trust.json", "--private-key", trust_private,
+                     "--kid", "trust-key", "--sequence", "2", "--output", signed_trust, "--at", "1767225600")
+        self.assertEqual("TRUST_SIGNED", signed["status"])
+        self.assertEqual(1, signed["key_count"])
+        verified = run("trust-verify", "--manifest-signed", signed_trust, "--public-key", trust_public,
+                       "--kid", "trust-key")
+        self.assertEqual("TRUST_VERIFIED", verified["status"])
+        self.assertEqual(2, verified["sequence"])
+        self.assertEqual(1767225600, verified["issued_at"])
+        self.assertEqual([{"kid": "test-key", "purpose": "license"}], verified["keys"])
+        header, payload, signature = signed_trust.read_text(encoding="ascii").split(".")
+        self.assertEqual({"alg": "Ed25519", "kid": "trust-key", "typ": "massdb-trust+jws"},
+                         issuer.parse_json(issuer._decode(header)))
+        tampered = self.root / "trust-tampered.jws"
+        tampered.write_text(header + "." + payload[:-2] + ("AA" if payload[-2:] != "AA" else "BB") + "." + signature,
+                            encoding="ascii")
+        rejected = subprocess.run([*command, "trust-verify", "--manifest-signed", str(tampered), "--public-key",
+                                   str(trust_public), "--kid", "trust-key"], capture_output=True, text=True, check=False)
+        self.assertEqual(2, rejected.returncode)
+        wrong_key = subprocess.run([*command, "trust-verify", "--manifest-signed", str(signed_trust), "--public-key",
+                                    str(self.public), "--kid", "trust-key"], capture_output=True, text=True, check=False)
+        self.assertEqual(2, wrong_key.returncode)
         challenge_file = self.root / "challenge.json"
         challenge_file.write_text(json.dumps(challenge()), encoding="utf-8")
         repair = self.root / "repair.jws"

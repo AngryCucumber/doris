@@ -180,7 +180,20 @@ python3 tools/license-issuer/license_issuer.py --openssl /usr/bin/openssl sign \
 
 ### 换钥纪律
 
-FE 把自用公钥内置在 `doris-fe.jar` 中，发行包仍提供同字节的 `conf/massdb-license-trust.json` 供更早的 FE 版本使用。换钥时：先用 `keygen` 生成新密钥对，用 `export-trust --existing` 在保留旧公钥的同时追加新公钥，随一个新版本同时更新内置清单与外部文件；在所有可能降级到的版本都包含新公钥之前，继续用旧私钥签发；旧公钥在不再有任何版本或证书依赖它之后才能移除。只追加公钥时，也可临时把新清单放到 `massdb_license_trust_store_file` 指向的外部文件中，内置公钥照常生效。
+FE 把自用公钥内置在 `doris-fe.jar` 中，发行包仍提供同字节的 `conf/massdb-license-trust.json` 供更早的 FE 版本使用。换钥时：先用 `keygen` 生成新密钥对，用 `export-trust --existing` 在保留旧公钥的同时追加新公钥，随一个新版本同时更新内置清单与外部文件；在所有可能降级到的版本都包含新公钥之前，继续用旧私钥签发；旧公钥在不再有任何版本或证书依赖它之后才能移除。
+
+2026-10-23 起 FE 不再从明文清单扩展信任。过渡期追加公钥要用 `trust-sign` 把清单签成 compact JWS（`typ` `massdb-trust+jws`），签名密钥是专用的 `trust` 用途密钥（自用部署的 `kid` 为 `self-use-trust-20261023`，私钥与 `license.pem`、`time-repair.pem` 放在同一签发机上），FE 通过 `massdb_license_trust_manifest_signed` 加载：
+
+```bash
+python3 tools/license-issuer/license_issuer.py --openssl /usr/bin/openssl trust-sign \
+    --manifest /secure/vendor/public-keys.json --private-key /secure/vendor/trust.pem \
+    --kid self-use-trust-20261023 --sequence 2 --output /secure/vendor/license-trust.jws
+python3 tools/license-issuer/license_issuer.py --openssl /usr/bin/openssl trust-verify \
+    --manifest-signed /secure/vendor/license-trust.jws --public-key /secure/vendor/trust-public.pem \
+    --kid self-use-trust-20261023
+```
+
+`--sequence` 是签发方自己的递增编号，FE 只检查类型；清单里可以包含 `trust` 用途的新密钥，用于轮换 trust 密钥本身。`trust` 密钥只签清单，不签证书或修复票据。
 
 ## 4. 离线验证
 

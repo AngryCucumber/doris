@@ -434,6 +434,28 @@ class LicenseFeCompatibilityTest {
     }
 
     @Test
+    void trustDigestMismatchesNameTheFrontendsWhoseEffectiveKeysDiffer() throws Exception {
+        try (ProbeFixture fixture = new ProbeFixture()) {
+            Assertions.assertEquals(Collections.emptyList(),
+                    LicenseFeCompatibility.trustDigestMismatches(fixture.env, TRUST));
+            String different = Strings.repeat("c", 64);
+            fixture.capability.put("trust_sha256", different);
+            fixture.respond(200, fixture.capability.toString());
+            Assertions.assertEquals(Collections.singletonList("remote-fe=" + different.substring(0, 12)),
+                    LicenseFeCompatibility.trustDigestMismatches(fixture.env, TRUST));
+            fixture.capability.put("trust_sha256", "not-a-digest");
+            fixture.respond(200, fixture.capability.toString());
+            Assertions.assertEquals(Collections.emptyList(),
+                    LicenseFeCompatibility.trustDigestMismatches(fixture.env, TRUST));
+            fixture.respond(503, "{}");
+            Assertions.assertEquals(Collections.emptyList(),
+                    LicenseFeCompatibility.trustDigestMismatches(fixture.env, TRUST), "unreachable FEs are skipped");
+            Assertions.assertEquals(Collections.emptyList(),
+                    LicenseFeCompatibility.trustDigestMismatches(fixture.env, null));
+        }
+    }
+
+    @Test
     void peerVerdictNeedsAMajorityOfAtLeastThreeFrontends() {
         Assertions.assertEquals(LicenseClock.PeerVerdict.UNKNOWN,
                 LicenseFeCompatibility.peerVerdict(1000, Collections.emptyList(), 10));

@@ -127,6 +127,44 @@ public final class LicenseFeCompatibility {
         return peerVerdict(selfWallMillis, peers, toleranceMillis);
     }
 
+    /**
+     * Registered FEs (other than this one) whose effective trust digest differs from ours, as "node=digest prefix".
+     * Unreachable FEs and FEs without a digest are skipped; this is a periodic warning, never a gate.
+     */
+    public static List<String> trustDigestMismatches(Env env, String localDigest) {
+        List<String> mismatches = new ArrayList<>();
+        if (env.getNodeName() == null || localDigest == null) {
+            return mismatches;
+        }
+        Map<String, Integer> ports;
+        try {
+            ports = managementPorts(Config.massdb_license_fe_management_ports);
+        } catch (IOException e) {
+            return mismatches;
+        }
+        long deadline = System.nanoTime() + PROBE_BUDGET_NANOS;
+        for (Frontend frontend : env.getFrontends(null)) {
+            if (frontend.getNodeName().equals(env.getNodeName())) {
+                continue;
+            }
+            try {
+                int defaultPort = Config.enable_https ? Config.https_port : Config.http_port;
+                JsonNode capability = probe(frontend, env.getToken(), deadline, managementPort(frontend, defaultPort,
+                        ports));
+                JsonNode digest = capability == null ? null : capability.get("trust_sha256");
+                if (digest == null || !digest.isTextual() || !digest.textValue().matches("[0-9a-f]{64}")) {
+                    continue;
+                }
+                if (!localDigest.equals(digest.textValue())) {
+                    mismatches.add(safeIdentity(frontend.getNodeName()) + "=" + digest.textValue().substring(0, 12));
+                }
+            } catch (IOException | RuntimeException e) {
+                // An unreachable or older FE is not compared.
+            }
+        }
+        return mismatches;
+    }
+
     static LicenseClock.PeerVerdict peerVerdict(long selfWallMillis, List<Long> peers, long toleranceMillis) {
         int total = peers.size() + 1;
         if (total < 3) {

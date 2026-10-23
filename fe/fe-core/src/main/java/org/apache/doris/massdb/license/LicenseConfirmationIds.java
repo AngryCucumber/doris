@@ -33,6 +33,36 @@ public final class LicenseConfirmationIds {
     }
 
     /**
+     * The key id named in a compact JWS header, for diagnostics of an isolated slot only. The value is bounded and
+     * restricted to the key-id alphabet; it is never used to select a key. Malformed input yields null.
+     */
+    public static String keyIdHint(String compact) {
+        if (compact == null || compact.isEmpty() || compact.length() > LicenseVerifier.MAX_COMPACT_LENGTH) {
+            return null;
+        }
+        String[] parts = compact.split("\\.", -1);
+        if (parts.length != 3 || !parts[0].matches("[A-Za-z0-9_-]+")) {
+            return null;
+        }
+        try {
+            byte[] decoded = Base64.getUrlDecoder().decode(parts[0]);
+            String header = StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(decoded)).toString();
+            try (JsonParser parser = JSON.createParser(header)) {
+                JsonNode fields = JSON.readTree(parser);
+                if (fields == null || !fields.isObject() || parser.nextToken() != null) {
+                    return null;
+                }
+                JsonNode kid = fields.get("kid");
+                return kid != null && kid.isTextual() && LicenseText.matches(kid.textValue(), 128, true)
+                        ? kid.textValue() : null;
+            }
+        } catch (IOException | IllegalArgumentException ignored) {
+            return null;
+        }
+    }
+
+    /**
      * Extract only the candidate's canonical receipt locator after an unknown transport outcome.
      * Never use this value to accept a repair, publish state, or report success. Malformed input
      * provides no hint; parser/provider diagnostics containing certificate bytes are discarded.

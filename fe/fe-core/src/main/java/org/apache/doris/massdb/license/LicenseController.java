@@ -128,6 +128,31 @@ public class LicenseController extends RestBaseController {
         return handle(Action.CLOCK_REPAIR_RECEIPT, repairId, request, response);
     }
 
+    /**
+     * Unauthenticated readiness for load balancers: 200 when this FE can serve protected reads, otherwise 503 with
+     * Retry-After. It carries no license detail; the status page keeps answering 200 so the UI can show the reason.
+     */
+    @GetMapping("/health")
+    public ResponseEntity<?> health(HttpServletRequest request, HttpServletResponse response) {
+        boolean ready;
+        try {
+            ready = readyForReads();
+        } catch (RuntimeException e) {
+            ready = false;
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("status", ready ? "READY" : "NOT_READY");
+        if (!ready) {
+            body.put("retry_after_seconds", LicenseQueryGuard.NOT_READY_RETRY_AFTER_SECONDS);
+        }
+        return response(ready ? 200 : 503, body,
+                ready ? null : Integer.toString(LicenseQueryGuard.NOT_READY_RETRY_AFTER_SECONDS));
+    }
+
+    protected boolean readyForReads() {
+        return environment().getLicenseManager().isReadyForReads();
+    }
+
     /** Read-only upgrade probe; the existing cluster token does not grant license mutation privileges. */
     @GetMapping("/capability")
     public ResponseEntity<?> capability(HttpServletRequest request, HttpServletResponse response) {

@@ -54,6 +54,8 @@ class LicenseManagerTest {
     Path directory;
     private KeyPair issuer;
     private KeyPair repairKey;
+    private KeyPair trustKey;
+    private LicenseTrustStore testRoot;
     private FakeClock time;
     private Host host;
     private LicenseManager manager;
@@ -73,12 +75,19 @@ class LicenseManagerTest {
         Config.massdb_license_clock_settling_seconds = 0;
         issuer = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
         repairKey = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
-        ObjectNode trust = JSON.createObjectNode().put("schema_version", 1);
-        trust.putArray("keys").add(key("issuer", "license", issuer)).add(key("repair", "time_repair", repairKey));
-        Path file = directory.resolve("trust.json");
-        Files.write(file, JSON.writeValueAsBytes(trust));
+        // The FE trusts the test issuer only through a manifest signed by the (test) built-in trust key.
+        trustKey = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+        ObjectNode root = JSON.createObjectNode().put("schema_version", 1);
+        root.putArray("keys").add(key("test-trust", "trust", trustKey));
+        testRoot = LicenseTrustStore.parse(JSON.writeValueAsBytes(root));
+        ObjectNode manifest = JSON.createObjectNode().put("schema_version", 1).put("issued_at", 1_700_000_000L)
+                .put("sequence", 1);
+        manifest.putArray("keys").add(key("issuer", "license", issuer)).add(key("repair", "time_repair", repairKey));
+        Path file = directory.resolve("trust.jws");
+        Files.write(file, LicenseTrustStoreTest.signed(manifest, "test-trust", LicenseTrustStore.SIGNED_MANIFEST_TYPE,
+                trustKey).getBytes(StandardCharsets.US_ASCII));
         time = new FakeClock();
-        host = new Host(file.toString());
+        host = new Host(file.toString(), testRoot);
         manager = new LicenseManager(host, false, time);
         manager.onReplayComplete();
     }
@@ -89,6 +98,47 @@ class LicenseManagerTest {
         Config.massdb_license_clock_rollback_tolerance_seconds = previousRollback;
         Config.massdb_license_clock_startup_tolerance_seconds = previousStartup;
         Config.massdb_license_clock_settling_seconds = previousSettling;
+    }
+
+    @Test
+    void notReadyFailuresCarryARetryAfterAndStatusShowsTrustAndIsolatedSlots() throws Exception {
+        LicenseManagementException notReady = new LicenseManagementException("LICENSE_NOT_READY", 503,
+                "NOT_SUBMITTED", null, 0, 0);
+        Assertions.assertEquals(30, notReady.getRetryAfterSeconds());
+        Assertions.assertEquals(30, notReady.getBody().get("retry_after_seconds"));
+        LicenseManagementException other = new LicenseManagementException("LICENSE_NOT_LEADER", 503,
+                "NOT_SUBMITTED", null, 0, 0);
+        Assertions.assertEquals(0, other.getRetryAfterSeconds());
+        Assertions.assertFalse(other.getBody().containsKey("retry_after_seconds"));
+        Assertions.assertFalse(manager.isReadyForReads());
+        start();
+        Assertions.assertTrue(manager.isReadyForReads());
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 2000));
+        Map<String, Object> status = run(LicenseManager.Action.STATUS, null).getBody();
+        Assertions.assertTrue(status.get("trust_sha256").toString().matches("[0-9a-f]{64}"));
+        Assertions.assertEquals(Collections.emptyList(), status.get("invalid_slots"));
+        Assertions.assertEquals(0, manager.getInvalidSlotCount());
+        // The same record replayed by an FE whose trust lacks the issuer key isolates the slot and names the key id.
+        LicensePersistRecord record = host.records.get(host.records.size() - 1);
+        ObjectNode otherRoot = JSON.createObjectNode().put("schema_version", 1);
+        otherRoot.putArray("keys").add(key("test-trust", "trust", trustKey))
+                .add(key("other-issuer", "license", KeyPairGenerator.getInstance("Ed25519").generateKeyPair()));
+        try (LicenseManager other2 = new LicenseManager(new Host("", LicenseTrustStore.parse(
+                JSON.writeValueAsBytes(otherRoot))), false, time)) {
+            other2.replay(record);
+            other2.onReplayComplete();
+            Assertions.assertEquals(LicenseQueryStatus.INVALID, other2.queryStatus());
+            // The import wrote the certificate into the active and the base slot; both are isolated.
+            Assertions.assertEquals(2, other2.getInvalidSlotCount());
+            List<Map<String, Object>> isolated = (List<Map<String, Object>>) other2.execute(
+                    LicenseManager.Action.STATUS, null, "admin", true).getBody().get("invalid_slots");
+            Assertions.assertEquals(Arrays.asList("active", "base"),
+                    isolated.stream().map(d -> d.get("slot")).collect(java.util.stream.Collectors.toList()));
+            for (Map<String, Object> detail : isolated) {
+                Assertions.assertEquals("issuer", detail.get("key_id"));
+                Assertions.assertEquals("UNTRUSTED_KEY", detail.get("reason"));
+            }
+        }
     }
 
     @Test
@@ -1449,7 +1499,8 @@ class LicenseManagerTest {
         Files.write(invalid, "{\"schema_version\":1,\"keys\":[]}".getBytes(StandardCharsets.UTF_8));
         Files.write(oversized, new byte[65537]);
         for (Path path : new Path[] {missing, invalid, oversized}) {
-            Host untrustedHost = new Host(path.toString());
+            // A missing, malformed or oversized signed manifest leaves the real built-in keys in force.
+            Host untrustedHost = new Host(path.toString(), LicenseTrustStore.builtIn());
             try (LicenseManager untrusted = new LicenseManager(untrustedHost, false, time)) {
                 untrusted.onReplayComplete();
                 untrusted.onMasterStart(true);
@@ -2200,8 +2251,21 @@ class LicenseManagerTest {
         private final AtomicInteger membershipReads = new AtomicInteger();
         private final AtomicInteger activationProbes = new AtomicInteger();
 
-        Host(String path) {
+        private final LicenseTrustStore root;
+
+        Host(String path, LicenseTrustStore root) {
             this.path = path;
+            this.root = root;
+        }
+
+        @Override
+        public String signedTrustManifestPath() {
+            return path;
+        }
+
+        @Override
+        public LicenseTrustStore builtInTrust() {
+            return root;
         }
 
         @Override
@@ -2263,7 +2327,7 @@ class LicenseManagerTest {
 
         @Override
         public String trustStorePath() {
-            return path;
+            return "";
         }
 
         @Override

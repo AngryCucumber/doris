@@ -56,6 +56,23 @@ class LicenseConfirmationIdsTest {
         Assertions.assertNull(LicenseConfirmationIds.repairIdHint("a.e30.c\n"));
     }
 
+    @Test
+    void keyIdHintReadsOnlyAWellFormedHeaderKid() {
+        String header = Base64.getUrlEncoder().withoutPadding().encodeToString(
+                "{\"alg\":\"Ed25519\",\"typ\":\"massdb-license+jws\",\"kid\":\"issuer-1\"}"
+                        .getBytes(StandardCharsets.UTF_8));
+        Assertions.assertEquals("issuer-1", LicenseConfirmationIds.keyIdHint(header + ".b.c"));
+        Assertions.assertNull(LicenseConfirmationIds.keyIdHint(header + ".b"));
+        Assertions.assertNull(LicenseConfirmationIds.keyIdHint("not base64!.b.c"));
+        Assertions.assertNull(LicenseConfirmationIds.keyIdHint(null));
+        String noKid = Base64.getUrlEncoder().withoutPadding().encodeToString(
+                "{\"alg\":\"Ed25519\"}".getBytes(StandardCharsets.UTF_8));
+        Assertions.assertNull(LicenseConfirmationIds.keyIdHint(noKid + ".b.c"));
+        String badKid = Base64.getUrlEncoder().withoutPadding().encodeToString(
+                "{\"kid\":\"private.payload.signature\\n\"}".getBytes(StandardCharsets.UTF_8));
+        Assertions.assertNull(LicenseConfirmationIds.keyIdHint(badKid + ".b.c"));
+    }
+
     private static String compact(String payload) {
         return "a." + Base64.getUrlEncoder().withoutPadding()
                 .encodeToString(payload.getBytes(StandardCharsets.UTF_8)) + ".c";

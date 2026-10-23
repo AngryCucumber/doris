@@ -497,6 +497,16 @@ public final class MetricRepo {
         };
         DORIS_METRIC_REGISTER.addMetrics(GAUGE_SQL_CACHE_NUM);
 
+        GaugeMetric<Integer> licenseInvalidSlots = new GaugeMetric<Integer>(
+                "license_invalid_slots",
+                MetricUnit.NOUNIT, "Number of license certificate slots this FE isolated on replay") {
+            @Override
+            public Integer getValue() {
+                return Env.getCurrentEnv().getLicenseManager().getInvalidSlotCount();
+            }
+        };
+        DORIS_METRIC_REGISTER.addMetrics(licenseInvalidSlots);
+
         COUNTER_SQL_CACHE_ADDED = new LongCounterMetric("sql_cache_added", MetricUnit.REQUESTS,
                 "Number of SQL cache added");
         DORIS_METRIC_REGISTER.addMetrics(COUNTER_SQL_CACHE_ADDED);

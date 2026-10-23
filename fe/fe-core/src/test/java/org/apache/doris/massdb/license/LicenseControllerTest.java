@@ -454,9 +454,29 @@ class LicenseControllerTest {
         return request;
     }
 
+    @Test
+    void healthRouteNeedsNoAuthenticationAndReportsOnlyReadiness() throws Exception {
+        StubController controller = new StubController();
+        controller.ready = true;
+        ResponseEntity<?> ready = controller.health(request("GET", new byte[0]), servletResponse);
+        Assertions.assertEquals(200, ready.getStatusCode().value());
+        Assertions.assertEquals("READY", ((Map<?, ?>) ready.getBody()).get("status"));
+        Assertions.assertNull(ready.getHeaders().getFirst("Retry-After"));
+        controller.ready = false;
+        ResponseEntity<?> notReady = controller.health(request("GET", new byte[0]), servletResponse);
+        Assertions.assertEquals(503, notReady.getStatusCode().value());
+        Assertions.assertEquals("NOT_READY", ((Map<?, ?>) notReady.getBody()).get("status"));
+        Assertions.assertEquals(30, ((Map<?, ?>) notReady.getBody()).get("retry_after_seconds"));
+        Assertions.assertEquals("30", notReady.getHeaders().getFirst("Retry-After"));
+        Assertions.assertEquals(2, ((Map<?, ?>) notReady.getBody()).size(), "no license detail leaves this route");
+        Assertions.assertEquals(0, controller.authCalls);
+        Assertions.assertEquals(0, controller.executions);
+    }
+
     private static class StubController extends LicenseController {
         final Env env = Mockito.mock(Env.class);
         boolean admin = true;
+        boolean ready;
         boolean authFailure;
         boolean executedAsAdmin;
         int authCalls;
@@ -477,6 +497,11 @@ class LicenseControllerTest {
         @Override
         protected boolean isAdministrator() {
             return admin;
+        }
+
+        @Override
+        protected boolean readyForReads() {
+            return ready;
         }
 
         @Override

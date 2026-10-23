@@ -501,7 +501,7 @@ def validate_trust_manifest(manifest):
     for entry in keys:
         _exact_fields(entry, {"kid", "purpose", "public_key_spki"})
         _text(entry["kid"], 128)
-        if entry["purpose"] not in ("license", "time_repair"):
+        if entry["purpose"] not in ("license", "time_repair", "trust"):
             raise IssuerError("Unsupported trust key purpose")
         if entry["kid"] in kids:
             raise IssuerError("Trust key identifiers must be globally unique")
@@ -517,6 +517,37 @@ def validate_trust_manifest(manifest):
             raise IssuerError("License and repair purposes must use distinct keys")
         purposes_by_material[material] = entry["purpose"]
     return manifest
+
+
+def validate_signed_trust(claims):
+    _exact_fields(claims, {"schema_version", "issued_at", "sequence", "keys"})
+    _bounded_integer(claims["schema_version"], 1, 1)
+    _bounded_integer(claims["issued_at"], 0, MAX_EPOCH_SECOND)
+    _bounded_integer(claims["sequence"], 1, MAX_SEQUENCE)
+    validate_trust_manifest({"schema_version": 1, "keys": claims["keys"]})
+    return claims
+
+
+def parse_signed_trust(data, expected_kid):
+    return _parse_jws(data, expected_kid, "massdb-trust+jws", validate_signed_trust, MAX_CERTIFICATE_BYTES)
+
+
+def trust_sign(openssl, manifest_path, private_key, kid, sequence, output, at=None):
+    """Sign a plain trust manifest with the issuer's trust key so FEs accept its keys (R1 of the 2026-10-22 review)."""
+    manifest = validate_trust_manifest(parse_json(read_bounded(manifest_path, MAX_CERTIFICATE_BYTES)))
+    _bounded_integer(sequence, 1, MAX_SEQUENCE)
+    claims = {"schema_version": 1, "issued_at": _now(at), "sequence": sequence, "keys": manifest["keys"]}
+    result = _sign_claims(openssl, claims, private_key, kid, output, "massdb-trust+jws", MAX_CERTIFICATE_BYTES)
+    result["status"] = "TRUST_SIGNED"
+    result["key_count"] = len(manifest["keys"])
+    return result
+
+
+def trust_verify(openssl, signed_path, public_key, kid):
+    claims = _verify_signature(openssl, read_bounded(signed_path, MAX_CERTIFICATE_BYTES), public_key, kid,
+                               parser=parse_signed_trust)
+    return {"status": "TRUST_VERIFIED", "kid": kid, "sequence": claims["sequence"], "issued_at": claims["issued_at"],
+            "keys": [{"kid": entry["kid"], "purpose": entry["purpose"]} for entry in claims["keys"]]}
 
 
 def export_trust(openssl, public_key, kid, purpose, output, existing=None):
@@ -638,9 +669,19 @@ def main(argv=None):
     trust = commands.add_parser("export-trust", help="Export an Ed25519 public key in the FE trust manifest format")
     trust.add_argument("--public-key", required=True)
     trust.add_argument("--kid", required=True)
-    trust.add_argument("--purpose", required=True, choices=("license", "time_repair"))
+    trust.add_argument("--purpose", required=True, choices=("license", "time_repair", "trust"))
     trust.add_argument("--existing", help="Existing manifest whose public keys will be retained")
     trust.add_argument("--output", required=True)
+    trust_signing = commands.add_parser("trust-sign", help="Sign a trust manifest with the issuer's trust key")
+    trust_signing.add_argument("--manifest", required=True, help="Plain trust manifest (export-trust output)")
+    _add_signing_arguments(trust_signing)
+    trust_signing.add_argument("--sequence", required=True, type=_positive_argument,
+                               help="Issuer bookkeeping number, higher for each newer manifest")
+    trust_signing.add_argument("--at", type=_epoch_argument, help="issued_at as UTC integer epoch seconds")
+    trust_verification = commands.add_parser("trust-verify", help="Verify a signed trust manifest with the trust public key")
+    trust_verification.add_argument("--manifest-signed", required=True)
+    trust_verification.add_argument("--public-key", required=True)
+    trust_verification.add_argument("--kid", required=True)
     conversion = commands.add_parser("date-to-epoch", help="Convert an explicitly zoned date to UTC integer seconds")
     conversion.add_argument("--date", required=True)
     preparation = commands.add_parser("prepare-claims", help="Prepare license claims from an actual deployment request")
@@ -678,6 +719,10 @@ def main(argv=None):
             result = repair_verify(openssl, args.certificate, args.public_key, args.kid, args.challenge, args.at)
         elif args.command == "export-trust":
             result = export_trust(openssl, args.public_key, args.kid, args.purpose, args.output, args.existing)
+        elif args.command == "trust-sign":
+            result = trust_sign(openssl, args.manifest, args.private_key, args.kid, args.sequence, args.output, args.at)
+        elif args.command == "trust-verify":
+            result = trust_verify(openssl, args.manifest_signed, args.public_key, args.kid)
         print(json.dumps(result, ensure_ascii=True, sort_keys=True))
         if result.get("changes"):
             # Facts only: signing succeeded. Confirm them with the customer and with FE validate before import.

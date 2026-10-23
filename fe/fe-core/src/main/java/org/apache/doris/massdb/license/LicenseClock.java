@@ -41,6 +41,8 @@ public final class LicenseClock {
     public static final long CONFIRM_SMALL_FORWARD_MILLIS = TimeUnit.MINUTES.toMillis(5);
     /** Any pending forward jump is accepted once it has held this long without correction or confirmation. */
     public static final long ACCEPT_FORWARD_MILLIS = TimeUnit.HOURS.toMillis(1);
+    /** Wall-clock jitter below this is not a correction: a clock returning from a rollback lands a few ms ahead. */
+    public static final long MIN_FORWARD_MILLIS = 1_000L;
     private static final long NANOS_PER_MILLI = 1_000_000L;
     private static final int MAX_ANCHOR_SAMPLE_ATTEMPTS = 32;
     private static final long MAX_ANCHOR_SAMPLE_NANOS = NANOS_PER_MILLI;
@@ -477,7 +479,8 @@ public final class LicenseClock {
             return Event.NONE;
         }
         long wallOffset = wall - elapsed;
-        if (wallOffset <= confirmed) {
+        if (wallOffset - confirmed < MIN_FORWARD_MILLIS) {
+            // Not ahead, or ahead by jitter only: nothing to confirm. A candidate is discarded when taken back.
             boolean discarded = pending != null;
             pending = null;
             current.admissionOffsetMillis.set(confirmed);
@@ -488,11 +491,15 @@ public final class LicenseClock {
             return Event.FORWARD_PENDING;
         }
         pending.candidateOffsetMillis = Math.min(pending.candidateOffsetMillis, wallOffset);
-        if (pending.candidateOffsetMillis <= confirmed) {
+        if (pending.candidateOffsetMillis - confirmed < MIN_FORWARD_MILLIS) {
             // What held throughout is nothing: the correction was taken back.
             pending = null;
             current.admissionOffsetMillis.set(confirmed);
             return Event.FORWARD_DISCARDED;
+        }
+        if (pending.startup) {
+            // Admission follows the startup candidate down when the boot clock is partly corrected.
+            current.admissionOffsetMillis.set(Math.max(confirmed, pending.candidateOffsetMillis));
         }
         long ageNanos = monotonic - pending.sinceNanos;
         boolean due;

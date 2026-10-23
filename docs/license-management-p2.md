@@ -15,10 +15,16 @@ Upstream and third-party components retain their respective licenses.
 
 在离线签发机按[签发工具说明](../tools/license-issuer/README.md)创建 Ed25519 密钥、导出信任清单。签发私钥留在签发机。`license` 与 `time_repair` 使用不同密钥和 `kid`，不附带任何测试根。
 
-**2026-10-16 起，自用公钥内置在 `doris-fe.jar` 中**，FE 不配置外部文件也能加载公钥并就绪。外部清单改为可选，只用于追加公钥（例如换钥过渡期）：内置公钥总是生效，外部文件缺失、损坏或与内置 `kid` 冲突时只记一条告警并被忽略，不再导致许可未就绪。发行包仍提供与内置清单同字节的 `conf/massdb-license-trust.json` 和下面这行配置，因为更早的 FE 版本只会从外部文件读公钥；升级和降级时都请保留。清单只在启动时加载，修改文件后需要重启：
+**2026-10-16 起，自用公钥内置在 `doris-fe.jar` 中**，FE 不配置外部文件也能加载公钥并就绪。发行包仍提供与内置清单同字节的 `conf/massdb-license-trust.json` 和下面这行配置，因为更早的 FE 版本只会从外部文件读公钥；升级和降级时都请保留。清单只在启动时加载，修改文件后需要重启：
 
 ```properties
 massdb_license_trust_store_file = /etc/massdb/license-public-keys.json
+```
+
+**2026-10-23 起，明文清单不再扩展信任。** 本版本只把它与内置公钥比对：条目与内置公钥一致则无事，多出的或不同的公钥一律忽略并在 fe.log 记一条告警，运维方因此不能再通过改配置让 FE 认自己的签发密钥。追加公钥（换钥过渡期）改用签发方签过名的清单：签发方用 `license_issuer.py trust-sign` 以内置的 `trust` 用途密钥（`kid` `self-use-trust-20261023`）对公钥清单签名，得到 compact JWS（`typ` 为 `massdb-trust+jws`，负载含 `schema_version`、`issued_at`、`sequence`、`keys`）；各 FE 配置下面这行并重启，验签通过的公钥并入信任，验签失败只告警并忽略，内置公钥照常生效。换钥流程是：签发方用旧 `trust` 密钥签一份含新密钥的清单发给运维，各 FE 配置后重启，下一版程序再把新密钥编入常量。
+
+```properties
+massdb_license_trust_manifest_signed = /etc/massdb/license-trust.jws
 ```
 
 已有 HTTP/HTTPS 及内部通信配置继续有效，无新增 BE 配置。若 FE 管理端口不同，可在各 FE 配置以下映射并重启；键必须匹配已注册的 `host:edit_log_port`，值为 HTTP(S) 管理端口：
@@ -126,7 +132,7 @@ Basic 认证可用于接口调用。浏览器 Cookie POST 必须同时提供匹�
 
 SQL 使用结果行表达提交/应用状态，错误保留独立 errno 与 SQLSTATE；原认证/权限错误仍使用原错误码，不强制转换为 6201–6204。HTTP 错误正文包含稳定的 `reason`、脱敏 `message`、`retryable`、`submission_status` 和版本字段；能定位提交时包含指纹或 `repair_id`，尚不能确定的版本可为 `null`。
 
-先判断 `submission_status`，再解释 `retryable`，不能仅根据 HTTP 409/503 或 SQL 错误码自动重试。`NOT_SUBMITTED` 只有明确的暂态原因返回 `retryable=true`：`LICENSE_NOT_READY`、`LICENSE_IMPORT_NOT_READY`、`LICENSE_NOT_LEADER`、`LICENSE_RATE_LIMITED`、`LICENSE_MANAGEMENT_BUSY`、`LICENSE_METADATA_UNAVAILABLE`、`LICENSE_STORE_UNAVAILABLE`、`LICENSE_STALE_IMPORT_DECISION`。这允许在状态重新就绪后退避重试，不保证无限重试能够恢复。永久证书/修复冲突、节点超额、FE 升级要求、时钟修复要求、验签不可用及历史不可确认均为 `false`，须按原因处理。`UNKNOWN` 必须先按指纹或 `repair_id` 确认；`COMMITTED` 只需等待原提交应用，不能将轮询建议解释为重新导入或再次修复。
+先判断 `submission_status`，再解释 `retryable`，不能仅根据 HTTP 409/503 或 SQL 错误码自动重试。`LICENSE_NOT_READY`（恢复或回放追赶期）的管理响应和受保护读取的拒绝体都带 `retry_after_seconds = 30`，HTTP 同时带 `Retry-After: 30`；客户端按它退避，不要以更短间隔重试。负载均衡的健康检查请使用无需认证的只读 `GET /api/license/health`：本 FE 能提供受保护读取时返回 200 `{"status":"READY"}`，否则 503 `{"status":"NOT_READY","retry_after_seconds":30}` 并带 `Retry-After`，不含任何许可细节；`GET /api/license` 在未就绪时仍返回 200，以便页面展示原因。`NOT_SUBMITTED` 只有明确的暂态原因返回 `retryable=true`：`LICENSE_NOT_READY`、`LICENSE_IMPORT_NOT_READY`、`LICENSE_NOT_LEADER`、`LICENSE_RATE_LIMITED`、`LICENSE_MANAGEMENT_BUSY`、`LICENSE_METADATA_UNAVAILABLE`、`LICENSE_STORE_UNAVAILABLE`、`LICENSE_STALE_IMPORT_DECISION`。这允许在状态重新就绪后退避重试，不保证无限重试能够恢复。永久证书/修复冲突、节点超额、FE 升级要求、时钟修复要求、验签不可用及历史不可确认均为 `false`，须按原因处理。`UNKNOWN` 必须先按指纹或 `repair_id` 确认；`COMMITTED` 只需等待原提交应用，不能将轮询建议解释为重新导入或再次修复。
 
 内置页面在导入返回 `UNKNOWN` 或 `COMMITTED` 后，仅对原指纹执行只读回执查询，最多持续 120 秒，按 2/4/8/16/30 秒退避；不会自动重发导入请求。历史已经淘汰时，轮询不能重建回执，超时后需要人工确认。自建 Java 服务或代理也应区分“查询提交结果”和“再次提交证书”，不要只因 HTTP 503 就自动重发 POST。
 
@@ -144,7 +150,7 @@ SQL 使用结果行表达提交/应用状态，错误保留独立 errno 与 SQLS
 
 **墙钟回拨（2026-10-23 起不再粘滞）。** 两个容差分开配置：进程内墙钟落后已确认可信时间超过 `massdb_license_clock_rollback_tolerance_seconds`（默认 12 小时）进入可疑；启动锚点与 Follower 回放的水位超前墙钟超过 `massdb_license_clock_startup_tolerance_seconds`（默认 5 分钟，上限 1 小时）进入可疑。启动容差限制“停机后把墙钟设回停机前再启动”能跳过的时长，不能跟着进程内容差一起放宽。可疑状态每次读取重新判定，墙钟回到容差内即自动解除，不需要重启、命令或票据。只有 Master 才因本机可疑拒绝查询；Follower/Observer 的可信时间来自 Master 水位加本机单调时钟，本机墙钟不参与计算，本机可疑只在 `SHOW LICENSE` 的 `clock_local_suspect` 和日志中体现。Master 的可疑持续 5 分钟以上（启动稳定期之后计）才作为 `clock_suspect` 持久化并随元数据传播到所有 FE；墙钟恢复后 Master 立刻写一条清除记录。
 
-**墙钟前跳。** 前跳不再立即生效，也不再触发可疑：它先作为待确认修正，查询、导入和水位都只使用已确认的可信时间。不超过进程内容差的前跳持续 5 分钟仍成立即自动确认；超过的在 1 小时后自动接受，或由管理员提前确认；期间墙钟被校正回去就直接丢弃，不留痕迹。多 FE 集群中 Master 每分钟通过 `GET /api/license/capability` 比较各 FE 的墙钟：多数 FE 与自己一致的前跳立即确认；自己是离群值时既不自动确认也不持久化可疑，直到同伴一致或管理员确认。`SHOW LICENSE` 的 `clock_pending_forward_seconds`、`clock_pending_age_seconds`、`clock_peer_verdict` 显示当前状态。
+**墙钟前跳。** 前跳不再立即生效，也不再触发可疑：它先作为待确认修正，查询、导入和水位都只使用已确认的可信时间。不超过进程内容差的前跳持续 5 分钟仍成立即自动确认；超过的在 1 小时后自动接受，或由管理员提前确认；期间墙钟被校正回去就直接丢弃，不留痕迹。多 FE 集群中 Master 每分钟通过 `GET /api/license/capability` 比较各 FE 的墙钟，一致的标准是偏差不超过启动容差（默认 5 分钟）：多数 FE 与自己一致的前跳立即确认；自己是离群值时既不自动确认也不持久化可疑，直到同伴一致或管理员确认。少于三台 FE 或没有多数时不作判定，按时间窗口处理。`SHOW LICENSE` 的 `clock_pending_forward_seconds`、`clock_pending_age_seconds`、`clock_peer_verdict` 显示当前状态。
 
 **启动稳定期。** 启动后 `massdb_license_clock_settling_seconds`（默认 10 分钟，上限 1 小时）内：墙钟快于水位的部分立即用于准入（反复重启得不到好处），但只在稳定期结束且墙钟仍一致后才写进水位，所以 NTP 在稳定期内校正开机错误的快钟不留痕迹；墙钟慢于水位的可疑只告警不拒绝，NTP 同步后自动解除。稳定期结束后仍可疑才拒绝并计入持久化等待。固有限制：单台 FE 没有同伴和可信外部时间源时无法区分“钟错了”和“真的停了很久”，全集群同时错钟且超过稳定期的快钟会被确认，多出的时间只能由签发方票据往回拨；这是修复票据保留的场景。
 
@@ -171,15 +177,17 @@ HTTP 对应 `POST /api/license/clock/challenge`（空正文或 `{}`）、`POST /
 
 授权元数据采用 `massdbLicenseV1` 模块和 journal 6200–6205；包含新事实的 image 使用版本 141，旧 FE 不支持读取。不可用旧二进制直接加入已启用新格式的集群。
 
-**回放缺口（2026-10-23 起）。** 每条许可记录都是完整快照：三个槽、回执、时钟事实全部带上，后一条记录到达就覆盖前面任何缺口。回放接受同一部署、bootstrap 不变、激活不回退的任何更高版本记录，不要求版本连续；版本不高于本机的记录、其他部署的后续记录整条忽略并计数，只有其他部署的 INITIALIZE 记录被当作 Master 重新初始化而采纳。`clock.version` 自此等于记录版本，旧版 FE 只要求它递增，回放新记录不受影响。被 `force_skip_journal_id` 跳过的授权或成员日志、经 `skip_operation_types_on_replay_exception` 跳过的成员回放异常、以及 141 版 image 缺少许可模块，都只在本机记为“回放缺口”：`SHOW LICENSE` 的 `replay_gaps`、`recent_replay_gaps`（journal id、操作码、类型、时间）与 `ignored_records` 可见，fe.log 有 WARN，不再设置任何标志、不抬高 image 版本、不停止受保护读取。image 模块中的布尔位固定写 `false`；读到旧版写入的 `true` 只记一条缺口。跳过成员操作的 FE 可能少计成员，标准处理仍是从 Master 的 image 重建该 FE；全部许可记录被跳过且 image 无模块时 Master 会重新初始化并生成新的部署 ID，证书需要重新签发，这是元数据丢失应有的结果。`massdb_license_probe_skipped_journal_header` 保持默认 `false`，探测物理损坏记录可能使 JE 环境失效。首次初始化前的探测以 BDBJE 复制组成员为准，frontends 表中缺失的成员也会被探测。
+**回放缺口（2026-10-23 起）。** 每条许可记录都是完整快照：三个槽、回执、时钟事实全部带上，后一条记录到达就覆盖前面任何缺口。回放接受同一部署、bootstrap 不变、激活不回退的任何更高版本记录，不要求版本连续；版本不高于本机的记录、其他部署的后续记录整条忽略并计数，只有其他部署的 INITIALIZE 记录被当作 Master 重新初始化而采纳。`clock.version` 自此等于记录版本，旧版 FE 只要求它递增，回放新记录不受影响。被 `force_skip_journal_ids` 跳过的授权或成员日志、经 `skip_operation_types_on_replay_exception` 跳过的成员回放异常、以及 141 版 image 缺少许可模块，都只在本机记为“回放缺口”：`SHOW LICENSE` 的 `replay_gaps`、`recent_replay_gaps`（journal id、操作码、类型、时间）与 `ignored_records` 可见，fe.log 有 WARN，不再设置任何标志、不抬高 image 版本、不停止受保护读取。image 模块中的布尔位固定写 `false`；读到旧版写入的 `true` 只记一条缺口。跳过成员操作的 FE 可能少计成员，标准处理仍是从 Master 的 image 重建该 FE；全部许可记录被跳过且 image 无模块时 Master 会重新初始化并生成新的部署 ID，证书需要重新签发，这是元数据丢失应有的结果。`massdb_license_probe_skipped_journal_header` 保持默认 `false`，探测物理损坏记录可能使 JE 环境失效。首次初始化前的探测以 BDBJE 复制组成员为准，frontends 表中缺失的成员也会被探测。
 
-混合版本期间，尚未升级的带许可 FE 仍按严格链式规则工作，遇到缺口会自行标记不完整；请先升级所有 FE 再处理缺口。做 `force_skip_journal_id` 或改动服务器时间之前，先联系签发方确认影响。
+混合版本期间，尚未升级的带许可 FE 仍按严格链式规则工作，遇到缺口会自行标记不完整；请先升级所有 FE 再处理缺口。做 `force_skip_journal_ids` 或改动服务器时间之前，先联系签发方确认影响。
+
+**各 FE 信任配置不一致（2026-10-23 起）。** Master 用合并后的公钥接受证书，某台 FE 缺少对应公钥时只会在本机把该槽隔离，受保护读取在那台 FE 返回 `INVALID`。隔离时 fe.log 记一条 WARN，给出槽位、证书头中的 `kid`、原因（如 `UNTRUSTED_KEY`、`INVALID_SIGNATURE`、`DEPLOYMENT_MISMATCH`）和本机 `trust_sha256`；`SHOW LICENSE` / `GET /api/license` 的管理员视图新增 `trust_sha256`（本机实际加载的公钥集合摘要）与 `invalid_slots`（上述明细列表），指标 `license_invalid_slots` 给出隔离槽数量。Master 每小时通过能力接口比较各 FE 的 `trust_sha256`，不一致只记一条 WARN 列出节点和摘要前缀，不阻止任何操作。处理方法是核对该 FE 的 `massdb_license_trust_store_file` 与 `conf/massdb-license-trust.json`，修正后重启。
 
 升级后的 FE 在完成初始化和证书导入前会拒绝受保护读取，当前没有自动宽限期。应提前准备全部注册 FE 的升级和离线签发流程，以及旧格式回滚所需的升级前元数据备份；修复信任公钥文件后按配置要求重启生效。
 
 初始化可在管理员导入首证书之前自动发生：Master 完成恢复、所有注册 FE 的程序包/信任/能力证明通过，且任期与成员版本仍一致后，就可能提交第一个授权操作码。全部 FE 均未配置公钥时，信任摘要均为空也可能通过一致性证明；不能把“尚未导入证书”或“尚未配置公钥”当作旧格式回滚保障。回滚边界看实际写入的新 journal/image，不以升级后经过固定几秒判断。
 
-切主前固定 journal 目标并最多续读三次；仍未完整到达则按既有晋升失败流程退出。持续存储故障可能使多个候选晋升失败，也可能失去足够存活节点；不保证自动重选能够恢复。应先核对日志、存储/复制状态及健康副本，按完整元数据恢复流程处理，不能把 `force_skip_journal_id` 当作必经修复步骤。
+切主前固定 journal 目标并最多续读三次；仍未完整到达则按既有晋升失败流程退出。持续存储故障可能使多个候选晋升失败，也可能失去足够存活节点；不保证自动重选能够恢复。应先核对日志、存储/复制状态及健康副本，按完整元数据恢复流程处理，不能把 `force_skip_journal_ids` 当作必经修复步骤。
 
 FE/BE 注册额度在 P2 显示和导入策略中校验；新增节点的权威准入由 P3 接入。未来 pending 到点可以改变有效证书状态，基础额度切换仍须单独持久提交；等待期 ADD 按第 2.1 节较小上限执行。
 

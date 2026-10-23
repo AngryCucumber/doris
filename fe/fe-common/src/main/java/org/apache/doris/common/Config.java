@@ -27,12 +27,19 @@ public class Config extends ConfigBase {
                     + "The configuration in this file will override the configuration in fe.conf"})
     public static String custom_config_dir = EnvUtils.getDorisHome() + "/conf";
 
-    @ConfField(description = {"可选的授权公钥清单路径（仅公钥），在 doris-fe.jar 内置公钥之外追加公钥；"
-            + "为空时只使用内置公钥。旧版 FE 仍需要该文件，升级或降级时请保留。重启生效",
-            "Optional license public-key manifest (public keys only) added to the keys built into doris-fe.jar. "
-                    + "Empty uses the built-in keys only. Earlier FE versions still need this file; keep it when "
-                    + "upgrading or downgrading. Takes effect after restart."})
+    @ConfField(description = {"明文授权公钥清单路径，只为更早的 FE 版本保留：本版本只核对它与内置公钥一致，"
+            + "多出的公钥忽略并告警，不再扩展信任。追加公钥请使用 massdb_license_trust_manifest_signed。重启生效",
+            "Plain license public-key manifest kept for earlier FE versions only: this version checks it against the "
+                    + "built-in keys, ignores and warns about extra keys and never extends trust from it. Use "
+                    + "massdb_license_trust_manifest_signed to add keys. Takes effect after restart."})
     public static String massdb_license_trust_store_file = "";
+
+    @ConfField(description = {"签发方签名的授权公钥清单路径（compact JWS，typ massdb-trust+jws，由内置 trust 密钥签名）。"
+            + "验签通过后其中的公钥并入信任；验签失败只告警并忽略。用于换钥过渡期追加公钥。重启生效",
+            "Issuer-signed license public-key manifest (compact JWS, typ massdb-trust+jws, signed by the built-in "
+                    + "trust key). Its keys join the trusted set after verification; a failed verification only warns "
+                    + "and is ignored. Used to add keys during a key rotation. Takes effect after restart."})
+    public static String massdb_license_trust_manifest_signed = "";
 
     @ConfField(description = {"是否探测强制跳过日志的操作码；默认不读取故障记录，重启生效。"
             + "仅在确认物理记录可读、因业务回放问题跳过时开启；不能修复已有授权恢复不完整标记",

@@ -71,6 +71,25 @@ class LicenseManagerDiagnosticsTest {
     }
 
     @Test
+    void plainManifestKeysThatAreNotBuiltInAreIgnoredWithOneWarning() throws Exception {
+        LicenseManager.Host host = host(validTrust().toString());
+        try (LogCapture logs = new LogCapture(); LicenseManager manager = new LicenseManager(host, false, new Time())) {
+            manager.onReplayComplete();
+            manager.capability();
+            // The extra repair key never enters the effective trust: the digest is the built-in one.
+            Mockito.verify(host).localCapability(LicenseTrustStore.builtIn().digest());
+            for (int i = 0; i < 5; i++) {
+                manager.maintenance();
+            }
+            logs.flush();
+            Assertions.assertEquals(1, logs.events.size());
+            Assertions.assertTrue(logs.message(0).contains("cannot extend trust"), logs.message(0));
+            Assertions.assertTrue(logs.message(0).contains("time_repair:repair"), logs.message(0));
+            Assertions.assertFalse(logs.message(0).contains("public-trust.json"));
+        }
+    }
+
+    @Test
     void checkpointEnvironmentDoesNotRepeatRuntimeTrustWarnings() throws Exception {
         LicenseManager.Host host = host(directory.resolve("private-trust-path-missing.json").toString());
         try (LogCapture logs = new LogCapture(); LicenseManager manager = new LicenseManager(host, true, new Time())) {
@@ -96,7 +115,7 @@ class LicenseManagerDiagnosticsTest {
     }
 
     private void followerClockTransitions() throws Exception {
-        LicenseManager.Host host = host(validTrust().toString());
+        LicenseManager.Host host = host("");
         Time time = new Time();
         LicensePersistRecord initial = LicensePersistRecord.initial(UUID.randomUUID(), false, time.wall);
         try (LicenseManager manager = new LicenseManager(host, false, time); LogCapture logs = new LogCapture()) {

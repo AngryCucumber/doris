@@ -95,12 +95,13 @@ export async function licenseRequest(path: string, signal: AbortSignal, certific
             'max_fe_nodes', 'max_be_nodes', 'base_max_fe_nodes', 'base_max_be_nodes', 'active', 'pending',
             'highest_sequence', 'applied_version', 'committed_version', 'retryable', 'idempotent',
             'coverage_gap_seconds', 'expected_license_version', 'expected_membership_version',
-            'license_id', 'license_version', 'sequence', 'changes'];
+            'license_id', 'license_version', 'sequence', 'changes', 'retry_after_seconds', 'trust_sha256'];
         const booleanFields = new Set(['administrator', 'activated', 'recovery_ready', 'retryable', 'idempotent']);
         const numericFields = new Set(['expires_at', 'trusted_utc', 'clock_epoch', 'registered_fe_nodes',
             'registered_be_nodes', 'max_fe_nodes', 'max_be_nodes', 'base_max_fe_nodes', 'base_max_be_nodes',
             'highest_sequence', 'applied_version', 'committed_version', 'coverage_gap_seconds',
-            'expected_license_version', 'expected_membership_version', 'license_version', 'sequence']);
+            'expected_license_version', 'expected_membership_version', 'license_version', 'sequence',
+            'retry_after_seconds']);
         fields.forEach(key => {
             if (!Object.prototype.hasOwnProperty.call(decoded, key)) return;
             const value = decoded[key];

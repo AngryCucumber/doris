@@ -37,7 +37,8 @@ public final class LicenseManagementException extends Exception {
         sqlErrorCode = history ? 6204 : httpStatus == 409 ? 6202
                 : httpStatus == 429 || httpStatus == 503 ? 6203 : 6201;
         sqlState = sqlErrorCode >= 6203 ? "HY000" : "45000";
-        retryAfterSeconds = httpStatus == 429 ? 6 : 0;
+        // A recovering or catching-up FE answers in about this time; clients honour it instead of hammering.
+        retryAfterSeconds = httpStatus == 429 ? 6 : "LICENSE_NOT_READY".equals(reason) && httpStatus == 503 ? 30 : 0;
         Map<String, Object> values = new LinkedHashMap<>();
         values.put("reason", reason);
         values.put("message", reason);
@@ -49,6 +50,9 @@ public final class LicenseManagementException extends Exception {
         }
         values.put("committed_version", committedVersion);
         values.put("applied_version", appliedVersion);
+        if (retryAfterSeconds > 0) {
+            values.put("retry_after_seconds", retryAfterSeconds);
+        }
         body = Collections.unmodifiableMap(values);
     }
 

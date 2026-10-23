@@ -173,7 +173,75 @@ class LicenseTrustStoreTest {
                 builtIn.getKeys(LicenseTrustStore.Purpose.LICENSE).keySet());
         Assertions.assertEquals(Collections.singleton("self-use-time-repair-20260929"),
                 builtIn.getKeys(LicenseTrustStore.Purpose.TIME_REPAIR).keySet());
-        Assertions.assertEquals(builtIn.digest(), LicenseTrustStore.parse(bytes).digest());
+        // The trust key signs manifests only; it is pinned in the jar but kept out of the plain file for earlier FEs.
+        Assertions.assertEquals(Collections.singleton("self-use-trust-20261023"),
+                builtIn.getKeys(LicenseTrustStore.Purpose.TRUST).keySet());
+        LicenseTrustStore shipped = LicenseTrustStore.parse(bytes);
+        Assertions.assertTrue(shipped.getKeys(LicenseTrustStore.Purpose.TRUST).isEmpty());
+        Assertions.assertEquals(Collections.emptyList(), builtIn.extraKeys(shipped));
+        Assertions.assertEquals(Collections.singletonList("trust:self-use-trust-20261023"), shipped.extraKeys(builtIn));
+    }
+
+    @Test
+    void signedManifestIsAcceptedOnlyFromABuiltInTrustKeyAndOnlyWhenIntact() throws Exception {
+        KeyPair trustKey = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+        KeyPair otherKey = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+        ObjectNode root = JSON.createObjectNode().put("schema_version", 1);
+        root.putArray("keys").add(entry("trust-1", "trust", trustKey)).add(entry("other", "license", otherKey));
+        LicenseTrustStore signers = LicenseTrustStore.parse(bytes(root));
+        ObjectNode payload = JSON.createObjectNode().put("schema_version", 1).put("issued_at", 1_700_000_000L)
+                .put("sequence", 3);
+        payload.set("keys", manifest().get("keys"));
+        String compact = signed(payload, "trust-1", LicenseTrustStore.SIGNED_MANIFEST_TYPE, trustKey);
+        LicenseTrustStore added = signers.verifySigned(compact.getBytes(StandardCharsets.US_ASCII));
+        Assertions.assertArrayEquals(licenseKey.getPublic().getEncoded(),
+                added.getKeys(LicenseTrustStore.Purpose.LICENSE).get("issuer").getEncoded());
+        Assertions.assertTrue(signers.merge(added).getKeys(LicenseTrustStore.Purpose.LICENSE).containsKey("issuer"));
+        Assertions.assertEquals(Collections.singletonList("license:issuer"),
+                signers.extraKeys(signers.merge(added)).stream().filter(k -> k.startsWith("license:issuer")).collect(
+                        java.util.stream.Collectors.toList()));
+
+        String[] parts = compact.split("\\.");
+        ObjectNode tampered = payload.deepCopy();
+        ((ArrayNode) tampered.get("keys")).add(entry("evil", "license", trustKey));
+        String forged = parts[0] + "." + Base64.getUrlEncoder().withoutPadding().encodeToString(bytes(tampered))
+                + "." + parts[2];
+        rejectSigned(signers, forged, LicenseErrorCode.INVALID_SIGNATURE);
+        // A certificate-signing key never signs trust; an unknown kid is untrusted.
+        rejectSigned(signers, signed(payload, "other", LicenseTrustStore.SIGNED_MANIFEST_TYPE, otherKey),
+                LicenseErrorCode.UNTRUSTED_KEY);
+        rejectSigned(signers, signed(payload, "unknown", LicenseTrustStore.SIGNED_MANIFEST_TYPE, trustKey),
+                LicenseErrorCode.UNTRUSTED_KEY);
+        rejectSigned(signers, signed(payload, "trust-1", "massdb-license+jws", trustKey),
+                LicenseErrorCode.INVALID_TRUST_STORE);
+        ObjectNode extraField = payload.deepCopy().put("note", "x");
+        rejectSigned(signers, signed(extraField, "trust-1", LicenseTrustStore.SIGNED_MANIFEST_TYPE, trustKey),
+                LicenseErrorCode.INVALID_TRUST_STORE);
+        ObjectNode zeroSequence = payload.deepCopy().put("sequence", 0);
+        rejectSigned(signers, signed(zeroSequence, "trust-1", LicenseTrustStore.SIGNED_MANIFEST_TYPE, trustKey),
+                LicenseErrorCode.INVALID_TRUST_STORE);
+        rejectSigned(signers, parts[0] + "." + parts[1], LicenseErrorCode.INVALID_TRUST_STORE);
+        rejectSigned(signers, compact + (char) 0xe9, LicenseErrorCode.INVALID_TRUST_STORE);
+        // A store without trust keys (an earlier plain manifest) cannot vouch for anything.
+        rejectSigned(LicenseTrustStore.parse(bytes(manifest())), compact, LicenseErrorCode.UNTRUSTED_KEY);
+    }
+
+    private void rejectSigned(LicenseTrustStore signers, String compact, LicenseErrorCode expected) {
+        LicenseException error = Assertions.assertThrows(LicenseException.class,
+                () -> signers.verifySigned(compact.getBytes(StandardCharsets.UTF_8)));
+        Assertions.assertEquals(expected, error.getErrorCode());
+        Assertions.assertNull(error.getCause());
+    }
+
+    static String signed(ObjectNode payload, String kid, String type, KeyPair key) throws Exception {
+        ObjectNode header = JSON.createObjectNode().put("alg", "Ed25519").put("typ", type).put("kid", kid);
+        Base64.Encoder encoder = Base64.getUrlEncoder().withoutPadding();
+        String input = encoder.encodeToString(header.toString().getBytes(StandardCharsets.UTF_8))
+                + "." + encoder.encodeToString(payload.toString().getBytes(StandardCharsets.UTF_8));
+        java.security.Signature signature = java.security.Signature.getInstance("Ed25519");
+        signature.initSign(key.getPrivate());
+        signature.update(input.getBytes(StandardCharsets.US_ASCII));
+        return input + "." + Base64.getUrlEncoder().withoutPadding().encodeToString(signature.sign());
     }
 
     @Test

@@ -13,6 +13,7 @@ import com.fasterxml.jackson.core.StreamReadConstraints;
 import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -22,6 +23,7 @@ import java.security.GeneralSecurityException;
 import java.security.KeyFactory;
 import java.security.MessageDigest;
 import java.security.PublicKey;
+import java.security.Signature;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -45,7 +47,9 @@ import java.util.Set;
 public final class LicenseTrustStore {
     public enum Purpose {
         LICENSE("license"),
-        TIME_REPAIR("time_repair");
+        TIME_REPAIR("time_repair"),
+        /** Signs trust manifests that add operator-installed keys; never signs certificates or repair tickets. */
+        TRUST("trust");
 
         private final String wireName;
 
@@ -59,6 +63,11 @@ public final class LicenseTrustStore {
     static final String BUILT_IN_LICENSE_SPKI = "MCowBQYDK2VwAyEA296WLuNZLjs6LA9W0zT9v7-GdARgBW6_3tH5S7IiGJM";
     static final String BUILT_IN_TIME_REPAIR_KID = "self-use-time-repair-20260929";
     static final String BUILT_IN_TIME_REPAIR_SPKI = "MCowBQYDK2VwAyEAeYQAth424gsdEXXECoWO_l0cbFbazelUYDRZsXv4IPQ";
+    static final String BUILT_IN_TRUST_KID = "self-use-trust-20261023";
+    static final String BUILT_IN_TRUST_SPKI = "MCowBQYDK2VwAyEADDXdmbbtopojcR0sua1IX_4AujVELAchcYO5PfnSHxY";
+    /** Compact JWS type of a signed trust manifest. */
+    public static final String SIGNED_MANIFEST_TYPE = "massdb-trust+jws";
+    private static final int MAX_MANIFEST_BYTES = 65536;
     private static final byte[] ED25519_PREFIX = {0x30, 0x2a, 0x30, 0x05, 0x06, 0x03,
             0x2b, 0x65, 0x70, 0x03, 0x21, 0x00};
     private static final ObjectMapper JSON = new ObjectMapper(JsonFactory.builder()
@@ -136,17 +145,138 @@ public final class LicenseTrustStore {
         }
     }
 
-    /** The keys compiled into doris-fe.jar; no classpath lookup, so conf/ cannot shadow them. */
+    /**
+     * The keys compiled into doris-fe.jar; no classpath lookup, so conf/ cannot shadow them. The trust key is not
+     * part of the shipped plain manifest because earlier FEs reject a purpose they do not know.
+     */
     public static LicenseTrustStore builtIn() throws LicenseException {
-        return parse(builtInManifest());
+        String trustEntry = "{\"kid\":\"" + BUILT_IN_TRUST_KID + "\",\"public_key_spki\":\"" + BUILT_IN_TRUST_SPKI
+                + "\",\"purpose\":\"trust\"}";
+        return parse(("{\"keys\":[" + builtInEntries() + "," + trustEntry + "],\"schema_version\":1}")
+                .getBytes(StandardCharsets.UTF_8));
     }
 
-    /** The pinned manifest, byte for byte the shipped conf/massdb-license-trust.json. */
+    /** The pinned plain manifest, byte for byte the shipped conf/massdb-license-trust.json that earlier FEs read. */
     static byte[] builtInManifest() {
-        return ("{\"keys\":[{\"kid\":\"" + BUILT_IN_LICENSE_KID + "\",\"public_key_spki\":\"" + BUILT_IN_LICENSE_SPKI
+        return ("{\"keys\":[" + builtInEntries() + "],\"schema_version\":1}").getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static String builtInEntries() {
+        return "{\"kid\":\"" + BUILT_IN_LICENSE_KID + "\",\"public_key_spki\":\"" + BUILT_IN_LICENSE_SPKI
                 + "\",\"purpose\":\"license\"},{\"kid\":\"" + BUILT_IN_TIME_REPAIR_KID + "\",\"public_key_spki\":\""
-                + BUILT_IN_TIME_REPAIR_SPKI + "\",\"purpose\":\"time_repair\"}],\"schema_version\":1}")
-                .getBytes(StandardCharsets.UTF_8);
+                + BUILT_IN_TIME_REPAIR_SPKI + "\",\"purpose\":\"time_repair\"}";
+    }
+
+    /**
+     * Verify a signed trust manifest (compact JWS, type massdb-trust+jws) against this store's trust keys and
+     * return the keys it carries. The payload is {schema_version, issued_at, sequence, keys}; issued_at and
+     * sequence are the issuer's bookkeeping and are only type-checked here. Every failure is an exception without
+     * input or provider details; nothing is trusted on failure.
+     */
+    public LicenseTrustStore verifySigned(byte[] compact) throws LicenseException {
+        if (compact == null || compact.length == 0 || compact.length > MAX_MANIFEST_BYTES) {
+            throw invalid();
+        }
+        String text;
+        try {
+            text = StandardCharsets.US_ASCII.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(compact)).toString().trim();
+        } catch (java.nio.charset.CharacterCodingException e) {
+            throw invalid();
+        }
+        String[] segments = text.split("\\.", -1);
+        if (segments.length != 3) {
+            throw invalid();
+        }
+        byte[] header = decodeSegment(segments[0]);
+        byte[] payload = decodeSegment(segments[1]);
+        byte[] signature = decodeSegment(segments[2]);
+        if (signature.length != 64) {
+            throw new LicenseException(LicenseErrorCode.INVALID_SIGNATURE);
+        }
+        try {
+            JsonNode headerNode = readObject(header);
+            fields(headerNode, "alg", "typ", "kid");
+            if (!"Ed25519".equals(headerNode.get("alg").textValue())
+                    || !SIGNED_MANIFEST_TYPE.equals(headerNode.get("typ").textValue())) {
+                throw invalid();
+            }
+            String kid = headerNode.get("kid").textValue();
+            if (!LicenseText.matches(kid, 128, true)) {
+                throw invalid();
+            }
+            PublicKey signer = getKeys(Purpose.TRUST).get(kid);
+            if (signer == null) {
+                throw new LicenseException(LicenseErrorCode.UNTRUSTED_KEY);
+            }
+            Signature verifier = Signature.getInstance("Ed25519");
+            verifier.initVerify(signer);
+            verifier.update((segments[0] + "." + segments[1]).getBytes(StandardCharsets.US_ASCII));
+            if (!verifier.verify(signature)) {
+                throw new LicenseException(LicenseErrorCode.INVALID_SIGNATURE);
+            }
+            JsonNode claims = readObject(payload);
+            fields(claims, "schema_version", "issued_at", "sequence", "keys");
+            for (String name : new String[] {"schema_version", "issued_at", "sequence"}) {
+                JsonNode value = claims.get(name);
+                if (!value.isIntegralNumber() || !value.canConvertToLong() || value.longValue() < 0) {
+                    throw invalid();
+                }
+            }
+            if (claims.get("schema_version").intValue() != 1 || claims.get("sequence").longValue() < 1) {
+                throw invalid();
+            }
+            ObjectNode manifest = JSON.createObjectNode();
+            manifest.put("schema_version", 1);
+            manifest.set("keys", claims.get("keys"));
+            return parse(JSON.writeValueAsBytes(manifest));
+        } catch (LicenseException e) {
+            throw e;
+        } catch (IOException | GeneralSecurityException | IllegalArgumentException e) {
+            throw invalid();
+        }
+    }
+
+    /** Entries of another store that this store does not already hold with the same purpose and key bytes. */
+    public List<String> extraKeys(LicenseTrustStore other) {
+        List<String> extra = new ArrayList<>();
+        for (Purpose purpose : Purpose.values()) {
+            for (Map.Entry<String, PublicKey> entry : other.getKeys(purpose).entrySet()) {
+                PublicKey held = getKeys(purpose).get(entry.getKey());
+                if (held == null || !Arrays.equals(held.getEncoded(), entry.getValue().getEncoded())) {
+                    extra.add(purpose.wireName + ":" + entry.getKey());
+                }
+            }
+        }
+        Collections.sort(extra);
+        return extra;
+    }
+
+    private static byte[] decodeSegment(String segment) throws LicenseException {
+        if (segment.isEmpty() || !segment.matches("[A-Za-z0-9_-]+")) {
+            throw invalid();
+        }
+        try {
+            byte[] decoded = Base64.getUrlDecoder().decode(segment);
+            if (!Base64.getUrlEncoder().withoutPadding().encodeToString(decoded).equals(segment)) {
+                throw invalid();
+            }
+            return decoded;
+        } catch (IllegalArgumentException e) {
+            throw invalid();
+        }
+    }
+
+    private static JsonNode readObject(byte[] bytes) throws IOException, LicenseException {
+        String text = StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString();
+        try (JsonParser parser = JSON.createParser(text)) {
+            JsonNode node = JSON.readTree(parser);
+            if (node == null || !node.isObject() || parser.nextToken() != null) {
+                throw invalid();
+            }
+            return node;
+        }
     }
 
     /**

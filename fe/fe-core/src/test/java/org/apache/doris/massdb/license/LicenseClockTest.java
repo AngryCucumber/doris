@@ -112,6 +112,23 @@ class LicenseClockTest {
     }
 
     @Test
+    void wallClockJitterBelowOneSecondIsNeverAPendingCorrection() {
+        FakeTime time = new FakeTime(100_000L);
+        LicenseClock clock = new LicenseClock(new LicenseClock.Facts(0, 0, 100_000L, 0), time, LENIENT);
+        // A wall clock returning from a rollback typically lands a few milliseconds ahead of the trusted time.
+        time.wall -= 30_000;
+        clock.trustedNowMillis();
+        time.wall += 30_000 + LicenseClock.MIN_FORWARD_MILLIS - 1;
+        Assertions.assertEquals(LicenseClock.Event.NONE, clock.observe());
+        Assertions.assertEquals(0, clock.diagnostics().getPendingForwardMillis());
+        // A real correction arriving right after is tracked at its own size, not blocked by the jitter.
+        time.wall += 10_000;
+        Assertions.assertEquals(LicenseClock.Event.FORWARD_PENDING, clock.observe());
+        Assertions.assertEquals(10_000 + LicenseClock.MIN_FORWARD_MILLIS - 1,
+                clock.diagnostics().getPendingForwardMillis());
+    }
+
+    @Test
     void pendingCandidateIsWhatHeldThroughoutNotThePeak() {
         FakeTime time = new FakeTime(100_000L);
         LicenseClock clock = new LicenseClock(new LicenseClock.Facts(0, 0, 100_000L, 0), time, LENIENT);
@@ -197,7 +214,15 @@ class LicenseClockTest {
         LicenseClock clock = new LicenseClock(new LicenseClock.Facts(0, 0, 100_000, 0), time,
                 new LicenseClock.Settings(60_000, 5_000, 10 * 60_000));
         Assertions.assertEquals(time.wall, clock.trustedNowMillis());
-        time.advance(8 * 60_000);
+        time.advance(4 * 60_000);
+        clock.observe();
+        // A partial correction (still 30 s ahead of the watermark) pulls admission down with the candidate.
+        time.wall = 100_000 + 4 * 60_000 + 30_000;
+        Assertions.assertEquals(LicenseClock.Event.NONE, clock.observe());
+        Assertions.assertEquals(time.wall, clock.trustedNowMillis());
+        Assertions.assertEquals(30_000, clock.diagnostics().getPendingForwardMillis());
+        time.advance(4 * 60_000);
+        time.wall = 100_000 + 8 * 60_000 + 2 * HOUR;
         clock.observe();
         // NTP steps the clock back to the truth: eight minutes after a watermark of 100_000.
         time.wall = 100_000 + 8 * 60_000;
