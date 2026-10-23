@@ -74,8 +74,9 @@ public final class LicensePersistRecord implements Writable {
         root.put("clock_suspect", false);
         root.set("rollout", NullNode.getInstance());
         writeImports(root, LicenseImportState.empty(deployment));
+        // clock.version is the record version since 2026-10-23; earlier FEs only require it to increase.
         writeClock(root, new LicenseClockRepair.State(deployment,
-                new LicenseClock.Facts(0, 0, wallMillis, 0), Collections.emptyMap()));
+                new LicenseClock.Facts(1, 0, wallMillis, 0), Collections.emptyMap()));
         root.set("submission_versions", JSON.createObjectNode());
         return new LicensePersistRecord(root);
     }
@@ -108,6 +109,7 @@ public final class LicensePersistRecord implements Writable {
             replacement.put("clock_suspect", false);
         }
         writeClock(replacement, state);
+        alignClockVersion(replacement);
         ObjectNode versions = JSON.createObjectNode();
         // License receipts and occupied slots outlive repair-history eviction.
         for (JsonNode receipt : data.get("receipts")) {
@@ -134,6 +136,13 @@ public final class LicensePersistRecord implements Writable {
     public LicensePersistRecord withClockSuspect() throws IOException {
         ObjectNode replacement = next(INTEGRITY);
         replacement.put("clock_suspect", true);
+        return new LicensePersistRecord(replacement);
+    }
+
+    /** The master's clock returned within tolerance; same shape as the suspect record, flag cleared. */
+    public LicensePersistRecord withClockCleared() throws IOException {
+        ObjectNode replacement = next(INTEGRITY);
+        replacement.put("clock_suspect", false);
         return new LicensePersistRecord(replacement);
     }
 
@@ -165,7 +174,16 @@ public final class LicensePersistRecord implements Writable {
         ObjectNode replacement = data.deepCopy();
         replacement.put("operation", operation);
         replacement.put("record_version", getVersion() + 1);
+        alignClockVersion(replacement);
         return replacement;
+    }
+
+    /**
+     * Every record carries the whole clock state, so its version is the record version. One counter leaves no
+     * second chain to break when a record is skipped; earlier FEs only require the value to increase.
+     */
+    private void alignClockVersion(ObjectNode replacement) {
+        ((ObjectNode) replacement.get("clock")).put("version", replacement.get("record_version").longValue());
     }
 
     private void retainVersion(ObjectNode versions, String fingerprint, long fallback) {

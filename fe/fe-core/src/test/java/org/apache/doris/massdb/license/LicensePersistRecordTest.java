@@ -53,7 +53,7 @@ class LicensePersistRecordTest {
             for (int i = 0; i < 10_000; i++) {
                 LicenseClockRepair.State reading = record.clockState();
                 Assertions.assertSame(state, reading);
-                Assertions.assertEquals(LicenseClockRepair.MAX_RECEIPTS, reading.getFacts().getVersion());
+                Assertions.assertEquals(LicenseClockRepair.MAX_RECEIPTS + 1, reading.getFacts().getVersion());
                 UUID id = new UUID(0, i % LicenseClockRepair.MAX_RECEIPTS + 1);
                 Assertions.assertNotNull(reading.getReceipts().get(id));
             }
@@ -84,7 +84,7 @@ class LicensePersistRecordTest {
                 root -> root.put("record_version", BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE)),
                 root -> clock(root).put("high_water_millis", LicenseClock.MAX_MILLIS + 1),
                 root -> receipts(root).add(receipts(root).get(0).deepCopy()),
-                root -> ((ObjectNode) receipts(root).get(1)).put("committed_version", 3),
+                root -> ((ObjectNode) receipts(root).get(1)).put("committed_version", 4),
                 root -> ((ObjectNode) receipts(root).get(1)).put("clock_epoch", 1),
                 root -> ((ObjectNode) receipts(root).get(0)).put("key_id", "private.payload.signature\n"),
                 root -> ((ObjectNode) receipts(root).get(0)).put("fingerprint", "not-a-fingerprint"),
@@ -257,18 +257,27 @@ class LicensePersistRecordTest {
         Assertions.assertArrayEquals(valid, encode(decode(valid)));
     }
 
+    /** A retained history accumulated over count repairs, written as the envelope of record count + 1. */
     private static LicensePersistRecord history(int count) throws Exception {
-        Map<UUID, LicenseClockRepair.Receipt> receipts = new LinkedHashMap<>();
+        ObjectNode root = envelope(encode(LicensePersistRecord.initial(DEPLOYMENT, false, WALL)));
+        root.put("operation", LicensePersistRecord.REPAIR);
+        root.put("record_version", count + 1);
+        ObjectNode clock = (ObjectNode) root.get("clock");
+        // clock.version is the record version since 2026-10-23.
+        clock.put("version", count + 1);
+        clock.put("epoch", count);
+        clock.put("authorization_version", count);
+        ArrayNode receipts = clock.putArray("receipts");
         for (int i = 1; i <= count; i++) {
             LicenseClockRepair.Receipt receipt = receipt(i);
-            receipts.put(receipt.getRepairId(), receipt);
+            ObjectNode value = receipts.addObject();
+            value.put("repair_id", receipt.getRepairId().toString());
+            value.put("committed_version", receipt.getCommittedVersion());
+            value.put("clock_epoch", receipt.getClockEpoch());
+            value.put("corrected_millis", receipt.getCorrectedMillis());
+            value.put("key_id", receipt.getKeyId());
+            value.put("fingerprint", receipt.getFingerprint());
         }
-        LicensePersistRecord record = LicensePersistRecord.initial(DEPLOYMENT, false, WALL)
-                .withClock(LicensePersistRecord.REPAIR, new LicenseClockRepair.State(DEPLOYMENT,
-                        new LicenseClock.Facts(count, count, WALL, count), receipts));
-        // Model a retained history accumulated over count repairs, not count live signature operations.
-        ObjectNode root = envelope(encode(record));
-        root.put("record_version", count + 1);
         return decode(frame(JSON.writeValueAsBytes(root)));
     }
 

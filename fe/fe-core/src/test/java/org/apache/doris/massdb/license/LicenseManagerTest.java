@@ -7,6 +7,7 @@
 
 package org.apache.doris.massdb.license;
 
+import org.apache.doris.common.Config;
 import org.apache.doris.common.DdlException;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -57,9 +58,19 @@ class LicenseManagerTest {
     private Host host;
     private LicenseManager manager;
     private int principal;
+    private long previousRollback;
+    private long previousStartup;
+    private long previousSettling;
 
     @BeforeEach
     void setUp() throws Exception {
+        // Tight tolerances and no settling period keep the clock scenarios short; defaults are tested separately.
+        previousRollback = Config.massdb_license_clock_rollback_tolerance_seconds;
+        previousStartup = Config.massdb_license_clock_startup_tolerance_seconds;
+        previousSettling = Config.massdb_license_clock_settling_seconds;
+        Config.massdb_license_clock_rollback_tolerance_seconds = 5;
+        Config.massdb_license_clock_startup_tolerance_seconds = 5;
+        Config.massdb_license_clock_settling_seconds = 0;
         issuer = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
         repairKey = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
         ObjectNode trust = JSON.createObjectNode().put("schema_version", 1);
@@ -75,6 +86,9 @@ class LicenseManagerTest {
     @AfterEach
     void close() {
         manager.close();
+        Config.massdb_license_clock_rollback_tolerance_seconds = previousRollback;
+        Config.massdb_license_clock_startup_tolerance_seconds = previousStartup;
+        Config.massdb_license_clock_settling_seconds = previousSettling;
     }
 
     @Test
@@ -102,7 +116,7 @@ class LicenseManagerTest {
     }
 
     @Test
-    void failedInitialPublicationCanRetryAndIncompleteMarkDoesNotNeedMembers() throws Exception {
+    void failedInitialPublicationCanRetryAndReplayGapsDoNotStopReads() throws Exception {
         LicensePersistRecord initial = LicensePersistRecord.initial(UUID.randomUUID(), true, time.wall);
         try (LicenseManager restored = new LicenseManager(host, false, time)) {
             restored.replay(initial);
@@ -113,12 +127,15 @@ class LicenseManagerTest {
             Assertions.assertNotEquals(LicenseQueryStatus.LICENSE_NOT_READY, restored.queryStatus());
             int reads = host.membershipReads.get();
             host.publicationFailure.set(true);
-            restored.markRecoveryIncomplete();
+            // A skipped journal is diagnostics only: no member read, no flag, no change of admission.
+            restored.recordReplayGap(7, (short) -1, "FORCE_SKIP_JOURNAL_ID");
             Assertions.assertEquals(reads, host.membershipReads.get());
-            Assertions.assertEquals(LicenseQueryStatus.LICENSE_NOT_READY, restored.queryStatus());
+            Assertions.assertNotEquals(LicenseQueryStatus.LICENSE_NOT_READY, restored.queryStatus());
+            Assertions.assertEquals(1, restored.getReplayGapCount());
+            Assertions.assertEquals(7, restored.getReplayGaps().get(0).journalId);
             restored.onReplayComplete();
             Assertions.assertEquals(reads, host.membershipReads.get());
-            Assertions.assertEquals(LicenseQueryStatus.LICENSE_NOT_READY, restored.queryStatus());
+            Assertions.assertNotEquals(LicenseQueryStatus.LICENSE_NOT_READY, restored.queryStatus());
         } finally {
             host.publicationFailure.set(false);
         }
@@ -375,7 +392,7 @@ class LicenseManagerTest {
     }
 
     @Test
-    void coldReplayOfTheSameVersionWithDifferentFactsStillInvalidatesRecovery() throws Exception {
+    void coldReplayOfTheSameVersionWithDifferentFactsIsIgnoredWithoutStoppingReads() throws Exception {
         start();
         run(LicenseManager.Action.IMPORT, certificate(1, 900, 2000));
         long version = manager.getAppliedVersion();
@@ -384,8 +401,9 @@ class LicenseManagerTest {
         clock.put("high_water_millis", clock.get("high_water_millis").longValue() + 1);
         manager.replay(recordFromEnvelope(conflict));
         Assertions.assertEquals(version, manager.getAppliedVersion());
-        Assertions.assertEquals(LicenseQueryStatus.LICENSE_NOT_READY, manager.queryStatus());
-        Assertions.assertTrue(image(manager)[0] != 0);
+        Assertions.assertEquals(LicenseQueryStatus.EXPIRING, manager.queryStatus());
+        Assertions.assertEquals(1, manager.getIgnoredRecordCount());
+        Assertions.assertEquals(0, image(manager)[0]);
     }
 
     private void awaitMutationQueueSize(int expected) throws Exception {
@@ -417,10 +435,11 @@ class LicenseManagerTest {
         Assertions.assertEquals("LICENSE_BE_LIMIT_EXCEEDED", Assertions.assertThrows(DdlException.class,
                 () -> manager.runMembershipMutation(0, 1, () -> changed.set(true))).getDetailMessage());
         Assertions.assertFalse(changed.get());
-        manager.markRecoveryIncomplete();
-        Assertions.assertEquals("LICENSE_NOT_READY", Assertions.assertThrows(DdlException.class,
+        // A replay gap is reported, never a reason to refuse admission beyond the committed capacity.
+        manager.recordReplayGap(9, (short) 6201, "FORCE_SKIP_JOURNAL_ID");
+        Assertions.assertEquals("LICENSE_FE_LIMIT_EXCEEDED", Assertions.assertThrows(DdlException.class,
                 () -> manager.runMembershipMutation(1, 0, () -> changed.set(true))).getDetailMessage());
-        // Recovery uncertainty must not prevent an operator from reducing existing membership safely.
+        // Reducing existing membership stays possible in every state.
         manager.runMembershipMutation(0, 0, () -> changed.set(true));
         Assertions.assertTrue(changed.get());
     }
@@ -829,18 +848,32 @@ class LicenseManagerTest {
     }
 
     @Test
-    void conflictingReplayCannotEraseActivationOrAcceptedIdentity() throws Exception {
+    void foreignRecordsAreIgnoredButAForeignInitializeIsAdoptedAsADeploymentReset() throws Exception {
         start();
         run(LicenseManager.Action.IMPORT, certificate(1, 900, 2000));
-        manager.replay(LicensePersistRecord.initial(UUID.randomUUID(), true, 1000000));
+        String original = imageJson(image(manager)).get("deployment_id").textValue();
+        LicensePersistRecord foreign = LicensePersistRecord.initial(UUID.randomUUID(), true, 1000000);
+        // Any later record of another deployment is noise: ignored, state and reads unchanged.
+        manager.replay(foreign.withClockSuspect());
         Assertions.assertTrue(manager.isActivated());
         Assertions.assertEquals(2, manager.getAppliedVersion());
-        Assertions.assertEquals(LicenseQueryStatus.LICENSE_NOT_READY, manager.getSnapshot().queryStatus(1000));
+        Assertions.assertEquals(original, imageJson(image(manager)).get("deployment_id").textValue());
+        Assertions.assertEquals(LicenseQueryStatus.EXPIRING, manager.queryStatus());
+        Assertions.assertEquals(1, manager.getIgnoredRecordCount());
+        // A master that lost every license record re-initializes; following it keeps the cluster consistent.
+        manager.replay(foreign);
+        Assertions.assertFalse(manager.isActivated());
+        Assertions.assertEquals(1, manager.getAppliedVersion());
+        Assertions.assertEquals(foreign.getDeploymentId().toString(),
+                imageJson(image(manager)).get("deployment_id").textValue());
+        Assertions.assertEquals(LicenseQueryStatus.MISSING, manager.queryStatus());
+        Assertions.assertEquals("DEPLOYMENT_RESET", manager.getReplayGaps().get(0).kind);
         try (LicenseManager restored = new LicenseManager(host, false, time)) {
             restored.loadImage(input(image(manager)));
             restored.onReplayComplete();
-            Assertions.assertTrue(restored.isActivated());
-            Assertions.assertEquals(LicenseQueryStatus.LICENSE_NOT_READY, restored.getSnapshot().queryStatus(1000));
+            Assertions.assertFalse(restored.isActivated());
+            Assertions.assertEquals(foreign.getDeploymentId().toString(),
+                    imageJson(image(restored)).get("deployment_id").textValue());
         }
     }
 
@@ -1053,7 +1086,7 @@ class LicenseManagerTest {
         Mockito.verify(counted).verify(compact);
         Mockito.verifyNoMoreInteractions(counted);
         Mockito.clearInvocations(counted);
-        time.advance(60_000);
+        time.advance(LicenseManager.watermarkIntervalMillis());
         manager.maintenance();
         Assertions.assertEquals(3, manager.getAppliedVersion());
         Mockito.verifyNoInteractions(counted);
@@ -1132,28 +1165,103 @@ class LicenseManagerTest {
     }
 
     @Test
-    void committedClockAnomalySurvivesRestartWithCorrectedWallTime() throws Exception {
+    void masterPersistsASustainedSuspicionAndClearsItWhenItsWallClockReturns() throws Exception {
         start();
         run(LicenseManager.Action.IMPORT, certificate(1, 900, 2000));
-        time.wall += 400_000;
-        Assertions.assertEquals("CLOCK_SUSPECT", run(LicenseManager.Action.STATUS, null).getBody().get("status"));
+        long records = host.records.size();
+        time.wall -= 6_000;
+        Map<String, Object> status = run(LicenseManager.Action.STATUS, null).getBody();
+        Assertions.assertEquals("CLOCK_SUSPECT", status.get("status"));
+        Assertions.assertEquals(true, status.get("clock_local_suspect"));
+        Assertions.assertEquals(false, status.get("clock_committed_suspect"));
+        // Not persisted at once: the suspicion must hold past the persistence delay.
         manager.maintenance();
-        time.wall -= 400_000;
+        Assertions.assertEquals(records, host.records.size());
+        time.advance(TimeUnit.NANOSECONDS.toMillis(LicenseManager.SUSPECT_PERSIST_NANOS) - 1_000);
+        manager.maintenance();
+        Assertions.assertEquals(records, host.records.size());
+        time.advance(1_000);
+        manager.maintenance();
+        Assertions.assertEquals(records + 1, host.records.size());
+        Assertions.assertTrue(host.records.get(host.records.size() - 1).isClockSuspect());
+        Assertions.assertEquals(true, run(LicenseManager.Action.STATUS, null).getBody().get("clock_committed_suspect"));
+        // The wall clock is corrected; a restarted FE still sees the committed suspicion until the master clears it.
+        time.wall += 6_000;
         try (LicenseManager restored = new LicenseManager(host, false, time)) {
             restored.loadImage(input(image(manager)));
             restored.onReplayComplete();
             Assertions.assertEquals("CLOCK_SUSPECT", restored.execute(LicenseManager.Action.STATUS,
                     null, "admin", true).getBody().get("status"));
+            manager.maintenance();
+            Assertions.assertEquals(records + 2, host.records.size());
+            LicensePersistRecord cleared = host.records.get(host.records.size() - 1);
+            Assertions.assertFalse(cleared.isClockSuspect());
+            Assertions.assertEquals(LicensePersistRecord.INTEGRITY, cleared.getOperation());
+            Assertions.assertEquals("EXPIRING", run(LicenseManager.Action.STATUS, null).getBody().get("status"));
+            restored.replay(cleared);
+            Assertions.assertEquals("EXPIRING", restored.execute(LicenseManager.Action.STATUS,
+                    null, "admin", true).getBody().get("status"));
         }
+    }
+
+    @Test
+    void followerOnlyReportsItsOwnSuspicionAndWatermarksFlowWhileTheMasterIsSuspect() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 2000));
+        long records = host.records.size();
+        time.wall -= 6_000;
+        Assertions.assertEquals(LicenseQueryStatus.CLOCK_SUSPECT, manager.queryStatus());
+        // The watermark records the confirmed time in every state.
+        time.advance(LicenseManager.watermarkIntervalMillis());
+        manager.maintenance();
+        LicensePersistRecord watermark = host.records.get(host.records.size() - 1);
+        Assertions.assertEquals(LicensePersistRecord.WATERMARK, watermark.getOperation());
+        Assertions.assertEquals(records + 1, host.records.size());
+        Assertions.assertEquals(time.wall + 6_000, watermark.clockState().getFacts().getHighWaterMillis());
+        Assertions.assertEquals(watermark.getVersion(), watermark.clockState().getFacts().getVersion());
+        manager.onNonMaster();
+        Assertions.assertEquals(LicenseQueryStatus.EXPIRING, manager.queryStatus());
+        Map<String, Object> status = run(LicenseManager.Action.STATUS, null).getBody();
+        Assertions.assertEquals(true, status.get("clock_local_suspect"));
+        Assertions.assertEquals(false, status.get("clock_enforced"));
+        manager.onMasterStart(false);
+        Assertions.assertEquals(LicenseQueryStatus.CLOCK_SUSPECT, manager.queryStatus());
+    }
+
+    @Test
+    void forwardCorrectionWaitsForConfirmationByTimeOrAdministrator() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 2000));
+        long trusted = ((Number) run(LicenseManager.Action.STATUS, null).getBody().get("trusted_utc")).longValue();
+        time.wall += 4_000;
+        manager.maintenance();
+        Map<String, Object> status = run(LicenseManager.Action.STATUS, null).getBody();
+        Assertions.assertEquals(trusted, ((Number) status.get("trusted_utc")).longValue());
+        Assertions.assertEquals(4L, ((Number) status.get("clock_pending_forward_seconds")).longValue());
+        Assertions.assertEquals("UNKNOWN", status.get("clock_peer_verdict"));
+        time.advance(LicenseClock.CONFIRM_SMALL_FORWARD_MILLIS);
+        manager.maintenance();
+        status = run(LicenseManager.Action.STATUS, null).getBody();
+        Assertions.assertEquals(time.wall / 1000, ((Number) status.get("trusted_utc")).longValue());
+        Assertions.assertEquals(0L, ((Number) status.get("clock_pending_forward_seconds")).longValue());
+
+        time.wall += 100_000;
+        manager.maintenance();
+        Assertions.assertEquals(100L, ((Number) run(LicenseManager.Action.STATUS, null).getBody()
+                .get("clock_pending_forward_seconds")).longValue());
+        Map<String, Object> confirmed = run(LicenseManager.Action.CLOCK_CONFIRM, null).getBody();
+        Assertions.assertEquals(100L, ((Number) confirmed.get("confirmed_forward_seconds")).longValue());
+        Assertions.assertEquals(time.wall / 1000, ((Number) confirmed.get("trusted_utc")).longValue());
+        Assertions.assertEquals(0L, ((Number) run(LicenseManager.Action.CLOCK_CONFIRM, null).getBody()
+                .get("confirmed_forward_seconds")).longValue());
     }
 
     @Test
     void clockRepairCommitsNewEpochAndDuplicateDoesNotLowerItAgain() throws Exception {
         start();
         run(LicenseManager.Action.IMPORT, certificate(1, 900, 2000));
-        time.wall += 400_000;
+        time.wall -= 6_000;
         Assertions.assertEquals("CLOCK_SUSPECT", run(LicenseManager.Action.STATUS, null).getBody().get("status"));
-        time.wall -= 400_000;
         ObjectNode challenge = JSON.valueToTree(run(LicenseManager.Action.CLOCK_CHALLENGE, null)
                 .getBody().get("challenge"));
         String repairId = UUID.randomUUID().toString();

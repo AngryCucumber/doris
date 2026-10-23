@@ -9,6 +9,7 @@ package org.apache.doris.massdb.license;
 
 import org.apache.doris.catalog.Env;
 import org.apache.doris.common.Config;
+import org.apache.doris.ha.BDBHA;
 import org.apache.doris.ha.FrontendNodeType;
 import org.apache.doris.system.Backend;
 import org.apache.doris.system.Frontend;
@@ -397,6 +398,87 @@ class LicenseFeCompatibilityTest {
             logger.removeAppender(appender);
             logger.setLevel(originalLevel);
             appender.stop();
+        }
+    }
+
+    @Test
+    void replicationGroupMembersMissingFromTheFrontendsMapAreProbedForTheModule() throws Exception {
+        try (ProbeFixture fixture = new ProbeFixture()) {
+            // Only this FE is registered; the remote one exists just in the replication group because this FE
+            // skipped its ADD FRONTEND. It must still prove the module before initialization.
+            Mockito.when(fixture.env.getFrontends(null)).thenReturn(Collections.singletonList(member()));
+            Assertions.assertTrue(LicenseFeCompatibility.unregisteredGroupMembers(fixture.env,
+                    Collections.singletonList(member())).isEmpty(), "No BDBJE group without HA");
+            BDBHA ha = Mockito.mock(BDBHA.class);
+            Mockito.when(fixture.env.getHaProtocol()).thenReturn(ha);
+            Mockito.when(ha.getElectableNodes(true)).thenReturn(Arrays.asList(
+                    new InetSocketAddress("127.0.0.2", 9010), new InetSocketAddress("127.0.0.1", 9110)));
+            Mockito.when(ha.getObserverNodes()).thenReturn(Collections.emptyList());
+            Assertions.assertEquals(Collections.singletonList(new InetSocketAddress("127.0.0.1", 9110)),
+                    LicenseFeCompatibility.unregisteredGroupMembers(fixture.env, Collections.singletonList(member())));
+            Assertions.assertTrue(fixture.check(new LicenseFeCompatibility.DiagnosticLimiter()));
+            fixture.capability.put("module", "other");
+            fixture.respond(200, fixture.capability.toString());
+            try (LogCapture logs = new LogCapture()) {
+                Assertions.assertFalse(fixture.check(new LicenseFeCompatibility.DiagnosticLimiter()));
+                String message = logs.nextMessage();
+                Assertions.assertTrue(message.contains("reason=CAPABILITY_MISMATCH"), message);
+                Assertions.assertTrue(message.contains("field=module"), message);
+            }
+            fixture.respond(503, "{}");
+            try (LogCapture logs = new LogCapture()) {
+                Assertions.assertFalse(fixture.check(new LicenseFeCompatibility.DiagnosticLimiter()));
+                Assertions.assertTrue(logs.nextMessage().contains("reason=HTTP_STATUS"));
+            }
+        }
+    }
+
+    @Test
+    void peerVerdictNeedsAMajorityOfAtLeastThreeFrontends() {
+        Assertions.assertEquals(LicenseClock.PeerVerdict.UNKNOWN,
+                LicenseFeCompatibility.peerVerdict(1000, Collections.emptyList(), 10));
+        Assertions.assertEquals(LicenseClock.PeerVerdict.UNKNOWN,
+                LicenseFeCompatibility.peerVerdict(1000, Collections.singletonList(1001L), 10));
+        Assertions.assertEquals(LicenseClock.PeerVerdict.AGREE,
+                LicenseFeCompatibility.peerVerdict(1000, Arrays.asList(1001L, 999L), 10));
+        Assertions.assertEquals(LicenseClock.PeerVerdict.AGREE,
+                LicenseFeCompatibility.peerVerdict(1000, Arrays.asList(1010L, 5000L), 10));
+        Assertions.assertEquals(LicenseClock.PeerVerdict.OUTLIER,
+                LicenseFeCompatibility.peerVerdict(1000, Arrays.asList(5000L, 5005L), 10));
+        Assertions.assertEquals(LicenseClock.PeerVerdict.UNKNOWN,
+                LicenseFeCompatibility.peerVerdict(1000, Arrays.asList(5000L, 9000L), 10),
+                "Peers that disagree among themselves prove nothing");
+        Assertions.assertEquals(LicenseClock.PeerVerdict.UNKNOWN,
+                LicenseFeCompatibility.peerVerdict(1000, Arrays.asList(1001L, 5000L, 5001L), 10));
+    }
+
+    @Test
+    void peerClockVerdictComparesTheMasterWithTheOtherFrontendsOverTheCapabilityProbe() throws Exception {
+        try (ProbeFixture fixture = new ProbeFixture()) {
+            int port = fixture.server.getAddress().getPort();
+            Frontend remote = new Frontend(FrontendNodeType.FOLLOWER, "remote-fe", "127.0.0.1", 9110);
+            Frontend third = new Frontend(FrontendNodeType.OBSERVER, "third-fe", "127.0.0.1", 9210);
+            Mockito.when(fixture.env.getFrontends(null)).thenReturn(Arrays.asList(member(), remote));
+            long self = System.currentTimeMillis();
+            Assertions.assertEquals(LicenseClock.PeerVerdict.UNKNOWN,
+                    LicenseFeCompatibility.peerClockVerdict(fixture.env, self, 10_000), "Two FEs have no majority");
+            Mockito.when(fixture.env.getFrontends(null)).thenReturn(Arrays.asList(member(), remote, third));
+            Config.massdb_license_fe_management_ports = new String[] {
+                    "127.0.0.1:9110=" + port, "127.0.0.1:9210=" + port};
+            Assertions.assertEquals(LicenseClock.PeerVerdict.UNKNOWN,
+                    LicenseFeCompatibility.peerClockVerdict(fixture.env, self, 10_000),
+                    "FEs that do not report a wall clock do not vote");
+            fixture.capability.put("wall_time_millis", self);
+            fixture.respond(200, fixture.capability.toString());
+            Assertions.assertEquals(LicenseClock.PeerVerdict.AGREE,
+                    LicenseFeCompatibility.peerClockVerdict(fixture.env, self, 10_000));
+            fixture.capability.put("wall_time_millis", self + TimeUnit.HOURS.toMillis(1));
+            fixture.respond(200, fixture.capability.toString());
+            Assertions.assertEquals(LicenseClock.PeerVerdict.OUTLIER,
+                    LicenseFeCompatibility.peerClockVerdict(fixture.env, self, 10_000));
+            fixture.respond(500, "{}");
+            Assertions.assertEquals(LicenseClock.PeerVerdict.UNKNOWN,
+                    LicenseFeCompatibility.peerClockVerdict(fixture.env, self, 10_000));
         }
     }
 

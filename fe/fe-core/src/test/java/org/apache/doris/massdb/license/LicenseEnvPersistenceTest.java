@@ -143,18 +143,21 @@ class LicenseEnvPersistenceTest {
     }
 
     @Test
-    void recoveryIncompleteSurvivesCheckpointAndImageReload() throws Exception {
-        Env incomplete = new Env(true);
-        incomplete.getLicenseManager().replay(initial());
-        incomplete.markLicenseRecoveryIncomplete();
-        byte[] saved = module(incomplete);
-        Assertions.assertTrue(saved[0] != 0);
+    void legacyIncompleteFlagInAnImageIsIgnoredAndNeverWrittenBack() throws Exception {
+        Env source = new Env(true);
+        source.getLicenseManager().replay(initial());
+        byte[] saved = module(source);
+        Assertions.assertEquals(0, saved[0]);
+        // An FE released before 2026-10-23 wrote true after a skipped journal; the record is complete on its own.
+        saved[0] = 1;
         Env recovered = new Env(true);
         MetaReader.read(image(FeMetaVersion.VERSION_MASSDB_LICENSE_V1, saved, true), recovered);
         recovered.getLicenseManager().onReplayComplete();
-        Assertions.assertEquals(LicenseQueryStatus.LICENSE_NOT_READY,
+        Assertions.assertNotEquals(LicenseQueryStatus.LICENSE_NOT_READY,
                 recovered.getLicenseManager().getSnapshot().queryStatus(System.currentTimeMillis() / 1000));
-        Assertions.assertTrue(module(recovered)[0] != 0);
+        Assertions.assertEquals(1, recovered.getLicenseManager().getAppliedVersion());
+        Assertions.assertEquals(1, recovered.getLicenseManager().getReplayGapCount());
+        Assertions.assertEquals(0, module(recovered)[0]);
     }
 
     @Test
@@ -169,7 +172,7 @@ class LicenseEnvPersistenceTest {
     }
 
     @Test
-    void unknownLicenseAndMembershipForceSkipsStillInvalidateLicenseRecovery() throws Exception {
+    void unknownLicenseAndMembershipForceSkipsRecordAGapWithoutMarkingTheImage() throws Exception {
         for (Short opcode : new Short[] {null, OperationType.OP_LOCAL_EOF, Short.MAX_VALUE,
                 OperationType.OP_MASSDB_LICENSE_INITIALIZE, OperationType.OP_MASSDB_LICENSE_ACCEPT,
                 OperationType.OP_MASSDB_LICENSE_BASE_CAPACITY, OperationType.OP_MASSDB_LICENSE_WATERMARK,
@@ -180,12 +183,16 @@ class LicenseEnvPersistenceTest {
                 OperationType.OP_REMOVE_FRONTEND}) {
             Env recovered = skipping(opcode);
             recovered.replayJournal(1);
-            Assertions.assertTrue(module(recovered)[0] != 0, String.valueOf(opcode));
+            Assertions.assertEquals(0, module(recovered)[0], String.valueOf(opcode));
+            Assertions.assertEquals(1, recovered.getLicenseManager().getReplayGapCount(), String.valueOf(opcode));
+            Assertions.assertEquals(1, recovered.getLicenseManager().getAppliedVersion(), String.valueOf(opcode));
+            Assertions.assertNotEquals(LicenseQueryStatus.LICENSE_NOT_READY, recovered.getLicenseManager()
+                    .getSnapshot().queryStatus(System.currentTimeMillis() / 1000), String.valueOf(opcode));
         }
     }
 
     @Test
-    void explicitlySkippedMembershipReplayErrorsStillInvalidateLicenseRecovery() throws Exception {
+    void explicitlySkippedMembershipReplayErrorsRecordAGapOnly() throws Exception {
         short[] previous = Config.skip_operation_types_on_replay_exception;
         short[] members = {OperationType.OP_ADD_BACKEND, OperationType.OP_DROP_BACKEND,
                 OperationType.OP_MODIFY_BACKEND, OperationType.OP_BACKEND_STATE_CHANGE,
@@ -200,7 +207,8 @@ class LicenseEnvPersistenceTest {
                 malformed.setOpCode(opcode);
                 malformed.setData(new Text("Invalid member payload"));
                 EditLog.loadJournal(recovered, 1L, malformed);
-                Assertions.assertTrue(module(recovered)[0] != 0, String.valueOf(opcode));
+                Assertions.assertEquals(0, module(recovered)[0], String.valueOf(opcode));
+                Assertions.assertEquals(1, recovered.getLicenseManager().getReplayGapCount(), String.valueOf(opcode));
             }
             Config.skip_operation_types_on_replay_exception = new short[] {OperationType.OP_SAVE_NEXTID};
             Env ordinary = new Env(true);
@@ -210,17 +218,18 @@ class LicenseEnvPersistenceTest {
             malformed.setData(new Text("Invalid numeric ID"));
             EditLog.loadJournal(ordinary, 1L, malformed);
             Assertions.assertEquals(0, module(ordinary)[0]);
+            Assertions.assertEquals(0, ordinary.getLicenseManager().getReplayGapCount());
         } finally {
             Config.skip_operation_types_on_replay_exception = previous;
         }
     }
 
     @Test
-    void ordinaryForceSkipCannotClearAnEarlierIncompleteRecovery() throws Exception {
+    void ordinaryForceSkipRecordsNoGapAndACursorWithoutProbeReportsNoOperation() throws Exception {
         Env recovered = skipping(OperationType.OP_TIMESTAMP);
-        recovered.markLicenseRecoveryIncomplete();
         recovered.replayJournal(1);
-        Assertions.assertTrue(module(recovered)[0] != 0);
+        Assertions.assertEquals(0, module(recovered)[0]);
+        Assertions.assertEquals(0, recovered.getLicenseManager().getReplayGapCount());
         Assertions.assertNull(new JournalCursor() {
             @Override
             public Pair<Long, JournalEntity> next() {
@@ -305,13 +314,15 @@ class LicenseEnvPersistenceTest {
     }
 
     @Test
-    void completedPromotionReplayRetainsActualSkippedLicenseDamage() throws Exception {
+    void completedPromotionReplayReportsASkippedLicenseRecordAsAGap() throws Exception {
         Env recovered = skipping(OperationType.OP_MASSDB_LICENSE_WATERMARK);
         Mockito.when(recovered.getEditLog().getMaxJournalId()).thenReturn(1L);
 
         Assertions.assertFalse(Deencapsulation.<Boolean>invoke(recovered, "replayJournalsBeforeMaster"));
         Assertions.assertEquals(1, recovered.getReplayedJournalId());
-        Assertions.assertTrue(module(recovered)[0] != 0);
+        Assertions.assertEquals(0, module(recovered)[0]);
+        Assertions.assertEquals(1, recovered.getLicenseManager().getReplayGapCount());
+        Assertions.assertEquals("FORCE_SKIP_JOURNAL_ID", recovered.getLicenseManager().getReplayGaps().get(0).kind);
     }
 
     @Test

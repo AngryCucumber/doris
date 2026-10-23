@@ -621,6 +621,7 @@ supportedCancelStatement
 supportedAdminStatement
     : ADMIN operation=(IMPORT | VALIDATE) LICENSE certificate=STRING_LITERAL        #adminLicenseCertificate
     | ADMIN LICENSE CLOCK CHALLENGE                                                #adminLicenseClockChallenge
+    | ADMIN CONFIRM LICENSE CLOCK                                                  #adminLicenseClockConfirm
     | ADMIN REPAIR LICENSE CLOCK certificate=STRING_LITERAL                         #adminLicenseClockRepair
     | ADMIN SHOW REPLICA DISTRIBUTION FROM baseTableRef                             #adminShowReplicaDistribution
     | ADMIN REBALANCE DISK (ON LEFT_PAREN backends+=STRING_LITERAL
@@ -1951,7 +1952,7 @@ number
 // TODO: need to stay consistent with the legacy
 nonReserved
 //--DEFAULT-NON-RESERVED-START
-    : LICENSE | IMPORT | VALIDATE | DEPLOYMENT | CLOCK | CHALLENGE
+    : LICENSE | IMPORT | VALIDATE | DEPLOYMENT | CLOCK | CHALLENGE | CONFIRM
     | ACTIONS
     | AFTER
     | AGG_STATE

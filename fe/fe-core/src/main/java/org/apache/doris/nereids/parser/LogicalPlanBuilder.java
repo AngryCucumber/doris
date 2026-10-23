@@ -6728,6 +6728,11 @@ public class LogicalPlanBuilder extends DorisParserBaseVisitor<Object> {
     }
 
     @Override
+    public LogicalPlan visitAdminLicenseClockConfirm(DorisParser.AdminLicenseClockConfirmContext ctx) {
+        return new LicenseCommand(Action.CLOCK_CONFIRM, null);
+    }
+
+    @Override
     public LogicalPlan visitShowLicense(DorisParser.ShowLicenseContext ctx) {
         if (ctx.DEPLOYMENT() != null) {
             return new LicenseCommand(Action.DEPLOYMENT, null);

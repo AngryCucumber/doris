@@ -14,9 +14,7 @@ import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
@@ -38,9 +36,11 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Public keys shipped in doris-fe.jar plus optional operator-installed keys; never fetches a
- * certificate-supplied trust root. The built-in manifest has the same bytes as the package's
- * conf/massdb-license-trust.json, which earlier FE versions still read after a downgrade.
+ * Public keys pinned into doris-fe.jar plus optional operator-installed keys; never fetches a
+ * certificate-supplied trust root. The built-in keys are Java constants, so a same-named file placed
+ * ahead of the jar on the classpath cannot replace them. The classpath resource of the same bytes is
+ * kept only as the source of the package's conf/massdb-license-trust.json, which earlier FE versions
+ * still read after a downgrade; a test pins the two together.
  */
 public final class LicenseTrustStore {
     public enum Purpose {
@@ -55,6 +55,10 @@ public final class LicenseTrustStore {
     }
 
     static final String BUILT_IN_RESOURCE = "/massdb/license/builtin-trust.json";
+    static final String BUILT_IN_LICENSE_KID = "self-use-license-20260929";
+    static final String BUILT_IN_LICENSE_SPKI = "MCowBQYDK2VwAyEA296WLuNZLjs6LA9W0zT9v7-GdARgBW6_3tH5S7IiGJM";
+    static final String BUILT_IN_TIME_REPAIR_KID = "self-use-time-repair-20260929";
+    static final String BUILT_IN_TIME_REPAIR_SPKI = "MCowBQYDK2VwAyEAeYQAth424gsdEXXECoWO_l0cbFbazelUYDRZsXv4IPQ";
     private static final byte[] ED25519_PREFIX = {0x30, 0x2a, 0x30, 0x05, 0x06, 0x03,
             0x2b, 0x65, 0x70, 0x03, 0x21, 0x00};
     private static final ObjectMapper JSON = new ObjectMapper(JsonFactory.builder()
@@ -132,23 +136,17 @@ public final class LicenseTrustStore {
         }
     }
 
-    /** The manifest packaged in doris-fe.jar. A missing or malformed resource fails closed, like an absent file. */
+    /** The keys compiled into doris-fe.jar; no classpath lookup, so conf/ cannot shadow them. */
     public static LicenseTrustStore builtIn() throws LicenseException {
-        try (InputStream input = LicenseTrustStore.class.getResourceAsStream(BUILT_IN_RESOURCE)) {
-            if (input == null) {
-                throw invalid();
-            }
-            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-            byte[] chunk = new byte[4096];
-            int count;
-            while (buffer.size() <= 65536
-                    && (count = input.read(chunk, 0, Math.min(chunk.length, 65537 - buffer.size()))) != -1) {
-                buffer.write(chunk, 0, count);
-            }
-            return parse(buffer.toByteArray());
-        } catch (IOException e) {
-            throw invalid();
-        }
+        return parse(builtInManifest());
+    }
+
+    /** The pinned manifest, byte for byte the shipped conf/massdb-license-trust.json. */
+    static byte[] builtInManifest() {
+        return ("{\"keys\":[{\"kid\":\"" + BUILT_IN_LICENSE_KID + "\",\"public_key_spki\":\"" + BUILT_IN_LICENSE_SPKI
+                + "\",\"purpose\":\"license\"},{\"kid\":\"" + BUILT_IN_TIME_REPAIR_KID + "\",\"public_key_spki\":\""
+                + BUILT_IN_TIME_REPAIR_SPKI + "\",\"purpose\":\"time_repair\"}],\"schema_version\":1}")
+                .getBytes(StandardCharsets.UTF_8);
     }
 
     /**

@@ -129,7 +129,7 @@ class LicenseSqlParserTest {
     }
 
     @Test
-    void allEightFrozenCommandsReachTheirSharedAction() {
+    void allNineFrozenCommandsReachTheirSharedAction() {
         Map<String, Action> commands = new LinkedHashMap<>();
         commands.put("SHOW LICENSE", Action.STATUS);
         commands.put("SHOW LICENSE DEPLOYMENT", Action.DEPLOYMENT);
@@ -138,6 +138,7 @@ class LicenseSqlParserTest {
         commands.put("SHOW LICENSE IMPORT 'fingerprint'", Action.IMPORT_RECEIPT);
         commands.put("ADMIN LICENSE CLOCK CHALLENGE", Action.CLOCK_CHALLENGE);
         commands.put("ADMIN REPAIR LICENSE CLOCK 'a.b.c'", Action.CLOCK_REPAIR);
+        commands.put("ADMIN CONFIRM LICENSE CLOCK", Action.CLOCK_CONFIRM);
         commands.put("SHOW LICENSE CLOCK REPAIR 'repair-id'", Action.CLOCK_REPAIR_RECEIPT);
         commands.forEach((sql, action) -> {
             LicenseCommand command = (LicenseCommand) new NereidsParser().parseSingle(sql);

@@ -931,9 +931,12 @@ public class Env {
         return licenseLeadership;
     }
 
-    public void markLicenseRecoveryIncomplete() {
-        licenseImageFormatRequired = true;
-        licenseManager.markRecoveryIncomplete();
+    /**
+     * A journal this FE did not apply. License records are full snapshots, so the next one closes the gap; this
+     * only records diagnostics and never changes the image format or stops protected reads.
+     */
+    public void recordLicenseReplayGap(long journalId, short opCode, String kind) {
+        licenseManager.recordReplayGap(journalId, opCode, kind);
     }
 
     public BrokerMgr getBrokerMgr() {
@@ -2300,7 +2303,7 @@ public class Env {
 
     public void completeLicenseImageRecovery() {
         if (licenseImageFormatRequired && !licenseImageModuleLoaded) {
-            markLicenseRecoveryIncomplete();
+            recordLicenseReplayGap(-1, (short) -1, "IMAGE_MODULE_MISSING");
         }
     }
 
@@ -3184,12 +3187,14 @@ public class Env {
             if (entity == null) {
                 if (logId != null && forceSkipJournalIds.contains(String.valueOf(logId))) {
                     Short skippedOperation = cursor.getSkippedOperation(logId);
-                    // Only recognized non-license, non-membership records are independent of license recovery.
-                    // Missing member facts can undercount quotas or omit a FE from compatibility checks.
+                    // Only recognized non-license, non-membership records are independent of license facts.
+                    // A skipped member fact can undercount members until this FE is rebuilt from an image; the
+                    // gap is reported on the status page, the next license record supersedes the skipped one.
                     if (skippedOperation == null || skippedOperation < 0
                             || OperationType.isMassdbLicenseRecoveryRelevant(skippedOperation)
                             || !OperationType.getOpName(skippedOperation).startsWith("OP_")) {
-                        markLicenseRecoveryIncomplete();
+                        recordLicenseReplayGap(logId, skippedOperation == null ? (short) -1 : skippedOperation,
+                                "FORCE_SKIP_JOURNAL_ID");
                     }
                     replayedJournalId.incrementAndGet();
                     String msg = "journal " + replayedJournalId + " has skipped by config force_skip_journal_id";

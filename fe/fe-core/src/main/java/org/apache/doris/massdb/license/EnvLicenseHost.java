@@ -61,4 +61,9 @@ public final class EnvLicenseHost implements LicenseManager.Host {
     public Map<String, Object> localCapability(String trustDigest) {
         return LicenseFeCompatibility.localCapability(env, trustDigest);
     }
+
+    @Override
+    public LicenseClock.PeerVerdict peerClockVerdict(long selfWallMillis, long toleranceMillis) {
+        return LicenseFeCompatibility.peerClockVerdict(env, selfWallMillis, toleranceMillis);
+    }
 }

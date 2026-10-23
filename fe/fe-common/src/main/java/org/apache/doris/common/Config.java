@@ -48,6 +48,36 @@ public class Config extends ConfigBase {
                     + "follows enable_https. Takes effect after restart."})
     public static String[] massdb_license_fe_management_ports = {};
 
+    @ConfField(description = {"授权时间水位的持久化间隔（秒），范围 60 到 3600；只影响重启后可信时间最多回退的幅度，"
+            + "不影响防回拨强度。重启生效",
+            "Interval in seconds between persisted license clock watermarks, 60 to 3600. It only bounds how far the "
+                    + "trusted time can fall back after a restart; it does not weaken rollback protection. "
+                    + "Takes effect after restart."})
+    public static int massdb_license_watermark_interval_seconds = 600;
+
+    @ConfField(description = {"进程内墙钟回拨相对已确认可信时间的告警容差（秒），默认 12 小时。可信时间按单调时钟推进，"
+            + "该容差不参与可信时间计算；超过它进入可疑状态，墙钟回到容差内自动解除。重启生效",
+            "In-process tolerance in seconds for a wall clock behind the confirmed trusted time, 12 hours by "
+                    + "default. The trusted time follows the monotonic clock, so this is an alarm threshold only; "
+                    + "beyond it the clock is suspect until the wall clock returns within tolerance. "
+                    + "Takes effect after restart."})
+    public static long massdb_license_clock_rollback_tolerance_seconds = 43200;
+
+    @ConfField(description = {"启动锚点与回放水位相对墙钟的容差（秒），默认 5 分钟，上限 1 小时。它限制停机后把墙钟设回"
+            + "停机前再启动能跳过的时长，不能与进程内容差一起放宽。重启生效",
+            "Tolerance in seconds for the startup anchor and replayed watermarks ahead of the wall clock, 5 minutes "
+                    + "by default and at most 1 hour. It bounds how much downtime a wall clock reset to the "
+                    + "pre-shutdown value can skip, so it must stay small. Takes effect after restart."})
+    public static long massdb_license_clock_startup_tolerance_seconds = 300;
+
+    @ConfField(description = {"启动稳定期（秒），默认 10 分钟，上限 1 小时。期间墙钟高于水位的部分只作未确认进度，"
+            + "水位只写已确认下界，回拨可疑只告警不拒绝；NTP 在此期间校正开机错误的时钟不留痕迹。重启生效",
+            "Startup settling period in seconds, 10 minutes by default and at most 1 hour. Wall clock progress above "
+                    + "the watermark stays unconfirmed, watermarks record only the confirmed lower bound and a "
+                    + "rollback suspicion only warns, so an NTP correction of a wrong boot clock within this period "
+                    + "leaves no trace. Takes effect after restart."})
+    public static long massdb_license_clock_settling_seconds = 600;
+
     @ConfField(description = {"fe.log 和 fe.audit.log 的最大文件大小。超过这个大小后，日志文件会被切分",
             "The maximum file size of fe.log and fe.audit.log. After exceeding this size, the log file will be split"})
     public static int log_roll_size_mb = 1024; // 1 GB

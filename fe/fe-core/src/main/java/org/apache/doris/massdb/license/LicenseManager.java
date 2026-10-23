@@ -7,6 +7,7 @@
 
 package org.apache.doris.massdb.license;
 
+import org.apache.doris.common.Config;
 import org.apache.doris.common.DdlException;
 import org.apache.doris.common.ErrorCode;
 
@@ -48,7 +49,7 @@ public final class LicenseManager implements AutoCloseable {
 
     public enum Action {
         STATUS, DEPLOYMENT, VALIDATE, IMPORT, IMPORT_RECEIPT,
-        CLOCK_CHALLENGE, CLOCK_REPAIR, CLOCK_REPAIR_RECEIPT
+        CLOCK_CHALLENGE, CLOCK_REPAIR, CLOCK_REPAIR_RECEIPT, CLOCK_CONFIRM
     }
 
     /** The existing FE journal and leadership remain the authority for durable writes. */
@@ -69,6 +70,11 @@ public final class LicenseManager implements AutoCloseable {
         String trustStorePath();
 
         Map<String, Object> localCapability(String trustDigest);
+
+        /** What the other FEs' wall clocks say about ours; UNKNOWN without a majority to compare with. */
+        default LicenseClock.PeerVerdict peerClockVerdict(long selfWallMillis, long toleranceMillis) {
+            return LicenseClock.PeerVerdict.UNKNOWN;
+        }
     }
 
     public static final class Membership {
@@ -93,9 +99,44 @@ public final class LicenseManager implements AutoCloseable {
 
     private static final UUID UNINITIALIZED = new UUID(0, 0);
     private static final int MAX_RATE_IDENTITIES = 4096;
+    private static final int MAX_REPLAY_GAPS = 32;
+    private static final long MAX_PROBE_BACKOFF_NANOS = TimeUnit.SECONDS.toNanos(60);
+    /** A settled local suspicion must hold this long on the master before it is persisted for the cluster. */
+    static final long SUSPECT_PERSIST_NANOS = TimeUnit.MINUTES.toNanos(5);
+    private static final long PEER_CLOCK_CHECK_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(60);
+
+    /**
+     * A journal this FE did not apply. Every license record is a full snapshot, so the next record closes the gap;
+     * a skipped member operation can at most undercount members until this FE is rebuilt from an image. Recorded
+     * for the status page and logs only, never persisted and never a reason to stop protected reads.
+     */
+    public static final class ReplayGap {
+        public final long journalId;
+        public final short opCode;
+        public final String kind;
+        public final long wallMillis;
+
+        ReplayGap(long journalId, short opCode, String kind, long wallMillis) {
+            this.journalId = journalId;
+            this.opCode = opCode;
+            this.kind = kind;
+            this.wallMillis = wallMillis;
+        }
+
+        Map<String, Object> toMap() {
+            Map<String, Object> value = new LinkedHashMap<>();
+            value.put("journal_id", journalId);
+            value.put("op_code", opCode);
+            value.put("kind", kind);
+            value.put("wall_millis", wallMillis);
+            return value;
+        }
+    }
+
     private final Host host;
     private final boolean checkpoint;
     private final LicenseClock.TimeSource time;
+    private final LicenseClock.Settings clockSettings;
     private final LicenseImportPolicy policy = new LicenseImportPolicy();
     private final ThreadPoolExecutor verification;
     private final ThreadPoolExecutor mutations;
@@ -115,7 +156,6 @@ public final class LicenseManager implements AutoCloseable {
     private volatile String trustDigest;
     private volatile boolean trustLoaded;
     private volatile boolean recoveryComplete;
-    private volatile boolean recoveryIncomplete;
     private volatile boolean invalidSlots;
     private volatile boolean leader;
     private volatile boolean bootstrapEligible;
@@ -126,6 +166,14 @@ public final class LicenseManager implements AutoCloseable {
     private long lastMaintenanceWarningNanos = Long.MIN_VALUE;
     private long lastReportedClockEpoch = -1;
     private boolean lastReportedClockSuspect;
+    private final ArrayDeque<ReplayGap> replayGaps = new ArrayDeque<>();
+    private volatile long replayGapCount;
+    private volatile long ignoredRecordCount;
+    private int probeFailures;
+    private long nextProbeNanos;
+    private long suspectSinceNanos = Long.MIN_VALUE;
+    private long nextPeerClockCheckNanos;
+    private final AtomicBoolean peerClockCheckRunning = new AtomicBoolean();
 
     public LicenseManager(Host host, boolean checkpoint) {
         this(host, checkpoint, LicenseClock.SYSTEM);
@@ -135,10 +183,23 @@ public final class LicenseManager implements AutoCloseable {
         this.host = host;
         this.checkpoint = checkpoint;
         this.time = time;
+        this.clockSettings = clockSettings();
+        nextProbeNanos = time.monotonicNanos();
+        nextPeerClockCheckNanos = nextProbeNanos;
         verification = checkpoint ? null : executor(2, "license-verification");
         mutations = checkpoint ? null : executor(1, "license-commit");
         snapshot = new LicenseSnapshot(UNINITIALIZED, null, null, null, 0, 0,
                 false, false, false, 0, 0);
+    }
+
+    static LicenseClock.Settings clockSettings() {
+        return new LicenseClock.Settings(seconds(Config.massdb_license_clock_rollback_tolerance_seconds),
+                seconds(Config.massdb_license_clock_startup_tolerance_seconds),
+                seconds(Config.massdb_license_clock_settling_seconds));
+    }
+
+    private static long seconds(long value) {
+        return TimeUnit.SECONDS.toMillis(Math.max(0, Math.min(value, LicenseClock.MAX_MILLIS / 1000)));
     }
 
     private static ThreadPoolExecutor executor(int workers, String name) {
@@ -187,7 +248,7 @@ public final class LicenseManager implements AutoCloseable {
             return repairReceipt(payload);
         }
         // Size rejection precedes rate accounting, queue allocation and cryptographic verification.
-        if (action != Action.CLOCK_CHALLENGE) {
+        if (action != Action.CLOCK_CHALLENGE && action != Action.CLOCK_CONFIRM) {
             int maximum = action == Action.CLOCK_REPAIR ? LicenseClockRepairVerifier.MAX_COMPACT_LENGTH
                     : LicenseVerifier.MAX_COMPACT_LENGTH;
             if (payload == null || payload.length() > maximum) {
@@ -235,6 +296,20 @@ public final class LicenseManager implements AutoCloseable {
         }
         if (action == Action.CLOCK_REPAIR) {
             return repair(payload);
+        }
+        if (action == Action.CLOCK_CONFIRM) {
+            return mutate(() -> {
+                requireWritable();
+                long advanceMillis = clock.confirmPending();
+                Map<String, Object> body = response("LICENSE_APPLIED", "APPLIED", null, getAppliedVersion());
+                body.put("confirmed_forward_seconds", advanceMillis / 1000);
+                body.put("trusted_utc", clock.confirmedNowMillis() / 1000);
+                if (advanceMillis > 0) {
+                    LOG.warn("License clock forward correction confirmed by an administrator: forward_seconds={}",
+                            advanceMillis / 1000);
+                }
+                return new LicenseManagementResult(200, body);
+            }, null);
         }
         final String fingerprint;
         final LicenseImportPolicy.Prepared prepared;
@@ -409,6 +484,20 @@ public final class LicenseManager implements AutoCloseable {
             body.put("warnings", evaluation.getWarnings());
             body.put("trusted_utc", seconds);
             body.put("clock_epoch", reading == null ? null : reading.getClockEpoch());
+            LicenseClock.Diagnostics clockDiagnostics = currentClock == null ? null : currentClock.diagnostics();
+            body.put("clock_committed_suspect", currentClock != null && currentClock.isCommittedSuspect());
+            body.put("clock_local_suspect", clockDiagnostics != null && clockDiagnostics.isLocalSuspect());
+            body.put("clock_startup_suspect", clockDiagnostics != null && clockDiagnostics.isStartupSuspect());
+            body.put("clock_settled", clockDiagnostics != null && clockDiagnostics.isSettled());
+            body.put("clock_enforced", currentClock != null && currentClock.isEnforced());
+            body.put("clock_pending_forward_seconds",
+                    clockDiagnostics == null ? 0 : clockDiagnostics.getPendingForwardMillis() / 1000);
+            body.put("clock_pending_age_seconds",
+                    clockDiagnostics == null ? 0 : clockDiagnostics.getPendingAgeMillis() / 1000);
+            body.put("clock_pending_startup", clockDiagnostics != null && clockDiagnostics.isPendingStartup());
+            body.put("clock_peer_verdict",
+                    clockDiagnostics == null ? null : clockDiagnostics.getPeerVerdict().name());
+            body.put("confirmed_utc", currentClock == null ? null : currentClock.confirmedNowMillis() / 1000);
             body.put("registered_fe_nodes", current.getRegisteredFe());
             body.put("registered_be_nodes", current.getRegisteredBe());
             body.put("max_fe_nodes", effective == null ? null : effective.getMaxFeNodes());
@@ -419,6 +508,13 @@ public final class LicenseManager implements AutoCloseable {
             body.put("pending", state == null ? null : details(state.getPending()));
             body.put("highest_sequence", state == null ? 0 : state.getHighestSequence());
             body.put("applied_version", getAppliedVersion());
+            body.put("replay_gaps", replayGapCount);
+            body.put("ignored_records", ignoredRecordCount);
+            List<Map<String, Object>> gaps = new ArrayList<>();
+            for (ReplayGap gap : replayGaps) {
+                gaps.add(gap.toMap());
+            }
+            body.put("recent_replay_gaps", gaps);
         }
         return new LicenseManagementResult(200, body);
     }
@@ -466,12 +562,12 @@ public final class LicenseManager implements AutoCloseable {
     }
 
     private boolean ready() {
-        return recoveryComplete && !recoveryIncomplete && uncertainCommit == null && committedPendingApply == null
+        return recoveryComplete && uncertainCommit == null && committedPendingApply == null
                 && committed != null && trustDigest != null;
     }
 
     private void requireInitialized() throws LicenseManagementException {
-        if (!recoveryComplete || recoveryIncomplete || committed == null || imports == null || repair == null) {
+        if (!recoveryComplete || committed == null || imports == null || repair == null) {
             throw failure("LICENSE_NOT_READY", 503, "NOT_SUBMITTED", null);
         }
     }
@@ -759,7 +855,7 @@ public final class LicenseManager implements AutoCloseable {
 
     /** No state monitor is held across the existing journal's durable acknowledgement. */
     private void persist(LicensePersistRecord next, String fingerprint) throws LicenseManagementException {
-        if (!leader || !host.isMaster() || recoveryIncomplete) {
+        if (!leader || !host.isMaster()) {
             throw failure("LICENSE_NOT_LEADER", 503, "NOT_SUBMITTED", fingerprint);
         }
         try {
@@ -799,20 +895,82 @@ public final class LicenseManager implements AutoCloseable {
         return new LicenseManagementResult(202, body);
     }
 
+    /**
+     * Gap-tolerant replay. Every record is a full snapshot of the license state, so any newer record of the same
+     * deployment supersedes the local state whether or not the versions are contiguous; a gap is only reported.
+     * Older or equal versions, a regressed activation and a changed bootstrap flag are ignored with a warning. An
+     * INITIALIZE record of another deployment is a master that re-initialized after losing every license record;
+     * it is adopted as a reset so this FE does not diverge from the cluster.
+     */
     public synchronized void replay(LicensePersistRecord record) throws IOException {
         loadTrust();
         if (committed != null && record.getVersion() == appliedVersion && record.sameAs(committed)) {
             return;
         }
-        if (committed == null ? record.getVersion() != 1
-                : record.getVersion() != committed.getVersion() + 1
-                    || !record.getDeploymentId().equals(committed.getDeploymentId())
-                    || committed.isActivated() && !record.isActivated()
-                    || record.isBootstrap() != committed.isBootstrap()) {
-            markRecoveryIncomplete();
+        if (committed == null) {
+            apply(record);
             return;
         }
+        if (!record.getDeploymentId().equals(committed.getDeploymentId())) {
+            if (record.getOperation() != LicensePersistRecord.INITIALIZE) {
+                ignoreRecord(record, "FOREIGN_DEPLOYMENT");
+                return;
+            }
+            LOG.warn("License deployment was re-initialized by the master; replacing the local license state: "
+                    + "previous_version={}, record_version={}", appliedVersion, record.getVersion());
+            recordReplayGap(-1, (short) -1, "DEPLOYMENT_RESET");
+            clock = null;
+            repair = null;
+            verifiedState = null;
+            apply(record);
+            return;
+        }
+        if (record.getVersion() <= committed.getVersion()) {
+            ignoreRecord(record, "STALE_VERSION");
+            return;
+        }
+        if (committed.isActivated() && !record.isActivated()) {
+            ignoreRecord(record, "ACTIVATION_REGRESSED");
+            return;
+        }
+        if (record.isBootstrap() != committed.isBootstrap()) {
+            ignoreRecord(record, "BOOTSTRAP_CHANGED");
+            return;
+        }
+        if (record.getVersion() != committed.getVersion() + 1) {
+            recordReplayGap(-1, (short) -1, "RECORD_VERSION_GAP");
+        }
         apply(record);
+    }
+
+    private void ignoreRecord(LicensePersistRecord record, String reason) {
+        ignoredRecordCount++;
+        LOG.warn("Ignoring a license record during replay: reason={}, record_version={}, operation={}, "
+                + "applied_version={}", reason, record.getVersion(), record.getOperation(), appliedVersion);
+    }
+
+    /** Diagnostics for a journal this FE did not apply; no flag, no persistence, no effect on admission. */
+    public synchronized void recordReplayGap(long journalId, short opCode, String kind) {
+        replayGapCount++;
+        if (replayGaps.size() >= MAX_REPLAY_GAPS) {
+            replayGaps.removeFirst();
+        }
+        replayGaps.addLast(new ReplayGap(journalId, opCode, kind, time.wallTimeMillis()));
+        LOG.warn("License replay gap: kind={}, journal_id={}, op_code={}, applied_version={}; later records "
+                + "supersede the gap, rebuild this FE from an image if member facts may be missing",
+                kind, journalId, opCode, appliedVersion);
+    }
+
+    public synchronized List<ReplayGap> getReplayGaps() {
+        return new ArrayList<>(replayGaps);
+    }
+
+    public long getReplayGapCount() {
+        return replayGapCount;
+    }
+
+    public long getIgnoredRecordCount() {
+        return ignoredRecordCount;
     }
 
     private void apply(LicensePersistRecord record) throws IOException {
@@ -820,11 +978,15 @@ public final class LicenseManager implements AutoCloseable {
         LicenseClockRepair.State clockState = record.clockState();
         // Prepare all fallible metadata/snapshot work before replacing any published facts.
         Membership members = host.membership();
-        boolean complete = recoveryComplete && !recoveryIncomplete && record.isComplete() && trustDigest != null
+        boolean complete = recoveryComplete && trustDigest != null
                 && (uncertainCommit == null || record.sameAs(uncertainCommit))
                 && (committedPendingApply == null || record.sameAs(committedPendingApply));
         LicenseSnapshot replacement = snapshot(restored.imports, members, complete, restored.invalidSlots);
-        LicenseClock nextClock = clock == null ? new LicenseClock(clockState.getFacts(), time) : clock;
+        LicenseClock nextClock = clock;
+        if (nextClock == null) {
+            nextClock = new LicenseClock(clockState.getFacts(), time, clockSettings);
+            nextClock.setEnforced(leader && host.isMaster());
+        }
         LicenseClockRepair nextRepair = repair;
         if (!checkpoint && nextRepair == null) {
             nextRepair = new LicenseClockRepair(record.getDeploymentId(), nextClock, repairVerifier, new ClockStore());
@@ -832,23 +994,21 @@ public final class LicenseManager implements AutoCloseable {
                 nextRepair.beginLeadership();
             }
         }
-        if (clock != null) {
-            try {
-                nextClock.applyCommitted(clockState.getFacts());
-            } catch (IllegalArgumentException e) {
-                throw new IOException("Inconsistent committed license clock");
-            }
+        if (clock != null && !nextClock.applyCommitted(clockState.getFacts())
+                && clockState.getFacts().getVersion() > nextClock.getCommittedFacts().getVersion()) {
+            // A degraded master wrote facts behind this FE's clock; keep the local maximum, the next watermark
+            // from a healthy master realigns the record.
+            LOG.warn("Ignoring regressed license clock facts: record_version={}, record_epoch={}, local_epoch={}",
+                    record.getVersion(), clockState.getFacts().getClockEpoch(), nextClock.getClockEpoch());
         }
-        if (record.isClockSuspect()) {
-            nextClock.restoreSuspect();
-        }
+        nextClock.setCommittedSuspect(record.isClockSuspect());
         clock = nextClock;
         repair = nextRepair;
         imports = restored.imports;
         invalidSlots = restored.invalidSlots;
         committed = record;
         if (!record.isComplete()) {
-            recoveryIncomplete = true;
+            LOG.warn("License record {} carries the legacy incomplete flag; ignored", record.getVersion());
         }
         if (record.sameAs(uncertainCommit)) {
             uncertainCommit = null;
@@ -961,23 +1121,22 @@ public final class LicenseManager implements AutoCloseable {
 
     public synchronized void loadImage(DataInput input) throws IOException {
         loadTrust();
-        recoveryIncomplete |= input.readBoolean();
+        if (input.readBoolean()) {
+            // Written by FEs before 2026-10-23 after a skipped journal. The record below is complete on its own.
+            recordReplayGap(-1, (short) -1, "LEGACY_IMAGE_FLAG");
+        }
         if (input.readBoolean()) {
             apply(LicensePersistRecord.read(input));
         }
     }
 
     public synchronized void saveImage(DataOutput output) throws IOException {
-        output.writeBoolean(recoveryIncomplete);
+        // The module keeps its shape; the boolean is always false and earlier FEs that read true only mark themselves.
+        output.writeBoolean(false);
         output.writeBoolean(committed != null);
         if (committed != null) {
             committed.write(output);
         }
-    }
-
-    public synchronized void markRecoveryIncomplete() {
-        recoveryIncomplete = true;
-        publishUnavailable();
     }
 
     public void onReplayComplete() {
@@ -1009,6 +1168,10 @@ public final class LicenseManager implements AutoCloseable {
         if (repair != null) {
             repair.beginLeadership();
         }
+        LicenseClock current = clock;
+        if (current != null) {
+            current.setEnforced(host.isMaster());
+        }
         queueMaintenance();
     }
 
@@ -1017,6 +1180,11 @@ public final class LicenseManager implements AutoCloseable {
         leader = false;
         if (repair != null) {
             repair.endLeadership();
+        }
+        LicenseClock current = clock;
+        if (current != null) {
+            // A follower's wall clock never enters the trusted time; its suspicion is reported, not enforced.
+            current.setEnforced(false);
         }
     }
 
@@ -1031,7 +1199,7 @@ public final class LicenseManager implements AutoCloseable {
         if (checkpoint || closed || !maintenancePending.compareAndSet(false, true)) {
             return;
         }
-        if (needsInitialization()) {
+        if (needsInitialization() && probeDue()) {
             try {
                 // All-FE HTTP probes may take seconds. Never occupy the durable member/import queue with them.
                 verification.execute(() -> {
@@ -1039,10 +1207,12 @@ public final class LicenseManager implements AutoCloseable {
                     try {
                         proof = probeInitialization();
                     } catch (RuntimeException e) {
+                        recordProbeOutcome(false);
                         warnMaintenance(e);
                         maintenancePending.set(false);
                         return;
                     }
+                    recordProbeOutcome(proof != null);
                     enqueueMaintenance(proof);
                 });
             } catch (RejectedExecutionException e) {
@@ -1051,6 +1221,22 @@ public final class LicenseManager implements AutoCloseable {
         } else {
             enqueueMaintenance(null);
         }
+    }
+
+    /** A failed all-FE probe (an FE offline or on an older package) backs off exponentially up to one minute. */
+    private synchronized boolean probeDue() {
+        return time.monotonicNanos() - nextProbeNanos >= 0;
+    }
+
+    private synchronized void recordProbeOutcome(boolean success) {
+        long now = time.monotonicNanos();
+        if (success) {
+            probeFailures = 0;
+            nextProbeNanos = now;
+            return;
+        }
+        probeFailures = Math.min(probeFailures + 1, 6);
+        nextProbeNanos = now + Math.min(MAX_PROBE_BACKOFF_NANOS, TimeUnit.SECONDS.toNanos(1L << probeFailures));
     }
 
     private void enqueueMaintenance(InitializationProof proof) {
@@ -1069,7 +1255,7 @@ public final class LicenseManager implements AutoCloseable {
 
     private boolean needsInitialization() {
         return !closed && committed == null && uncertainCommit == null && committedPendingApply == null
-                && leader && host.isMaster() && !recoveryIncomplete;
+                && leader && host.isMaster();
     }
 
     private InitializationProof probeInitialization() {
@@ -1099,7 +1285,8 @@ public final class LicenseManager implements AutoCloseable {
         try {
             publish();
             reportClockState();
-            if (!leader || !host.isMaster() || recoveryIncomplete || uncertainCommit != null) {
+            observeClock();
+            if (!leader || !host.isMaster() || uncertainCommit != null) {
                 return;
             }
             if (committedPendingApply != null) {
@@ -1119,20 +1306,113 @@ public final class LicenseManager implements AutoCloseable {
                 }
                 persist(LicensePersistRecord.initial(UUID.randomUUID(), bootstrapEligible, wall), null);
             }
-            if (clock.isSuspect() && !committed.isClockSuspect()) {
-                persist(committed.withClockSuspect(), null);
-            }
-            if (ready() && !clock.isSuspect()) {
-                LicenseImportPolicy.Prepared prepared = policy.prepareBaseActivation(imports, context());
-                if (prepared.requiresPersistence()) {
-                    persist(committed.withImports(LicensePersistRecord.BASE, prepared.getToPersist(), false), null);
+            persistClockSuspicion();
+            if (ready()) {
+                if (!clock.isSuspect()) {
+                    LicenseImportPolicy.Prepared prepared = policy.prepareBaseActivation(imports, context());
+                    if (prepared.requiresPersistence()) {
+                        persist(committed.withImports(LicensePersistRecord.BASE, prepared.getToPersist(), false),
+                                null);
+                    }
                 }
-                repair.checkpoint(60_000);
+                // Only confirmed time is written, so the watermark flows in every state, suspect included;
+                // stopping it would let a cluster that restarts every few minutes freeze its trusted time.
+                repair.checkpoint(watermarkIntervalMillis());
             }
         } catch (LicenseManagementException | LicenseException | LicenseRepairException | IOException e) {
             // Never log a certificate/provider message. Retry only from the current committed facts.
             warnMaintenance(e);
         }
+    }
+
+    /**
+     * The master persists its own suspicion only after it has held for a while past the settling period and
+     * the other FEs do not say this master is the outlier; it clears the persisted flag as soon as its wall
+     * clock is back within tolerance. Followers never persist.
+     */
+    private void persistClockSuspicion() throws LicenseManagementException, IOException {
+        long now = time.monotonicNanos();
+        boolean local = clock.isLocalSuspect() && clock.settled();
+        if (!local) {
+            suspectSinceNanos = Long.MIN_VALUE;
+            if (committed.isClockSuspect()) {
+                LOG.info("License clock is back within tolerance; clearing the persisted suspicion");
+                persist(committed.withClockCleared(), null);
+            }
+            return;
+        }
+        if (suspectSinceNanos == Long.MIN_VALUE) {
+            suspectSinceNanos = now;
+            return;
+        }
+        if (now - suspectSinceNanos >= SUSPECT_PERSIST_NANOS && !committed.isClockSuspect()
+                && clock.getPeerVerdict() != LicenseClock.PeerVerdict.OUTLIER) {
+            persist(committed.withClockSuspect(), null);
+        }
+    }
+
+    /** Track the pending forward correction and, on the master, ask the other FEs about our wall clock. */
+    private void observeClock() {
+        LicenseClock current = clock;
+        if (current == null) {
+            return;
+        }
+        LicenseClock.Event event = current.observe();
+        LicenseClock.Diagnostics diagnostics = current.diagnostics();
+        switch (event) {
+            case FORWARD_PENDING:
+                LOG.warn("License clock observed a forward wall-clock correction of {} s; it is pending "
+                        + "confirmation and does not change the trusted time yet",
+                        diagnostics.getPendingForwardMillis() / 1000);
+                break;
+            case FORWARD_CONFIRMED:
+                LOG.warn("License clock confirmed a forward wall-clock correction; trusted time advanced");
+                break;
+            case FORWARD_DISCARDED:
+                LOG.info("License clock discarded a forward wall-clock correction that was taken back");
+                break;
+            default:
+                break;
+        }
+        boolean needsVerdict = diagnostics.getPendingForwardMillis() > 0 || diagnostics.isLocalSuspect();
+        if (!needsVerdict) {
+            current.setPeerVerdict(LicenseClock.PeerVerdict.UNKNOWN);
+            return;
+        }
+        if (!leader || !host.isMaster() || closed) {
+            return;
+        }
+        long now = time.monotonicNanos();
+        synchronized (this) {
+            if (now - nextPeerClockCheckNanos < 0 || !peerClockCheckRunning.compareAndSet(false, true)) {
+                return;
+            }
+            nextPeerClockCheckNanos = now + PEER_CLOCK_CHECK_INTERVAL_NANOS;
+        }
+        try {
+            verification.execute(() -> {
+                try {
+                    LicenseClock.PeerVerdict verdict = host.peerClockVerdict(time.wallTimeMillis(),
+                            clockSettings.getRollbackToleranceMillis());
+                    current.setPeerVerdict(verdict);
+                    if (verdict != LicenseClock.PeerVerdict.UNKNOWN) {
+                        LOG.warn("License clock peer check: this master's wall clock is {} with the majority of FEs",
+                                verdict == LicenseClock.PeerVerdict.AGREE ? "consistent" : "an outlier compared");
+                    }
+                } catch (RuntimeException e) {
+                    warnMaintenance(e);
+                } finally {
+                    peerClockCheckRunning.set(false);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            peerClockCheckRunning.set(false);
+        }
+    }
+
+    static long watermarkIntervalMillis() {
+        long seconds = Math.max(60, Math.min(3600, Config.massdb_license_watermark_interval_seconds));
+        return TimeUnit.SECONDS.toMillis(seconds);
     }
 
     /** Observe transitions on the existing background cadence, never log from the query clock. */
@@ -1143,14 +1423,16 @@ public final class LicenseManager implements AutoCloseable {
         }
         current.trustedNowMillis();
         long epoch = current.getClockEpoch();
-        boolean suspect = current.isSuspect();
+        boolean suspect = current.isLocalSuspect() || current.isCommittedSuspect();
         if (epoch == lastReportedClockEpoch && suspect == lastReportedClockSuspect) {
             return;
         }
         if (suspect) {
-            LOG.warn("License clock is CLOCK_SUSPECT: clock_epoch={}, applied_version={}, leader={}; "
-                            + "verify FE time and use the signed clock repair procedure",
-                    epoch, appliedVersion, leader && host.isMaster());
+            LOG.warn("License clock is suspect: clock_epoch={}, applied_version={}, leader={}, committed={}, "
+                            + "enforced={}, settled={}; verify this FE's wall clock, the state clears by itself "
+                            + "once it is back within tolerance",
+                    epoch, appliedVersion, leader && host.isMaster(), current.isCommittedSuspect(),
+                    current.isEnforced(), current.settled());
         } else if (lastReportedClockSuspect) {
             LOG.info("License clock is no longer suspect: clock_epoch={}, applied_version={}", epoch, appliedVersion);
         }

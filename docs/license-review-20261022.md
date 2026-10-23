@@ -62,7 +62,7 @@ Upstream and third-party components retain their respective licenses.
 
 ## 7. 解决方案
 
-本节只是设计，尚未实现；各项验证步骤也未执行。容差、间隔等数值为建议值，需在计划评审时确定。
+本节是设计。批次 1 已于 2026-10-23 在本分支实施，实施与验证情况见文末“批次 1 实施记录”；批次 2、3 仍未实现。容差、间隔等数值在实施时按本文建议值作为默认配置写入。
 
 ### 7.1 总约束：持久化信封不能随意加字段
 
@@ -100,3 +100,17 @@ R3 的 12 小时容差决策说明（2026-10-23，经两轮外部复核修订）
 本轮没有构建、测试或集群运行，也没有新增 `.build-records` 归档。所有判断基于基线源码阅读与三方向独立交叉复核；R1、R2 的 classpath 顺序与合并逻辑、R3 的阈值与持久化路径、R4 的标志写入与读回路径均逐行核对。性能数字（0.3 µs、10 µs、100 µs）是按指令路径推算的量级，不是实测，不能作为验收依据；正常路径的绑定期事实收集与规划末尾一次计划树遍历未计入估算。实施前应补测并给出对照结果：短查询与 SQL 缓存命中的 QPS、CPU、分配/GC 与 p99，MB 级长 SQL 的连接线程耗时，以及 dump 期间 Follower 回放延迟与管理请求延迟；微秒级估算不能替代这些对照。
 
 2026-10-23 的外部复核指出 R3 启动锚点绕过、R4 两条一档方案会引入新故障、v2 发布门控与批次矛盾、RESYNC 不能补齐成员、M1 冻结范围不足、性能表述过强，以及“已无健康 FE”过于绝对；已据此修订第 2、4、5、6、7 节。同日第二轮复核指出上一轮的启动待确认可被反复重启重置、M1 混合镜像的 FE 角色重放退出与库表锁阻塞、RESYNC 缺少跨越丢失历史的版本规则、checkpoint 边界未必覆盖 RESYNC，以及第 28 行措辞；已据此再次修订第 2、3、7 节，撤回 M1 的 Follower 方案并拆分两个时钟容差。同日第三轮复核指出恢复代次未覆盖时钟内层版本、本机代次加一不保证高于其他 FE、FORCE 与 activated 不回退冲突、挑战持久化缺任期与有效期规则；前三条说明修补链式规则的方向本身不可行，R4 据此改为缺口容忍方案，第四条已补全规则，第 1、2、4、6、7 节同步修订。同日第四轮讨论针对“FE 先启动、NTP 后同步”与单机时钟不一致的场景，为 R3 补充第 8 至 11 项（启动稳定期、可疑期间水位继续、多 FE 墙钟交叉验证、Follower 可疑只告警），修订第 3 项撤回“可疑时停写水位”，第 2、7 节同步修订。
+
+## 批次 1 实施记录（2026-10-23）
+
+按 7.3 批次 1 实施了 R2、R3 第 1 至 6 与 8 至 11 项、R4、轻微项和 M1 手册约束，持久化信封形状不变。改动文件：LicenseTrustStore、LicenseClock（重写）、LicenseManager、LicensePersistRecord、LicenseFeCompatibility、LicenseController、EnvLicenseHost、Env、EditLog、AuditLogHelper、fe-common Config、DorisLexer/DorisParser 语法与 LogicalPlanBuilder（`ADMIN CONFIRM LICENSE CLOCK`）、`conf/fe.conf`、`MODIFICATIONS.md` 与管理手册第 4、5 节。与设计的差异和补充：
+
+- 时钟内层版本与记录版本合一由 `LicensePersistRecord.next()`/`withClock()` 统一写入；初始记录的 `clock.version` 为 1。
+- 回放对其他部署的后续记录只忽略计数，但对其他部署的 INITIALIZE 记录采纳为“Master 重新初始化”，避免 Follower 与重新初始化的 Master 永久分叉；这是 7.2 R4 残余风险的直接后果，写入手册。
+- 可疑判定分为本机（回拨、启动）与已提交两类：本机可疑只在 Master 且稳定期结束后拒绝查询，已提交可疑在所有 FE 拒绝；Master 连续 5 分钟可疑且同伴未判定其为离群值才持久化，墙钟恢复后写 `withClockCleared`。
+- 前跳候选取观察窗口内的最小值，被暂停拉长的一次样本不能单独确认；查询热路径每次读取仍只各采样一次单调时钟和墙钟，共享标志只在变化时写入。
+- 同伴墙钟交叉验证只在 Master 上、存在待确认前跳或本机可疑时每分钟最多一次，在验证线程池执行；少于三台或无多数时为 UNKNOWN。
+- 单调时钟倒退按异常处理：当次读取可疑，且不因此停留在稳定期内。
+- 初始化探测失败后指数退避，上限 60 秒；WATERMARK 间隔可配置，默认 10 分钟。
+
+验证：`mvn test -pl fe-common,fe-core -Dtest='License*Test'` 33 个测试类 369 个用例全部通过，覆盖 7.2 R3、R4 验证栏中可在单测注入时钟源完成的用例（进程内回拨 1 小时不报警、回拨超容差自动解除、启动墙钟慢时稳定期内放行与同步后清除、启动墙钟快被 NTP 校正后不留痕迹、反复重启不冻结可信时间的前提即可疑期间水位继续写、前跳 5 分钟确认与 1 小时接受、ADMIN 确认、同伴 AGREE/OUTLIER、Follower 跳过 WATERMARK/ACCEPT/INTEGRITY 后状态一致且无标志、跳过 ADD BACKEND/ADD FRONTEND 只记缺口、旧版不完整标志被忽略、复制组成员探测、旧 FE 回放新记录所需的版本单调性）。`build-support/check-source-headers.py` 与 `git diff --check` 通过。未做：真实集群的单 FE 改时演练、三 FE 的 FE 先于 chronyd 启动演练、切主后低水位对齐与修复流程演练、性能对照，以及 UI 对新增状态字段的展示；这些留待自用包验证。

@@ -116,6 +116,12 @@ public class LicenseController extends RestBaseController {
         return handle(Action.CLOCK_REPAIR, null, request, response);
     }
 
+    /** Administrator confirmation of a pending forward wall-clock correction on the master. */
+    @PostMapping("/clock/confirm")
+    public ResponseEntity<?> confirmClock(HttpServletRequest request, HttpServletResponse response) {
+        return handle(Action.CLOCK_CONFIRM, null, request, response);
+    }
+
     @GetMapping("/clock/repairs/{repairId}")
     public ResponseEntity<?> repairReceipt(@PathVariable("repairId") String repairId,
             HttpServletRequest request, HttpServletResponse response) {
@@ -329,7 +335,7 @@ public class LicenseController extends RestBaseController {
 
     static String parsePayload(Action action, byte[] body) throws BadLicenseRequest {
         try {
-            if (action == Action.CLOCK_CHALLENGE && body.length == 0) {
+            if ((action == Action.CLOCK_CHALLENGE || action == Action.CLOCK_CONFIRM) && body.length == 0) {
                 return null;
             }
             try (JsonParser parser = JSON.createParser(decodeUtf8(body))) {
@@ -337,7 +343,7 @@ public class LicenseController extends RestBaseController {
                 if (object == null || !object.isObject() || parser.nextToken() != null) {
                     throw new BadLicenseRequest("LICENSE_INVALID_REQUEST");
                 }
-                if (action == Action.CLOCK_CHALLENGE) {
+                if (action == Action.CLOCK_CHALLENGE || action == Action.CLOCK_CONFIRM) {
                     if (!object.isEmpty()) {
                         throw new BadLicenseRequest("LICENSE_INVALID_REQUEST");
                     }
@@ -499,6 +505,8 @@ public class LicenseController extends RestBaseController {
                 return "/api/license/clock/challenge";
             case CLOCK_REPAIR:
                 return "/api/license/clock/repair";
+            case CLOCK_CONFIRM:
+                return "/api/license/clock/confirm";
             case CLOCK_REPAIR_RECEIPT:
                 return "/api/license/clock/repairs/" + payload;
             default:

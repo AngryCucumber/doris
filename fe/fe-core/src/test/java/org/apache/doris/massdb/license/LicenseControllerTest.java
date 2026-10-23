@@ -72,6 +72,10 @@ class LicenseControllerTest {
         Assertions.assertNull(LicenseController.parsePayload(Action.CLOCK_CHALLENGE, bytes("{}")));
         Assertions.assertThrows(LicenseController.BadLicenseRequest.class,
                 () -> LicenseController.parsePayload(Action.CLOCK_CHALLENGE, bytes("{\"x\":1}")));
+        Assertions.assertNull(LicenseController.parsePayload(Action.CLOCK_CONFIRM, new byte[0]));
+        Assertions.assertNull(LicenseController.parsePayload(Action.CLOCK_CONFIRM, bytes("{}")));
+        Assertions.assertThrows(LicenseController.BadLicenseRequest.class,
+                () -> LicenseController.parsePayload(Action.CLOCK_CONFIRM, bytes("{\"x\":1}")));
         Assertions.assertEquals("ticket", LicenseController.parsePayload(Action.CLOCK_REPAIR,
                 bytes("{\"repair_certificate\":\"ticket\"}")));
         Assertions.assertThrows(LicenseController.BadLicenseRequest.class,

@@ -7,6 +7,8 @@
 
 package org.apache.doris.massdb.license;
 
+import org.apache.doris.common.Config;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.logging.log4j.Level;
@@ -81,6 +83,19 @@ class LicenseManagerDiagnosticsTest {
 
     @Test
     void followerClockTransitionsLogOnMaintenanceWithoutQueryLoggingOrJournalWrites() throws Exception {
+        long previousRollback = Config.massdb_license_clock_rollback_tolerance_seconds;
+        long previousSettling = Config.massdb_license_clock_settling_seconds;
+        Config.massdb_license_clock_rollback_tolerance_seconds = 5;
+        Config.massdb_license_clock_settling_seconds = 0;
+        try {
+            followerClockTransitions();
+        } finally {
+            Config.massdb_license_clock_rollback_tolerance_seconds = previousRollback;
+            Config.massdb_license_clock_settling_seconds = previousSettling;
+        }
+    }
+
+    private void followerClockTransitions() throws Exception {
         LicenseManager.Host host = host(validTrust().toString());
         Time time = new Time();
         LicensePersistRecord initial = LicensePersistRecord.initial(UUID.randomUUID(), false, time.wall);
@@ -92,10 +107,13 @@ class LicenseManagerDiagnosticsTest {
             logs.flush();
             Assertions.assertTrue(logs.events.isEmpty());
 
-            time.wall += 300_001;
+            // A follower's wall clock never enters its trusted time: its suspicion is reported, not enforced.
+            time.wall -= 6_000;
             for (int i = 0; i < 100; i++) {
-                Assertions.assertEquals(LicenseQueryStatus.CLOCK_SUSPECT, manager.queryStatus());
+                Assertions.assertEquals(LicenseQueryStatus.MISSING, manager.queryStatus());
             }
+            Assertions.assertEquals(true, manager.execute(LicenseManager.Action.STATUS, null, "admin", true)
+                    .getBody().get("clock_local_suspect"));
             logs.flush();
             Assertions.assertTrue(logs.events.isEmpty(), "Query consumers must not write diagnostic logs");
             for (int i = 0; i < 10; i++) {
@@ -105,7 +123,7 @@ class LicenseManagerDiagnosticsTest {
             Assertions.assertEquals(1, logs.events.size());
             Assertions.assertEquals(Level.WARN, logs.events.get(0).getLevel());
             Assertions.assertTrue(logs.message(0).contains("clock_epoch=0, applied_version=1, leader=false"));
-            Assertions.assertTrue(logs.message(0).contains("CLOCK_SUSPECT"));
+            Assertions.assertTrue(logs.message(0).contains("enforced=false"));
 
             // Exercise the same committed repair-epoch replay path used by a follower after a signed repair.
             LicenseClock.Facts repaired = new LicenseClock.Facts(1, 1, time.wall, 1);

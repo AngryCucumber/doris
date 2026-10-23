@@ -43,7 +43,7 @@ class LicenseClockRepairTest {
         verifier = new LicenseClockRepairVerifier(Collections.singletonMap("repair-1", keys.getPublic()));
         time = new LicenseClockTest.FakeTime(NOW);
         LicenseClock.Facts poisoned = new LicenseClock.Facts(0, 0, 4_070_908_800_000L, 0);
-        clock = new LicenseClock(poisoned, time);
+        clock = new LicenseClock(poisoned, time, LicenseClockTest.STRICT);
         store = new FakeStore(new LicenseClockRepair.State(DEPLOYMENT, poisoned, Collections.emptyMap()));
         manager = new LicenseClockRepair(DEPLOYMENT, clock, verifier, store);
         manager.beginLeadership();
@@ -129,7 +129,7 @@ class LicenseClockRepairTest {
     @Test
     void restartAndLeadershipChangeInvalidateUnconsumedChallenge() throws Exception {
         String ticket = sign(claims(manager.newChallenge()));
-        LicenseClock restored = new LicenseClock(store.state.getFacts(), time);
+        LicenseClock restored = new LicenseClock(store.state.getFacts(), time, LicenseClockTest.STRICT);
         LicenseClockRepair restarted = new LicenseClockRepair(DEPLOYMENT, restored, verifier, store);
         restarted.beginLeadership();
         reject(LicenseRepairException.Code.CHALLENGE_REQUIRED, () -> restarted.prepareRepair(ticket));
@@ -219,7 +219,7 @@ class LicenseClockRepairTest {
         LicenseClockRepair.Receipt receipt = manager.commitRepair(manager.prepareRepair(ticket));
         reject(LicenseRepairException.Code.REPAIR_ALREADY_CONSUMED, () -> manager.prepareRepair(ticket));
         LicenseClockRepair restarted = new LicenseClockRepair(DEPLOYMENT,
-                new LicenseClock(store.state.getFacts(), time), verifier, store);
+                new LicenseClock(store.state.getFacts(), time, LicenseClockTest.STRICT), verifier, store);
         Assertions.assertEquals(receipt.getCommittedVersion(),
                 restarted.confirmRepair(receipt.getRepairId()).getCommittedVersion());
         restarted.beginLeadership();
@@ -230,7 +230,7 @@ class LicenseClockRepairTest {
     @Test
     void periodicCheckpointDoesNotInvalidatePreparedOfflineChallenge() throws Exception {
         LicenseClock.Facts facts = new LicenseClock.Facts(0, 0, NOW, 0);
-        clock = new LicenseClock(facts, time);
+        clock = new LicenseClock(facts, time, LicenseClockTest.STRICT);
         store = new FakeStore(new LicenseClockRepair.State(DEPLOYMENT, facts, Collections.emptyMap()));
         manager = new LicenseClockRepair(DEPLOYMENT, clock, verifier, store);
         manager.beginLeadership();

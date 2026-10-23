@@ -205,7 +205,8 @@ class LicenseSnapshotTest {
     void liveClockOwnsDynamicSuspectWhileLicenseReadinessRemainsASnapshotGate() throws Exception {
         LicenseDocument active = certificate(1, NOW, NOW + 1000, 3, 10, true, DEPLOYMENT);
         ChangingTime time = new ChangingTime(NOW * 1000);
-        LicenseClock clock = new LicenseClock(new LicenseClock.Facts(0, 0, time.wall, 1), time);
+        LicenseClock clock = new LicenseClock(new LicenseClock.Facts(0, 0, time.wall, 1), time,
+                LicenseClockTest.STRICT);
         time.clock = clock;
         LicenseSnapshot previouslySuspect = new LicenseSnapshot(DEPLOYMENT, active, null, active,
                 1, 1, true, true, false, 5, 7);
@@ -214,7 +215,7 @@ class LicenseSnapshotTest {
         Assertions.assertFalse(previouslySuspect.evaluate(clock).getReasons()
                 .contains(LicenseSnapshot.Reason.CLOCK_SUSPECT));
         LicenseSnapshot previouslyHealthy = snapshot(active, null, active, 1, 1);
-        time.wall += LicenseClock.DEFAULT_FORWARD_TOLERANCE_MILLIS + 1;
+        time.wall -= LicenseClockTest.STRICT.getRollbackToleranceMillis() + 1;
         Assertions.assertEquals(LicenseQueryStatus.CLOCK_SUSPECT, previouslyHealthy.queryStatus(clock));
         Assertions.assertTrue(previouslyHealthy.evaluate(clock).getReasons()
                 .contains(LicenseSnapshot.Reason.CLOCK_SUSPECT));
@@ -235,7 +236,8 @@ class LicenseSnapshotTest {
         LicenseDocument active = certificate(1, NOW, NOW + 1000, 3, 10, true, DEPLOYMENT);
         LicenseSnapshot snapshot = snapshot(active, null, active, 1, 1);
         ChangingTime time = new ChangingTime((NOW + 2000) * 1000);
-        LicenseClock clock = new LicenseClock(new LicenseClock.Facts(0, 0, time.wall, 1), time);
+        LicenseClock clock = new LicenseClock(new LicenseClock.Facts(0, 0, time.wall, 1), time,
+                LicenseClockTest.STRICT);
         time.clock = clock;
         time.repairs = 1;
         Assertions.assertTrue(snapshot.queryStatus(clock).permitsNewQuery(),

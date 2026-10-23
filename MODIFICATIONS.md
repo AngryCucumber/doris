@@ -4,6 +4,60 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License gap-tolerant replay, self-healing clock and pinned trust keys (2026-10-23)
+
+Batch 1 of the remediation design in `docs/license-review-20261022.md` (R2, R3 items 1 to 6 and 8 to 11, R4, the
+minor items and the M1 manual constraint). The persisted record shape is unchanged; every earlier licensed FE replays
+the new records.
+
+- `LicenseTrustStore`: the two self-use public keys (kid, purpose, SPKI) are Java constants and `builtIn()` is built
+  from them; a same-named file placed ahead of `doris-fe.jar` on the classpath can no longer replace the built-in
+  trust. The classpath resource stays only as the source of the packaged `conf/massdb-license-trust.json`; a test pins
+  the resource bytes to the constants.
+- `LicenseManager`, `LicensePersistRecord`, `LicenseClock`, `Env`, `EditLog`: gap-tolerant replay. Every license
+  record is a full snapshot, so replay accepts any newer record of the same deployment (bootstrap unchanged,
+  activation never regressing) without requiring contiguous versions; older or equal versions and other deployments'
+  later records are ignored and counted, and another deployment's INITIALIZE is adopted as a master
+  re-initialization. `clock.version` equals the record version (`alignClockVersion`); replicated clock facts apply
+  leniently and never throw into replay, a same-epoch lower watermark only aligns the version, an older epoch or
+  authorization is ignored. Skipped journals (`force_skip_journal_id`, `skip_operation_types_on_replay_exception`)
+  and a 141 image without the module are recorded as replay gaps (`recordLicenseReplayGap`, shown by `SHOW LICENSE`
+  as `replay_gaps`, `recent_replay_gaps`, `ignored_records`) instead of the persistent incomplete flag, which is
+  removed together with `markLicenseRecoveryIncomplete`; the image boolean is always written `false` and a legacy
+  `true` is only reported. `LicenseFeCompatibility.unregisteredGroupMembers` probes BDBJE replication group members
+  that the frontends map does not list before initialization.
+- `LicenseClock`: rewritten around a confirmed trusted time. Forward wall-clock corrections are pending until they
+  have held (5 minutes within the rollback tolerance, otherwise 1 hour), the other FEs agree or an administrator
+  confirms, and are discarded when taken back; admission, imports and watermarks use the confirmed time. Rollback
+  suspicion is re-evaluated on every read and clears by itself; the in-process check uses
+  `massdb_license_clock_rollback_tolerance_seconds` (12 hours) and the startup anchor and replayed watermarks use
+  `massdb_license_clock_startup_tolerance_seconds` (5 minutes, capped at 1 hour). A wall clock ahead of the restored
+  watermark counts for admission at once but enters watermarks only after `massdb_license_clock_settling_seconds`
+  (10 minutes, capped at 1 hour), during which a rollback suspicion only warns. Suspicion denies queries only on the
+  serving master (`setEnforced`); a replicated master suspicion (`setCommittedSuspect`) denies everywhere.
+  `prepareCheckpoint` always returns the confirmed time, so watermarks flow in every state.
+- `LicenseManager`: `clockSettings()` from `Config`; the master persists a settled suspicion only after it has held
+  five minutes and the peers do not call it an outlier, and writes `withClockCleared` (INTEGRITY, same shape) once
+  its wall clock is back; `observeClock` tracks pending corrections and runs the peer clock check on the verification
+  executor at most once a minute; new action `CLOCK_CONFIRM` (`ADMIN CONFIRM LICENSE CLOCK`,
+  `POST /api/license/clock/confirm`); status gains `clock_*`, `confirmed_utc` diagnostics; watermark interval from
+  `massdb_license_watermark_interval_seconds` (600 s, 60 to 3600); failed initialization probes back off up to
+  60 seconds.
+- `LicenseFeCompatibility`: the capability response adds `wall_time_millis`; `peerClockVerdict` compares the master
+  with the other registered FEs (AGREE, OUTLIER or UNKNOWN with fewer than three voters or without a majority).
+  `EnvLicenseHost` implements `Host.peerClockVerdict`.
+- `LicenseController`, `DorisLexer.g4`, `DorisParser.g4`, `LogicalPlanBuilder`: the confirm route and SQL command;
+  `CONFIRM` is a new non-reserved keyword.
+- `AuditLogHelper`: reuse the statement's cached redaction (`OriginStatement.getSafeSql`) instead of scanning the
+  SQL text again.
+- `fe-common` `Config`, `conf/fe.conf`: the four clock knobs. Management manual: rewritten clock section (tolerances,
+  pending corrections, settling period, peer check, confirm command, when a ticket is still needed), replay gaps
+  instead of the incomplete flag, mixed-version note, dump constraints for Observers and the FE role replay reason
+  for keeping the Env monitor.
+- Tests: `LicenseClockTest` rewritten for the confirmed-time model; manager, persistence, repair, snapshot, parser,
+  controller and compatibility tests updated or extended (gap tolerance, deployment reset, suspicion persistence and
+  clearing, follower reporting, pending confirmation, peer verdicts, replication group probe).
+
 ## License downgrade safety, built-in public keys and no import-time FE check (2026-10-16)
 
 - `LicenseImportPolicy`: reject a candidate that starts in the future with a lower FE or BE limit than the retained

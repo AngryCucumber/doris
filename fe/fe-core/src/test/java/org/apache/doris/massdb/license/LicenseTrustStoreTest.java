@@ -166,6 +166,8 @@ class LicenseTrustStoreTest {
             hex.append(String.format("%02x", value & 0xff));
         }
         Assertions.assertEquals("b7b7e54f5197d753dd319619ecd5ff15d1387d9b7705f62756cf4e5ecbd45f7b", hex.toString());
+        // The jar keys are Java constants; the resource exists only to produce the packaged file. Pin them together.
+        Assertions.assertArrayEquals(bytes, LicenseTrustStore.builtInManifest());
         LicenseTrustStore builtIn = LicenseTrustStore.builtIn();
         Assertions.assertEquals(Collections.singleton("self-use-license-20260929"),
                 builtIn.getKeys(LicenseTrustStore.Purpose.LICENSE).keySet());

@@ -1475,7 +1475,7 @@ public class EditLog {
                 System.exit(-1);
             } else {
                 if (OperationType.isMassdbLicenseRecoveryRelevant(opCode)) {
-                    env.markLicenseRecoveryIncomplete();
+                    env.recordLicenseReplayGap(logId, opCode, "REPLAY_EXCEPTION_SKIPPED");
                 }
                 LOG.warn("Skip replay Operation Type {} due to exception, log id: {}", opCode, logId, e);
             }

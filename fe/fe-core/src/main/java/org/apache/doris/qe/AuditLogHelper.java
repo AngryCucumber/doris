@@ -88,10 +88,19 @@ public class AuditLogHelper {
     public static void logAuditLog(ConnectContext ctx, String origStmt, StatementBase parsedStmt,
             org.apache.doris.proto.Data.PQueryStatistics statistics, boolean printFuzzyVariables) {
         try {
-            logAuditLogImpl(ctx, LicenseSqlRedactor.redact(origStmt), parsedStmt, statistics, printFuzzyVariables);
+            logAuditLogImpl(ctx, safeSql(origStmt, parsedStmt), parsedStmt, statistics, printFuzzyVariables);
         } catch (Throwable t) {
             LOG.warn("Failed to write audit log.", t);
         }
+    }
+
+    /** Reuse the statement's cached redaction when it covers the same text; otherwise scan once here. */
+    private static String safeSql(String origStmt, StatementBase parsedStmt) {
+        OriginStatement origin = parsedStmt == null ? null : parsedStmt.getOrigStmt();
+        if (origin != null && origStmt != null && origStmt.equals(origin.originStmt)) {
+            return origin.getSafeSql();
+        }
+        return LicenseSqlRedactor.redact(origStmt);
     }
 
     /**

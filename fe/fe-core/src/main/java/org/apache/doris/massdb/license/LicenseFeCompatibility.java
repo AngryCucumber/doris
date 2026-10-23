@@ -10,6 +10,9 @@ package org.apache.doris.massdb.license;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.common.Config;
 import org.apache.doris.common.util.NetUtils;
+import org.apache.doris.ha.BDBHA;
+import org.apache.doris.ha.FrontendNodeType;
+import org.apache.doris.ha.HAProtocol;
 import org.apache.doris.service.ExecuteEnv;
 import org.apache.doris.system.Backend;
 import org.apache.doris.system.Frontend;
@@ -28,6 +31,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
+import java.net.InetSocketAddress;
 import java.net.Proxy;
 import java.net.SocketTimeoutException;
 import java.net.URL;
@@ -45,7 +49,9 @@ import java.util.concurrent.TimeUnit;
 /**
  * FE-only proof, before the one-time deployment initialization, that every registered FE carries the license
  * module and can therefore replay license journal records. Package bytes and installed trust are not compared;
- * imports never probe other FEs because every licensed FE version can replay the records they write.
+ * imports never probe other FEs because every licensed FE version can replay the records they write. Members of
+ * the BDBJE replication group that the frontends map does not list (an ADD FRONTEND this FE skipped) are probed
+ * as well, so an FE on an older package never learns about licensing from a record it cannot replay.
  */
 public final class LicenseFeCompatibility {
     private static final Logger LOG = LogManager.getLogger(LicenseFeCompatibility.class);
@@ -74,7 +80,81 @@ public final class LicenseFeCompatibility {
         result.put("package_sha256", null);
         result.put("trust_sha256", trustDigest);
         result.put("trust_ready", trustDigest != null);
+        // For the master's peer clock check; earlier FEs do not report it and count as unavailable.
+        result.put("wall_time_millis", System.currentTimeMillis());
         return Collections.unmodifiableMap(result);
+    }
+
+    /**
+     * Compare this FE's wall clock with the other registered FEs. AGREE when a majority of the responding FEs
+     * (this one included) is within the tolerance of ours; OUTLIER when a majority disagrees with ours and
+     * agrees among itself; UNKNOWN otherwise, including fewer than three FEs or too few answers. Probes run on
+     * the verification executor, never on the member/import queue.
+     */
+    public static LicenseClock.PeerVerdict peerClockVerdict(Env env, long selfWallMillis, long toleranceMillis) {
+        List<Frontend> frontends = env.getFrontends(null);
+        if (env.getNodeName() == null || frontends.size() < 3) {
+            return LicenseClock.PeerVerdict.UNKNOWN;
+        }
+        Map<String, Integer> ports;
+        try {
+            ports = managementPorts(Config.massdb_license_fe_management_ports);
+        } catch (IOException e) {
+            return LicenseClock.PeerVerdict.UNKNOWN;
+        }
+        List<Long> peers = new ArrayList<>();
+        long deadline = System.nanoTime() + PROBE_BUDGET_NANOS;
+        for (Frontend frontend : frontends) {
+            if (frontend.getNodeName().equals(env.getNodeName())) {
+                continue;
+            }
+            try {
+                int defaultPort = Config.enable_https ? Config.https_port : Config.http_port;
+                long before = System.currentTimeMillis();
+                JsonNode capability = probe(frontend, env.getToken(), deadline, managementPort(frontend, defaultPort,
+                        ports));
+                long after = System.currentTimeMillis();
+                JsonNode wall = capability == null ? null : capability.get("wall_time_millis");
+                if (wall == null || !wall.isIntegralNumber() || !wall.canConvertToLong() || wall.longValue() < 0) {
+                    continue;
+                }
+                // Shift the peer's sample to our time of comparison by the elapsed round trip.
+                peers.add(wall.longValue() + Math.max(0, selfWallMillis - after) + Math.max(0, (after - before) / 2));
+            } catch (IOException | RuntimeException e) {
+                // An unreachable or older FE does not vote.
+            }
+        }
+        return peerVerdict(selfWallMillis, peers, toleranceMillis);
+    }
+
+    static LicenseClock.PeerVerdict peerVerdict(long selfWallMillis, List<Long> peers, long toleranceMillis) {
+        int total = peers.size() + 1;
+        if (total < 3) {
+            return LicenseClock.PeerVerdict.UNKNOWN;
+        }
+        int agree = 1;
+        List<Long> disagreeing = new ArrayList<>();
+        for (long peer : peers) {
+            if (Math.abs(peer - selfWallMillis) <= toleranceMillis) {
+                agree++;
+            } else {
+                disagreeing.add(peer);
+            }
+        }
+        if (agree * 2 > total) {
+            return LicenseClock.PeerVerdict.AGREE;
+        }
+        if (disagreeing.size() * 2 > total) {
+            Collections.sort(disagreeing);
+            long median = disagreeing.get(disagreeing.size() / 2);
+            for (long peer : disagreeing) {
+                if (Math.abs(peer - median) > toleranceMillis) {
+                    return LicenseClock.PeerVerdict.UNKNOWN;
+                }
+            }
+            return LicenseClock.PeerVerdict.OUTLIER;
+        }
+        return LicenseClock.PeerVerdict.UNKNOWN;
     }
 
     /** Registered FE identity proof is independent of BE capacity and heartbeat liveness. */
@@ -158,8 +238,87 @@ public final class LicenseFeCompatibility {
         if (!foundSelf) {
             return reject(env, null, "SELF_NOT_REGISTERED", "membership", 0, diagnostics);
         }
+        for (InetSocketAddress member : unregisteredGroupMembers(env, frontends)) {
+            Frontend unknown = new Frontend(FrontendNodeType.UNKNOWN, "replication-group-member",
+                    member.getHostString(), member.getPort());
+            try {
+                int defaultPort = Config.enable_https ? Config.https_port : Config.http_port;
+                int port = managementPort(unknown, defaultPort, ports);
+                String mismatch = moduleMismatchField(probe(unknown, env.getToken(), deadline, port), unknown);
+                if (mismatch != null) {
+                    return reject(env, unknown, "CAPABILITY_MISMATCH", mismatch, 0, diagnostics);
+                }
+            } catch (ProbeFailure e) {
+                return reject(env, unknown, e.reason, "probe", e.httpStatus, diagnostics);
+            } catch (SocketTimeoutException e) {
+                return reject(env, unknown, "PROBE_TIMEOUT", "probe", 0, diagnostics);
+            } catch (JsonProcessingException e) {
+                return reject(env, unknown, "INVALID_CAPABILITY_JSON", "response", 0, diagnostics);
+            } catch (IOException | RuntimeException e) {
+                return reject(env, unknown, "PROBE_UNAVAILABLE", "probe", 0, diagnostics);
+            }
+        }
         return before.equals(frontendIdentities(env.getFrontends(null)))
                 || reject(env, null, "MEMBERSHIP_CHANGED", "membership", 0, diagnostics);
+    }
+
+    /**
+     * Replication group members (electable and observer nodes) without a frontends entry of the same host and
+     * edit-log port. A host written differently in the two places only costs one extra probe of a known FE.
+     */
+    static List<InetSocketAddress> unregisteredGroupMembers(Env env, List<Frontend> frontends) {
+        List<InetSocketAddress> result = new ArrayList<>();
+        HAProtocol protocol = env.getHaProtocol();
+        if (!(protocol instanceof BDBHA)) {
+            return result;
+        }
+        BDBHA bdbha = (BDBHA) protocol;
+        List<InetSocketAddress> members = new ArrayList<>(bdbha.getElectableNodes(true));
+        members.addAll(bdbha.getObserverNodes());
+        for (InetSocketAddress member : members) {
+            boolean registered = false;
+            for (Frontend frontend : frontends) {
+                if (frontend.getEditLogPort() == member.getPort() && (frontend.getHost().equals(member.getHostString())
+                        || (member.getAddress() != null
+                            && frontend.getHost().equals(member.getAddress().getHostAddress())))) {
+                    registered = true;
+                    break;
+                }
+            }
+            if (!registered && result.size() < 1024) {
+                result.add(member);
+            }
+        }
+        return result;
+    }
+
+    /** Module proof for a member whose node name is unknown here; the edit-log port ties the answer to the member. */
+    private static String moduleMismatchField(JsonNode capability, Frontend member) {
+        if (capability == null || !capability.isObject()) {
+            return "response";
+        }
+        if (!capability.path("schema_version").isIntegralNumber()
+                || !capability.path("schema_version").canConvertToInt()
+                || capability.path("schema_version").asInt() != 1) {
+            return "schema_version";
+        }
+        if (!capability.path("format_version").isIntegralNumber()
+                || !capability.path("format_version").canConvertToInt()
+                || capability.path("format_version").asInt() != 1) {
+            return "format_version";
+        }
+        if (!"massdbLicenseV1".equals(capability.path("module").asText())) {
+            return "module";
+        }
+        if (!JSON.valueToTree(OPCODES).equals(capability.path("journal_opcodes"))) {
+            return "journal_opcodes";
+        }
+        if (!capability.path("edit_log_port").isIntegralNumber()
+                || !capability.path("edit_log_port").canConvertToInt()
+                || member.getEditLogPort() != capability.path("edit_log_port").asInt()) {
+            return "edit_log_port";
+        }
+        return null;
     }
 
     static boolean matches(JsonNode capability, Frontend frontend, Map<String, Object> local,
