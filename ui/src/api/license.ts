@@ -25,6 +25,8 @@ const SAFE_REASONS = new Set([
 const SAFE_STATUSES = new Set(['VALID', 'EXPIRING', 'EXPIRED', 'MISSING', 'NOT_YET_VALID', 'INVALID',
     'FEATURE_NOT_LICENSED', 'CLOCK_SUSPECT', 'LICENSE_NOT_READY', 'LIMIT_EXCEEDED']);
 const CHANGE_NUMBERS = ['previous_expires_at', 'expires_at', 'gap_seconds', 'previous_limit', 'limit', 'sequence'];
+const PEER_VERDICTS = new Set(['UNKNOWN', 'AGREE', 'OUTLIER']);
+const CODE = /^[A-Z][A-Z0-9_]{1,63}$/;
 
 function safeNumber(value: any): any {
     return value === null || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0)
@@ -47,6 +49,32 @@ function licenseChanges(value: any): LicenseFields[] | undefined {
         }
         return change;
     });
+}
+
+function safeInteger(value: any): any {
+    return (typeof value === 'number' && Number.isSafeInteger(value))
+        || (typeof value === 'string' && /^-?(?:0|[1-9]\d{0,18})$/.test(value)) ? value : null;
+}
+
+/** Slots this FE isolated during replay: slot name, the key id the certificate names and a reason code. */
+function invalidSlots(value: any): LicenseFields[] | undefined {
+    if (!Array.isArray(value) || value.length > 16) return undefined;
+    return value.filter(item => item && typeof item === 'object' && !Array.isArray(item)
+        && typeof item.slot === 'string' && /^[a-z_]{1,32}$/.test(item.slot)).map(item => ({
+        slot: item.slot,
+        key_id: typeof item.key_id === 'string' && item.key_id.length <= 128 ? item.key_id : null,
+        reason: typeof item.reason === 'string' && CODE.test(item.reason) ? item.reason : 'UNKNOWN',
+    }));
+}
+
+/** Journals this FE skipped: journal id, operation code, kind and wall time. Diagnostics, never instructions. */
+function replayGaps(value: any): LicenseFields[] | undefined {
+    if (!Array.isArray(value) || value.length > 32) return undefined;
+    return value.filter(item => item && typeof item === 'object' && !Array.isArray(item)).map(item => ({
+        journal_id: safeInteger(item.journal_id), op_code: safeInteger(item.op_code),
+        kind: typeof item.kind === 'string' && CODE.test(item.kind) ? item.kind : 'UNKNOWN',
+        wall_millis: safeNumber(item.wall_millis),
+    }));
 }
 
 const JSONbig = require('json-bigint')({ storeAsString: true });
@@ -95,13 +123,20 @@ export async function licenseRequest(path: string, signal: AbortSignal, certific
             'max_fe_nodes', 'max_be_nodes', 'base_max_fe_nodes', 'base_max_be_nodes', 'active', 'pending',
             'highest_sequence', 'applied_version', 'committed_version', 'retryable', 'idempotent',
             'coverage_gap_seconds', 'expected_license_version', 'expected_membership_version',
-            'license_id', 'license_version', 'sequence', 'changes', 'retry_after_seconds', 'trust_sha256'];
-        const booleanFields = new Set(['administrator', 'activated', 'recovery_ready', 'retryable', 'idempotent']);
+            'license_id', 'license_version', 'sequence', 'changes', 'retry_after_seconds', 'trust_sha256',
+            'confirmed_utc', 'clock_committed_suspect', 'clock_local_suspect', 'clock_startup_suspect',
+            'clock_settled', 'clock_enforced', 'clock_pending_forward_seconds', 'clock_pending_age_seconds',
+            'clock_pending_startup', 'clock_peer_verdict', 'invalid_slots', 'replay_gaps', 'ignored_records',
+            'recent_replay_gaps'];
+        const booleanFields = new Set(['administrator', 'activated', 'recovery_ready', 'retryable', 'idempotent',
+            'clock_committed_suspect', 'clock_local_suspect', 'clock_startup_suspect', 'clock_settled',
+            'clock_enforced', 'clock_pending_startup']);
         const numericFields = new Set(['expires_at', 'trusted_utc', 'clock_epoch', 'registered_fe_nodes',
             'registered_be_nodes', 'max_fe_nodes', 'max_be_nodes', 'base_max_fe_nodes', 'base_max_be_nodes',
             'highest_sequence', 'applied_version', 'committed_version', 'coverage_gap_seconds',
             'expected_license_version', 'expected_membership_version', 'license_version', 'sequence',
-            'retry_after_seconds']);
+            'retry_after_seconds', 'confirmed_utc', 'clock_pending_forward_seconds', 'clock_pending_age_seconds',
+            'replay_gaps', 'ignored_records']);
         fields.forEach(key => {
             if (!Object.prototype.hasOwnProperty.call(decoded, key)) return;
             const value = decoded[key];
@@ -112,6 +147,16 @@ export async function licenseRequest(path: string, signal: AbortSignal, certific
             } else if (key === 'changes') {
                 const changes = licenseChanges(value);
                 if (changes) body.changes = changes;
+            } else if (key === 'clock_peer_verdict') {
+                body[key] = PEER_VERDICTS.has(value) ? value : null;
+            } else if (key === 'trust_sha256') {
+                body[key] = typeof value === 'string' && /^[0-9a-f]{64}$/.test(value) ? value : null;
+            } else if (key === 'invalid_slots') {
+                const slots = invalidSlots(value);
+                if (slots) body.invalid_slots = slots;
+            } else if (key === 'recent_replay_gaps') {
+                const gaps = replayGaps(value);
+                if (gaps) body.recent_replay_gaps = gaps;
             } else {
                 body[key] = value;
             }

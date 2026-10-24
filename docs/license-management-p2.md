@@ -27,6 +27,8 @@ massdb_license_trust_store_file = /etc/massdb/license-public-keys.json
 massdb_license_trust_manifest_signed = /etc/massdb/license-trust.jws
 ```
 
+**安全边界与残余风险（2026-10-24）。** 签名清单堵住的是“运维方改配置让 FE 认自己的签发密钥”这一条路。证书绑定的是集群初始化时生成的部署标识，不绑定机器身份：把一套 FE 的完整元数据（含部署标识与许可记录）复制到另一套集群，复制出来的集群在证书有效期内同样有效，续期证书也可以同样复制。本版本不防护这一场景，也不缩短首张证书的期限或在续期时校验集群谱系；首张证书按合同期限发放，由合同、`customer_id`、`license_id` 与签发台账约束，`SHOW LICENSE` 中的这些字段和部署标识便于现场核对。
+
 已有 HTTP/HTTPS 及内部通信配置继续有效，无新增 BE 配置。若 FE 管理端口不同，可在各 FE 配置以下映射并重启；键必须匹配已注册的 `host:edit_log_port`，值为 HTTP(S) 管理端口：
 
 ```properties
@@ -181,7 +183,7 @@ HTTP 对应 `POST /api/license/clock/challenge`（空正文或 `{}`）、`POST /
 
 混合版本期间，尚未升级的带许可 FE 仍按严格链式规则工作，遇到缺口会自行标记不完整；请先升级所有 FE 再处理缺口。做 `force_skip_journal_ids` 或改动服务器时间之前，先联系签发方确认影响。
 
-**各 FE 信任配置不一致（2026-10-23 起）。** Master 用合并后的公钥接受证书，某台 FE 缺少对应公钥时只会在本机把该槽隔离，受保护读取在那台 FE 返回 `INVALID`。隔离时 fe.log 记一条 WARN，给出槽位、证书头中的 `kid`、原因（如 `UNTRUSTED_KEY`、`INVALID_SIGNATURE`、`DEPLOYMENT_MISMATCH`）和本机 `trust_sha256`；`SHOW LICENSE` / `GET /api/license` 的管理员视图新增 `trust_sha256`（本机实际加载的公钥集合摘要）与 `invalid_slots`（上述明细列表），指标 `license_invalid_slots` 给出隔离槽数量。Master 每小时通过能力接口比较各 FE 的 `trust_sha256`，不一致只记一条 WARN 列出节点和摘要前缀，不阻止任何操作。处理方法是核对该 FE 的 `massdb_license_trust_store_file` 与 `conf/massdb-license-trust.json`，修正后重启。
+**各 FE 信任配置不一致（2026-10-23 起）。** Master 用合并后的公钥接受证书，某台 FE 缺少对应公钥时只会在本机把该槽隔离，受保护读取在那台 FE 返回 `INVALID`。隔离时 fe.log 记一条 WARN，给出槽位、证书头中的 `kid`、原因（如 `UNTRUSTED_KEY`、`INVALID_SIGNATURE`、`DEPLOYMENT_MISMATCH`）和本机 `trust_sha256`；`SHOW LICENSE` / `GET /api/license` 的管理员视图新增 `trust_sha256`（本机实际加载的公钥集合摘要）与 `invalid_slots`（上述明细列表），指标 `license_invalid_slots` 给出隔离槽数量。页面“授权证书”的“本 FE 诊断”卡片显示本机 `trust_sha256`、回放缺口计数、隔离槽位（槽位、证书 `kid`、原因）与最近的回放缺口；“时钟”卡片显示第 4 节的 `confirmed_utc`、同伴判定、可疑标志与待确认前跳。2026-10-24 的三 FE 真实演练（`.build-records/license-batch2-drill-20261024/`）覆盖了明文清单自造公钥被忽略、自签证书 `LICENSE_UNTRUSTED_KEY`、签名清单换钥、缺公钥 FE 的隔离与恢复以及 health 路由。Master 每小时通过能力接口比较各 FE 的 `trust_sha256`，不一致只记一条 WARN 列出节点和摘要前缀，不阻止任何操作。处理方法是核对该 FE 的 `massdb_license_trust_store_file` 与 `conf/massdb-license-trust.json`，修正后重启。
 
 升级后的 FE 在完成初始化和证书导入前会拒绝受保护读取，当前没有自动宽限期。应提前准备全部注册 FE 的升级和离线签发流程，以及旧格式回滚所需的升级前元数据备份；修复信任公钥文件后按配置要求重启生效。
 

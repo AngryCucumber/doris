@@ -4,6 +4,25 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License page clock and diagnostics cards, residual-risk statement (2026-10-24)
+
+Follow-up of review batches 1 and 2 (`docs/license-review-20261022.md`): the status fields added on 2026-10-23 become
+visible, and the one anti-cloning decision still open is recorded. No FE Java change.
+
+- `ui/src/api/license.ts`: the response whitelist accepts `confirmed_utc`, the `clock_*` flags and counters,
+  `clock_peer_verdict` (enum), `trust_sha256` (64 hex digits), `invalid_slots` (`{slot, key_id, reason}` with a code-shaped
+  reason, otherwise `UNKNOWN`), `replay_gaps`, `ignored_records` and `recent_replay_gaps` (`{journal_id, op_code, kind,
+  wall_millis}`); nothing outside these shapes reaches the page.
+- `ui/src/pages/license/index.tsx`, `index.less`, `ui/public/locales/*.json`: a "Clock" card (confirmed time, peer
+  verdict, local/startup/committed suspicion, enforcement, settling, pending forward correction) next to the deployment
+  card, and a "Diagnostics of this FE" card (trust digest, replay gap counts, isolated slots with a warning and one row per
+  slot, recent replay gaps). Booleans and the peer verdict are translated. `ui/scripts/license.test.cjs` adds a browser
+  contract case for both cards and for the shape filtering (48 cases).
+- `docs/license-management-p2.md` section 1 states the security boundary and the accepted residual risk: a cluster cloned
+  through its metadata keeps using the certificate for its validity, renewals can be copied the same way; the first
+  certificate is issued for the contract term and no lineage check is done at renewal. `docs/license-review-20261022.md`
+  records the decision and the 2026-10-24 real-cluster drill of R1, M2 and M3 (`.build-records/license-batch2-drill-20261024/`).
+
 ## License review batch 2: signed trust manifests, trust diagnostics and retry hints (2026-10-23)
 
 Batch 2 of `docs/license-review-20261022.md`: R1 (signed trust manifests, decided for the commercial setting), M2

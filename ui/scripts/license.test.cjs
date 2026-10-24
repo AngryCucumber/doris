@@ -75,6 +75,10 @@ function snapshot(status = 'VALID', administrator = true) {
         clock_epoch: 2, registered_fe_nodes: 2, registered_be_nodes: 3,
         max_fe_nodes: 4, max_be_nodes: 8, base_max_fe_nodes: 4, base_max_be_nodes: 8,
         active: details(), pending: null, highest_sequence: 11, applied_version: 18,
+        confirmed_utc: fixedEpoch - 60, clock_committed_suspect: false, clock_local_suspect: false,
+        clock_startup_suspect: false, clock_settled: true, clock_enforced: true, clock_pending_forward_seconds: 3600,
+        clock_pending_age_seconds: 120, clock_pending_startup: false, clock_peer_verdict: 'AGREE',
+        trust_sha256: 'c'.repeat(64), invalid_slots: [], replay_gaps: 0, ignored_records: 0, recent_replay_gaps: [],
     };
 }
 
@@ -412,6 +416,34 @@ test('P2U License browser contracts (controlled API, not FE integration)', { tim
             const reads = f.count('');
             await f.clock(); await f.advance(300000);
             assert.equal(f.count(''), reads, 'idle details page must never refresh automatically');
+        });
+
+        await run('U04-clock-and-diagnostics-cards', async f => {
+            await f.enter();
+            const clock = await f.id('license-clock').innerText();
+            assert.match(clock, /Majority agrees/, 'the peer verdict must be translated');
+            assert.match(clock, /3600/, 'the pending forward seconds must be shown');
+            assert.match(clock, /UTC/, 'the confirmed time must be shown as a timestamp');
+            const diagnostics = await f.id('license-diagnostics').innerText();
+            assert.match(diagnostics, /c{64}/, 'the trust digest must be shown');
+            assert.match(diagnostics, /No isolated slots/);
+            f.model.status = { ...snapshot('INVALID'), replay_gaps: 1, invalid_slots: [
+                { slot: 'active', key_id: 'rogue-key-1', reason: 'UNTRUSTED_KEY' },
+                { slot: 'pending', key_id: null, reason: '<img src=x onerror=alert(1)>' },
+            ], recent_replay_gaps: [{ journal_id: 120, op_code: 10006, kind: 'FORCE_SKIP_JOURNAL_ID',
+                wall_millis: fixedEpoch * 1000 }] };
+            await f.id('license-refresh').click();
+            await eventually(async () => (await f.id('license-status').getAttribute('data-status')) === 'INVALID',
+                'UI must display the INVALID state');
+            const slots = await f.id('license-invalid-slots').innerText();
+            assert.match(slots, /UNTRUSTED_KEY/);
+            assert.match(slots, /rogue-key-1/);
+            assert.match(slots, /UNKNOWN/, 'an unknown reason shape must be replaced by a fixed code');
+            assert.doesNotMatch(slots, /onerror/, 'server strings outside the fixed shape must never reach the page');
+            const gaps = await f.id('license-replay-gaps').innerText();
+            assert.match(gaps, /FORCE_SKIP_JOURNAL_ID/);
+            assert.match(gaps, /120/);
+            assert.match(gaps, /10006/);
         });
 
         await run('U04-role-change-clears-private-details', async f => {

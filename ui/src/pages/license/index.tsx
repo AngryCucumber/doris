@@ -22,12 +22,16 @@ function TimeValue({ value }: { value: any }) {
     return time ? <span><span>{time.utc}</span><small>{t('license.localTime')}: {time.local}</small></span> : <span>—</span>;
 }
 
+const TIME_FIELDS = ['expires_at', 'not_before', 'trusted_utc', 'confirmed_utc'];
+
 function Fields({ value, names }: { value: LicenseFields; names: string[] }) {
     const { t } = useTranslation();
     return <dl className={styles.fields}>{names.map(name => <React.Fragment key={name}>
         <dt>{t(`license.fields.${name}`)}</dt>
-        <dd>{['expires_at', 'not_before', 'trusted_utc'].includes(name)
-            ? <TimeValue value={value[name]} /> : displayValue(value[name])}</dd>
+        <dd>{TIME_FIELDS.includes(name) ? <TimeValue value={value[name]} />
+            : typeof value[name] === 'boolean' ? t(`license.boolean.${value[name]}`)
+            : name === 'clock_peer_verdict' && typeof value[name] === 'string'
+                ? t(`license.verdict.${value[name]}`, { defaultValue: value[name] }) : displayValue(value[name])}</dd>
     </React.Fragment>)}</dl>;
 }
 
@@ -67,6 +71,53 @@ function CertificateCard({ name, certificate }: { name: string; certificate: Lic
             'license_id', 'customer_id', 'issuer', 'edition', 'sequence', 'not_before', 'expires_at',
             'max_fe_nodes', 'max_be_nodes', 'features', 'fingerprint',
         ]} /> : <p className={styles.muted}>{t('license.noCertificate')}</p>}
+    </section>;
+}
+
+const CLOCK_FIELDS = ['confirmed_utc', 'clock_peer_verdict', 'clock_local_suspect', 'clock_startup_suspect',
+    'clock_committed_suspect', 'clock_enforced', 'clock_settled', 'clock_pending_forward_seconds',
+    'clock_pending_age_seconds', 'clock_pending_startup'];
+
+/** This FE's trusted-clock facts: confirmed time, suspicion flags and the pending forward correction. */
+function ClockCard({ snapshot }: { snapshot: LicenseFields }) {
+    const { t } = useTranslation();
+    return <section className={styles.card} data-testid="license-clock"><h2>{t('license.clock')}</h2>
+        <Fields value={snapshot} names={CLOCK_FIELDS} />
+        <p className={styles.muted}>{t('license.clockHint')}</p>
+    </section>;
+}
+
+function gapSeconds(value: any): number | null {
+    const millis = Number(value);
+    return Number.isFinite(millis) && millis >= 0 ? Math.floor(millis / 1000) : null;
+}
+
+/** Replay diagnostics of this FE: trust digest, isolated slots and skipped journals. Facts only, no actions. */
+function DiagnosticsCard({ snapshot }: { snapshot: LicenseFields }) {
+    const { t } = useTranslation();
+    const slots: LicenseFields[] = Array.isArray(snapshot.invalid_slots) ? snapshot.invalid_slots : [];
+    const gaps: LicenseFields[] = Array.isArray(snapshot.recent_replay_gaps) ? snapshot.recent_replay_gaps : [];
+    return <section className={styles.card} data-testid="license-diagnostics"><h2>{t('license.diagnostics')}</h2>
+        <Fields value={snapshot} names={['trust_sha256', 'replay_gaps', 'ignored_records']} />
+        <h3>{t('license.invalidSlots')}</h3>
+        {slots.length === 0 ? <p className={styles.muted}>{t('license.noInvalidSlots')}</p> : <div className={styles.changes}>
+            <Alert type="warning" showIcon message={t('license.invalidSlotsWarning')} />
+            <ul data-testid="license-invalid-slots">{slots.map((slot, index) => <li key={index}>
+                <Tag color="red">{slot.reason}</Tag>
+                <span>{t('license.slotLine', { slot: slot.slot, keyId: displayValue(slot.key_id) })}</span>
+            </li>)}</ul>
+        </div>}
+        <h3>{t('license.recentReplayGaps')}</h3>
+        {gaps.length === 0 ? <p className={styles.muted}>{t('license.noReplayGaps')}</p> : <div className={styles.changes}>
+            <ul data-testid="license-replay-gaps">{gaps.map((gap, index) => {
+                const time = timestamp(gapSeconds(gap.wall_millis));
+                return <li key={index}>
+                    <Tag color="orange">{gap.kind}</Tag>
+                    <span>{t('license.gapLine', { journal: displayValue(gap.journal_id), opCode: displayValue(gap.op_code) })}
+                        {time ? ` \u00b7 ${time.utc}` : ''}</span>
+                </li>;
+            })}</ul>
+        </div>}
     </section>;
 }
 
@@ -463,10 +514,14 @@ export default function LicensePage() {
                     <CertificateCard name="active" certificate={snapshot.active} />
                     <CertificateCard name="pending" certificate={snapshot.pending} />
                 </div>
-                <section className={styles.card} data-testid="license-deployment"><h2>{t('license.deployment')}</h2>
-                    <Fields value={snapshot} names={['deployment_id', 'highest_sequence', 'applied_version', 'clock_epoch',
-                        'base_max_fe_nodes', 'base_max_be_nodes']} />
-                </section>
+                <div className={styles.columns}>
+                    <section className={styles.card} data-testid="license-deployment"><h2>{t('license.deployment')}</h2>
+                        <Fields value={snapshot} names={['deployment_id', 'highest_sequence', 'applied_version', 'clock_epoch',
+                            'base_max_fe_nodes', 'base_max_be_nodes']} />
+                    </section>
+                    <ClockCard snapshot={snapshot} />
+                </div>
+                <DiagnosticsCard snapshot={snapshot} />
             </>}
         </>}
         {administrator && <section className={styles.card} data-testid="license-receipt"
