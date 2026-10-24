@@ -4,6 +4,17 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License key rotation order, hourly digest check and latency comparison recorded (2026-10-24)
+
+Documentation only; no code change. `docs/license-management-p2.md` section 1 gains the order for rotating the signing
+and trust keys and retiring the old ones (manifest signed by the built-in trust key first, new certificate second,
+package with the new constants third, manifest line removed last; an FE upgraded too early is INVALID until the new
+certificate arrives by replay; a manifest-added trust key cannot sign the next manifest). `docs/license-review-20261022.md`
+records the real-cluster drills behind it (`.build-records/license-trust-rotation-drill-20261024/`), the observation of
+the master's hourly trust-digest comparison, and the FE latency comparison between the 2026-10-21 package jars and the
+current ones (`.build-records/license-perf-comparison-20261024/`: no measurable difference on SELECT 1, a one-BE point
+count and SHOW FRONTENDS).
+
 ## License page clock and diagnostics cards, residual-risk statement (2026-10-24)
 
 Follow-up of review batches 1 and 2 (`docs/license-review-20261022.md`): the status fields added on 2026-10-23 become

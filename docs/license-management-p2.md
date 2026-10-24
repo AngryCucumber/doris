@@ -27,6 +27,8 @@ massdb_license_trust_store_file = /etc/massdb/license-public-keys.json
 massdb_license_trust_manifest_signed = /etc/massdb/license-trust.jws
 ```
 
+**换钥与退役密钥的顺序（2026-10-24 真实演练验证）。** 1）签发方生成新的 `license` 密钥 K2 和新的 `trust` 密钥 T2，用当前内置的 trust 密钥 T1 对同时含 K2（`license`）与 T2（`trust`）的清单签名，得到 M1。2）运维在每台 FE 配置 `massdb_license_trust_manifest_signed` 指向 M1 并逐台重启，先 Follower 后 Master；各台 `trust_sha256` 随之变化且相同。3）签发方用 K2 签新证书，在 Master 导入；此时每台 FE 同时信任 K1 与 K2。4）下一版程序把 K2、T2 编入常量并去掉 K1、T1。升级到该版本必须在第 3 步之后：若某台 FE 先升级，它验不了 K1 签的现有证书，会隔离 active 与 base 两个槽并返回 `INVALID`，直到 K2 证书导入后随回放自动恢复，不需要再重启。5）升级后 M1 因签名方 T1 不再内置而验签失败，只告警不影响运行，可以从配置中删除；用 K1 签的证书从此导入返回 `LICENSE_UNTRUSTED_KEY`，发行包里明文清单仍列出的 K1 也不能让它复活。6）之后的换钥由 T2 签清单，只有把 T2 编入常量的程序才接受：清单里加进来的 trust 密钥不能用来签下一份清单。完整过程（三 FE，混合版本运行、错误顺序的后果与恢复）记录在 `.build-records/license-trust-rotation-drill-20261024/`。
+
 **安全边界与残余风险（2026-10-24）。** 签名清单堵住的是“运维方改配置让 FE 认自己的签发密钥”这一条路。证书绑定的是集群初始化时生成的部署标识，不绑定机器身份：把一套 FE 的完整元数据（含部署标识与许可记录）复制到另一套集群，复制出来的集群在证书有效期内同样有效，续期证书也可以同样复制。本版本不防护这一场景，也不缩短首张证书的期限或在续期时校验集群谱系；首张证书按合同期限发放，由合同、`customer_id`、`license_id` 与签发台账约束，`SHOW LICENSE` 中的这些字段和部署标识便于现场核对。
 
 已有 HTTP/HTTPS 及内部通信配置继续有效，无新增 BE 配置。若 FE 管理端口不同，可在各 FE 配置以下映射并重启；键必须匹配已注册的 `host:edit_log_port`，值为 HTTP(S) 管理端口：
