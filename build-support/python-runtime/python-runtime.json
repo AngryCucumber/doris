@@ -1,0 +1,102 @@
+{
+    "schemaVersion": 1,
+    "description": "Offline Python runtime shipped with MassDB SQL BE for Python UDF/UDAF/UDTF, laid out as a python_env_mode = conda root.",
+    "python": {
+        "version": "3.12.15",
+        "distribution": "python-build-standalone",
+        "release": "20261013",
+        "urlTemplate": "https://github.com/astral-sh/python-build-standalone/releases/download/{release}/{file}",
+        "archives": {
+            "aarch64": {
+                "file": "cpython-3.12.15+20261013-aarch64-unknown-linux-gnu-install_only.tar.gz",
+                "sha256": "34a43010cc05982d8b5debbad7d09f7b1200117ebf018f7acfd656895e408205"
+            },
+            "x86_64": {
+                "file": "cpython-3.12.15+20261013-x86_64-unknown-linux-gnu-install_only.tar.gz",
+                "sha256": "5d546fc004fc2435fa142eb8f42ed8de5eb4725963dc22f7e6671014a80eb560"
+            }
+        }
+    },
+    "target": {
+        "glibc": "2.28",
+        "glibcxx": null,
+        "minLoadAlign": 65536
+    },
+    "layout": {
+        "rootName": "python-runtime",
+        "envName": "python{version}",
+        "beConfRoot": "${DORIS_HOME}/lib/python-runtime"
+    },
+    "indexUrl": "https://pypi.org/simple",
+    "layers": [
+        {
+            "name": "core",
+            "purpose": "Required by be/src/udf/python/python_server.py; pyarrow follows the BE Arrow version (thirdparty/vars.sh).",
+            "requirements": ["numpy>=1.26,<3", "pandas>=2.2,<3", "pyarrow==24.0.0"]
+        },
+        {
+            "name": "common",
+            "purpose": "Text, time, hashing, encoding and geo helpers commonly used in SQL UDFs.",
+            "requirements": [
+                "python-dateutil", "pytz", "tzdata", "regex", "orjson", "PyYAML", "charset-normalizer",
+                "xxhash", "mmh3", "cryptography", "jieba==0.42.1", "pypinyin", "rapidfuzz", "phonenumbers",
+                "shapely", "pyproj", "h3"
+            ]
+        },
+        {
+            "name": "analytics",
+            "purpose": "Statistics and model inference inside UDAF/UDWF.",
+            "requirements": ["scipy", "scikit-learn", "statsmodels"]
+        }
+    ],
+    "defaultLayers": ["core", "common", "analytics"],
+    "pureSdists": ["jieba==0.42.1"],
+    "requiredImports": ["numpy", "pandas", "pyarrow", "pyarrow.flight", "pip"],
+    "importSkip": {},
+    "licensePolicy": {
+        "deny": [
+            "\\bA?GPL(?:v?\\d|-\\d|\\b)(?!.*exception)",
+            "GNU (?:Affero )?General Public License",
+            "\\bSSPL\\b",
+            "Commons Clause",
+            "\\bBUSL\\b|Business Source License"
+        ],
+        "review": [
+            "\\bLGPL",
+            "GNU Lesser General Public License",
+            "GNU Library",
+            "\\bMPL\\b|Mozilla Public License",
+            "\\bEPL\\b|Eclipse Public License",
+            "\\bCDDL\\b",
+            "\\bCC-BY",
+            "Public Domain",
+            "Other/Proprietary"
+        ],
+        "allow": [
+            "\\bMIT\\b",
+            "\\bBSD\\b|\\bBSD-\\d",
+            "\\b0BSD\\b",
+            "Apache",
+            "\\bPSF\\b|Python Software Foundation|\\bPython-2\\.0\\b",
+            "\\bISC\\b",
+            "\\bZlib\\b",
+            "Unlicense",
+            "\\bCC0",
+            "\\bHPND\\b|Historical Permission Notice",
+            "\\bBSL-1\\.0\\b|Boost Software License",
+            "\\bZPL\\b|Zope Public License",
+            "\\bCNRI-Python\\b"
+        ]
+    },
+    "licenseOverrides": {},
+    "licenseTexts": {
+        "jieba": [
+            {
+                "file": "LICENSE",
+                "url": "https://raw.githubusercontent.com/fxsjy/jieba/v0.42.1/LICENSE",
+                "sha256": "18ba0984839f85853b29fadaf992f7dba8fd0ca0fbeae34de2b8735222dc7a37",
+                "reason": "the jieba 0.42.1 sdist ships no license file (PKG-INFO: License: MIT)"
+            }
+        ]
+    }
+}

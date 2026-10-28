@@ -8,6 +8,9 @@ header:
     # BEGIN MassDB separately checked headers
     - "build-support/check-source-headers.py"
     - "build-support/prepare-product-notices.py"
+    - "build-support/python-runtime/build-python-runtime.py"
+    - "build-support/python-runtime/check-python-runtime.py"
+    - "build-support/python-runtime/test_python_runtime.py"
     - "build-support/test_product_notices.py"
     - "build-support/test_meta_tool_runtime.py"
     - "docker-compose/docker-compose.be-host.yml"

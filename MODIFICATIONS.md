@@ -323,6 +323,22 @@ while the FE kept serving queries. Cloud mode runtime was not exercised.
   factory. Preserve segment loading, memory accounting, sequence-column and
   remote-cooldown assertions while allowing reads and tablet cleanup to complete.
 
+## Bundled Python runtime prototype (2026-10-29)
+
+- Add `build-support/python-runtime/`. `build-python-runtime.py resolve` fetches a
+  pinned python-build-standalone interpreter and the wheels of the configured
+  layers (manylinux tags up to the target glibc) and writes a hash-pinned lock;
+  `build` installs only that lock offline into a relocatable
+  `python_env_mode = conda` root and packs a reproducible tarball for `be/lib/`.
+- `check-python-runtime.py` verifies the env-root layout BE scans at startup,
+  symlinks, ELF architecture, GLIBC/GLIBCXX symbol versions and 64 KiB page
+  alignment, imports, an Arrow Flight UDF call through
+  `be/src/udf/python/python_server.py` and the license inventory.
+  `python-runtime.json` holds the pins and policies; `test_python_runtime.py`
+  covers both scripts with synthetic ELF files and layouts.
+- Prototype only: package assembly, `be.conf`, `start_be.sh` and the legal
+  inventory are unchanged, so product behavior is unchanged.
+
 ## Complete rc02 release builds (2026-09-09)
 
 - `build-for-release.sh`: explicitly select FE, BE, Cloud/MS, Broker and Hive UDF
