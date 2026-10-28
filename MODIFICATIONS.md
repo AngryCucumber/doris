@@ -142,6 +142,66 @@ Detailed machine-local evidence is under `.build-records/rc415-full-validation/`
 `final-performance-summary.json`. Original failures are preserved alongside
 successful retries; the two performance series are never pooled together.
 
+## rc415 code review fixes (2026-10-28)
+
+Fixes for findings 1-9 of `docs/massdb-sql-rc415-code-review-20261028.md` that
+belong to this branch. Findings P1-P8 are inherited from 4.1.5 and unchanged.
+
+- `Env.java`, `Config.java`: the storage-medium map rebuild takes table read
+  locks with the existing 100 ms try-lock timeout instead of waiting while every
+  report worker is queued on the build lock. A skipped table, or an expired SSD
+  partition whose write lock is unavailable, marks the map incomplete; it is
+  logged and reused only for `storage_medium_map_retry_second` (default 5, 0
+  rebuilds on the next report). Expired partitions no longer set the next
+  cooldown deadline, so a failed cooldown no longer rebuilds on every report.
+  The scan still records the metadata version before it starts; a completed
+  cooldown changes metadata and causes one more scan.
+- `LocalTabletInvertedIndex.java`: the cooldown replica check iterates a copy of
+  the tablet's replicas taken under the index lock, because it runs after the
+  report releases that lock while another report worker may delete a replica.
+- `JdbcMySQLClient.java`: Doris type arguments are read up to the first closing
+  parenthesis. `DECIMAL(p)` maps to scale 0. A malformed top-level declaration
+  uses the column's JDBC metadata as before this branch; a malformed array
+  element maps to an unsupported element instead of the outer column metadata.
+- `ui/src/index.html`: the deployment prefix ends before the first route segment
+  from which the remaining path is a complete route, so database or table names
+  equal to route names (`/Playground/result/home`) no longer become the prefix.
+  Prefixes containing route names keep working. Paths without a known route keep
+  the upstream four-segment rule. A path that is both a valid route and a prefix
+  plus a route, such as `/QueryProfile/home`, is read as the route.
+- `GroupCommitPlanner.java`, `Config.java`: the prepared group-commit insert RPC
+  waits at most the internal group-commit load timeout
+  (`max(group_commit_interval_ms * group_commit_timeout_multipler, 600 s)`) plus
+  `group_commit_insert_rpc_timeout_second` (default 300), capped by the insert
+  timeout, instead of up to `insert_timeout`. The BE request is not cancelled
+  (P3): rows of a timed-out insert can still be written after the error, so
+  clients must not retry such an insert blindly.
+- `Suite.groovy`: local fixture copies quote both paths, and a host name that
+  only the SSH client can resolve is copied with scp instead of failing.
+- `AgentTaskCleanupDaemon.java`: remove the unreachable null `succTablets`
+  branch; 4.1.5 `PublishVersionTask` already defaults and normalizes the map.
+- `HardwareInfoController.java`: remove the unused process listing method and
+  its imports; the process row stays hidden.
+- Restore the upstream text of `AgentTaskCleanupDaemon.java`,
+  `PublishVersionTask.java`, `TabletInvertedIndex.java`, `GroupCommitManager.java`,
+  `Coordinator.java`, `CloudGlobalTransactionMgr.java` and
+  `multi_segment_util.h`, whose only difference from 4.1.5 was the modification
+  or backport notice, and remove them from `dist/source-headers.json`.
+
+Validation (2026-10-28, local evidence in `.build-records/rc415-review-fixes-20261028/`):
+new FE tests fail on the previous code and pass now; 172 affected FE test classes
+(1005 tests) pass with 4 skipped; Checkstyle, source headers, 35 notice tests, 41
+regression-framework tests and the UI build, notice and browser tests pass. A
+live FE built from this tree with the upstream 4.1.5 release BE cooled SSD
+partitions to HDD, mapped JDBC catalog types and data exactly, rendered Playground
+pages for databases named `home` and `Session` with and without a prefix (blank
+with the previous script), and released a hung prepared group-commit insert after
+605 s. BE, Cloud meta-service, `meta_tool` and the BE Java extensions of this tree
+also build on this host against a locally built 4.1.5 third-party set; with that
+BE the live checks pass again, the `meta_tool` round trip passes, and vertical and
+horizontal compaction keep row and inverted-index counts. Cloud mode runtime was
+not exercised.
+
 ## rc415 regression hardening (2026-10-28)
 
 - Restore the process-wide SIGCHLD handler after each CDC client unit test.

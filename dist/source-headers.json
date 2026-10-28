@@ -15,7 +15,10 @@
     "build-support/check-source-headers.py",
     "docker/compilation/Dockerfile.ui",
     "fe/be-java-extensions/jdbc-scanner/src/test/java/org/apache/doris/jdbc/massdb/MySQLJdbcArrayTest.java",
-    "fe/fe-core/src/test/java/org/apache/doris/catalog/massdb/StorageMediumMapCacheTest.java"
+    "fe/fe-core/src/test/java/org/apache/doris/catalog/massdb/StorageMediumMapCacheTest.java",
+    "ui/scripts/base-href.test.cjs",
+    "fe/fe-core/src/test/java/org/apache/doris/catalog/massdb/CooldownReplicaCheckTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/planner/massdb/GroupCommitInsertRpcTimeoutTest.java"
   ],
   "apache": [
     "docker-compose/docker-compose.be-host.yml",
@@ -49,10 +52,6 @@
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
     },
     "be/src/storage/compaction/compaction.cpp": {
-      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
-      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
-    },
-    "be/src/storage/index/inverted/query_v2/collect/multi_segment_util.h": {
       "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
     },
@@ -120,14 +119,6 @@
       "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
     },
-    "fe/fe-core/src/main/java/org/apache/doris/catalog/TabletInvertedIndex.java": {
-      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
-      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
-    },
-    "fe/fe-core/src/main/java/org/apache/doris/cloud/transaction/CloudGlobalTransactionMgr.java": {
-      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
-      "notice": "Apache Doris backport #61881. See MODIFICATIONS.md."
-    },
     "fe/fe-core/src/main/java/org/apache/doris/datasource/jdbc/client/JdbcMySQLClient.java": {
       "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
@@ -144,10 +135,6 @@
       "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
     },
-    "fe/fe-core/src/main/java/org/apache/doris/load/GroupCommitManager.java": {
-      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
-      "notice": "Apache Doris backports #60652, #61555. See MODIFICATIONS.md."
-    },
     "fe/fe-core/src/main/java/org/apache/doris/master/ReportHandler.java": {
       "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
@@ -159,10 +146,6 @@
     "fe/fe-core/src/main/java/org/apache/doris/planner/GroupCommitPlanner.java": {
       "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
-    },
-    "fe/fe-core/src/main/java/org/apache/doris/qe/Coordinator.java": {
-      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
-      "notice": "Apache Doris backport #60652. See MODIFICATIONS.md."
     },
     "fe/fe-core/src/main/java/org/apache/doris/qe/GlobalVariable.java": {
       "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
@@ -185,14 +168,6 @@
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
     },
     "fe/fe-core/src/main/java/org/apache/doris/system/SystemInfoService.java": {
-      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
-      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
-    },
-    "fe/fe-core/src/main/java/org/apache/doris/task/AgentTaskCleanupDaemon.java": {
-      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
-      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
-    },
-    "fe/fe-core/src/main/java/org/apache/doris/task/PublishVersionTask.java": {
       "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
     },

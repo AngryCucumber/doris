@@ -1448,7 +1448,13 @@ class Suite implements GroovyInterceptable {
         if (username != System.getProperty("user.name")) {
             return false
         }
-        def address = java.net.InetAddress.getByName(host)
+        def address
+        try {
+            address = java.net.InetAddress.getByName(host)
+        } catch (java.net.UnknownHostException e) {
+            // A host alias known only to the SSH client configuration is still reachable through scp.
+            return false
+        }
         return address.isAnyLocalAddress() || address.isLoopbackAddress() ||
                 java.net.NetworkInterface.getByInetAddress(address) != null
     }
@@ -1464,7 +1470,7 @@ class Suite implements GroovyInterceptable {
             if (source.exists() && source.canonicalFile == destination.canonicalFile) {
                 return
             }
-            cmd = "cp -r -- ${files} ${filePath}"
+            cmd = "cp -r -- ${quoteShellArgument(files)} ${quoteShellArgument(filePath)}"
         } else if (!fromDst) {
             cmd = "scp -o StrictHostKeyChecking=no -r ${files} ${username}@${host}:${filePath}"
         }

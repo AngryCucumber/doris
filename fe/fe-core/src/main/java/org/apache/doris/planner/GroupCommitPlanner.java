@@ -63,6 +63,7 @@ import org.apache.doris.thrift.TStreamLoadPutRequest;
 import org.apache.doris.thrift.TUniqueId;
 import org.apache.doris.transaction.TransactionStatus;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.google.protobuf.ByteString;
@@ -164,7 +165,7 @@ public class GroupCommitPlanner {
                 .build();
         LOG.info("query_id={}, rows={}, reuse group commit query_id={} ", DebugUtil.printId(ctx.queryId()),
                 rows.size(), DebugUtil.printId(loadId));
-        int timeoutSec = Math.max(1, ctx.getExecTimeoutS());
+        int timeoutSec = getGroupCommitInsertRpcTimeoutSec(ctx.getExecTimeoutS(), table.getGroupCommitIntervalMs());
         Future<PGroupCommitInsertResponse> future = BackendServiceProxy.getInstance()
                 .groupCommitInsert(new TNetworkAddress(backend.getHost(), backend.getBrpcPort()), request,
                         timeoutSec);
@@ -176,6 +177,21 @@ public class GroupCommitPlanner {
             throw new RpcException(backend.getHost(),
                     "group commit insert timed out after " + timeoutSec + "s", e);
         }
+    }
+
+    // The RPC returns when the rows reach the WAL (async mode) or when the internal group commit load that
+    // receives them finishes (sync mode). Bound the wait by that load's timeout plus a margin instead of the
+    // whole insert timeout, so a BE that is alive but stuck cannot hold this thread for up to insert_timeout.
+    @VisibleForTesting
+    public static int getGroupCommitInsertRpcTimeoutSec(int execTimeoutSec, long groupCommitIntervalMs) {
+        int timeoutSec = Math.max(1, execTimeoutSec);
+        if (Config.group_commit_insert_rpc_timeout_second <= 0 || Config.group_commit_timeout_multipler <= 0) {
+            return timeoutSec;
+        }
+        // The same timeout as GroupCommitTableValuedFunction sets for the internal group commit load.
+        long internalLoadTimeoutSec = Math.max((long) (groupCommitIntervalMs / 1000.0
+                * Config.group_commit_timeout_multipler), 600);
+        return (int) Math.min(timeoutSec, internalLoadTimeoutSec + Config.group_commit_insert_rpc_timeout_second);
     }
 
     public long getBackendId() {

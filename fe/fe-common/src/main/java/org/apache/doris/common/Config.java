@@ -761,6 +761,17 @@ public class Config extends ConfigBase {
             "The internal group commit timeout is the multiple of table's group_commit_interval_ms"})
     public static int group_commit_timeout_multipler = 10;
 
+    @ConfField(mutable = true, description = {
+            "预编译语句 group commit 插入等待 BE RPC 返回时，在内部攒批导入的超时时间"
+                    + "（max(group_commit_interval_ms × group_commit_timeout_multipler, 600 秒)）之外额外等待的秒数，"
+                    + "总时长不超过导入超时。用于限制 BE 存活但 RPC 挂住时 FE 线程的等待时间。"
+                    + "设置为 0 或 group_commit_timeout_multipler 为 0 时只使用导入超时。",
+            "Seconds a prepared group commit insert waits for its BE RPC beyond the timeout of the internal "
+                    + "group commit load (max(group_commit_interval_ms * group_commit_timeout_multipler, 600s)), "
+                    + "capped by the load timeout. It bounds how long an FE thread waits when a BE is alive but "
+                    + "its RPC hangs. 0, or a zero group_commit_timeout_multipler, uses only the load timeout."})
+    public static int group_commit_insert_rpc_timeout_second = 300;
+
     @ConfField(mutable = true, masterOnly = true, description = {"Stream load 的默认超时时间，单位是秒。",
             "Default timeout for stream load job, in seconds."})
     public static int stream_load_default_timeout_second = 86400 * 3; // 3days
@@ -1363,6 +1374,17 @@ public class Config extends ConfigBase {
                     + "for every tablet report without the cache. 0 means no cache."
     })
     public static int storage_medium_map_cache_second = 60;
+
+    @ConfField(mutable = true, masterOnly = true, description = {
+            "storage medium 映射不完整时的重试间隔。构建映射时，读锁被长时间占用的表会被跳过，"
+                    + "无法获取写锁的已到期分区也不会迁移到 HDD；此时映射只在该间隔内复用，之后重新构建。"
+                    + "设置为 0 表示下一次 tablet report 时立即重建。",
+            "Retry interval of an incomplete partition id -> storage medium map. A table whose read lock is "
+                    + "busy is skipped while building the map, and an expired partition whose table write lock "
+                    + "cannot be acquired is not moved to HDD; such a map is reused only within this interval. "
+                    + "0 means rebuild on the next tablet report."
+    })
+    public static int storage_medium_map_retry_second = 5;
 
     @ConfField(masterOnly = true, description = {
             "ReportHandler 消费 BE 上报的工作线程数。同一 BE 的上报固定路由到同一线程以保证单 BE 内有序，"

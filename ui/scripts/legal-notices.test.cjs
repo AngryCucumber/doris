@@ -119,6 +119,11 @@ test('legal notices remain public, local and usable under deployment prefixes', 
             await page.evaluate(() => localStorage.removeItem('username'));
             await page.goto(origin + prefix + '/Configuration');
             await page.waitForURL(origin + prefix + '/login');
+            // Reloading a Playground link must load the bundle even when a database is named like a route.
+            for (const route of ['/Playground/result/home', '/Playground/structure/Session-orders']) {
+                await page.goto(origin + prefix + route);
+                await page.waitForURL(origin + prefix + '/login');
+            }
             assert.deepEqual(errors, []);
             await context.close();
         }

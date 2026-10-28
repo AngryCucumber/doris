@@ -37,9 +37,7 @@ import oshi.hardware.VirtualMemory;
 import oshi.software.os.FileSystem;
 import oshi.software.os.NetworkParams;
 import oshi.software.os.OSFileStore;
-import oshi.software.os.OSProcess;
 import oshi.software.os.OperatingSystem;
-import oshi.software.os.OperatingSystem.ProcessSorting;
 import oshi.util.FormatUtil;
 import oshi.util.Util;
 
@@ -86,7 +84,6 @@ public class HardwareInfoController {
             map.put("OS", String.join("<br>", getOperatingSystem(os)));
             map.put("Processor", String.join("<br>", getProcessor(processor)));
             map.put("Memory", String.join("<br>", getMemory(memory)));
-            // map.put("Processes", String.join("<br>", getProcesses(os, memory)));
             map.put("Disk", String.join("<br>", getDisks(hal.getDiskStores())));
             map.put("FileSystem", String.join("<br>", getFileSystem(os.getFileSystem())));
             map.put("NetworkInterface", String.join("<br>", getNetworkInterfaces(hal.getNetworkIFs())));
@@ -209,31 +206,6 @@ public class HardwareInfoController {
             LOG.info("Failed to get memory info", e);
         }
         return memoryInfo;
-    }
-
-    private List<String> getProcesses(OperatingSystem os, GlobalMemory memory) {
-        List<String> processInfo = new ArrayList<>();
-        try {
-            processInfo.add("Processes:&nbsp;&nbsp; " + os.getProcessCount()
-                    + ", Threads:&nbsp;&nbsp; " + os.getThreadCount());
-            // Sort by highest CPU
-
-            List<OSProcess> procs = os.getProcesses((osProcess) -> true, ProcessSorting.CPU_DESC, 5);
-
-            processInfo.add("&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; PID  %CPU %MEM       VSZ       RSS Name");
-            for (int i = 0; i < procs.size() && i < 5; i++) {
-                OSProcess p = procs.get(i);
-                processInfo.add(String.format("&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; "
-                                + "%5d %5.1f %4.1f %9s %9s %s",
-                        p.getProcessID(),
-                        100d * (p.getKernelTime() + p.getUserTime()) / p.getUpTime(),
-                        100d * p.getResidentSetSize() / memory.getTotal(), FormatUtil.formatBytes(p.getVirtualSize()),
-                        FormatUtil.formatBytes(p.getResidentSetSize()), p.getName()));
-            }
-        } catch (Exception e) {
-            LOG.info("Failed to get process info", e);
-        }
-        return processInfo;
     }
 
     private List<String> getDisks(List<HWDiskStore> diskStores) {

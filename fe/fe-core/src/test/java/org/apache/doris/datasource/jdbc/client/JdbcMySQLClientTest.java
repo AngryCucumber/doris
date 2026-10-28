@@ -18,10 +18,19 @@
 
 package org.apache.doris.datasource.jdbc.client;
 
+import org.apache.doris.catalog.ArrayType;
+import org.apache.doris.catalog.ScalarType;
+import org.apache.doris.catalog.Type;
+import org.apache.doris.datasource.jdbc.util.JdbcFieldSchema;
+
 import org.junit.Assert;
 import org.junit.Test;
+import org.mockito.Mockito;
 
+import java.lang.reflect.Field;
+import java.sql.ResultSet;
 import java.util.Locale;
+import java.util.Optional;
 
 public class JdbcMySQLClientTest {
 
@@ -51,5 +60,57 @@ public class JdbcMySQLClientTest {
         } finally {
             Locale.setDefault(original);
         }
+    }
+
+    @Test
+    public void testDorisTypeTextWithOmittedScaleOrTrailingAttributes() throws Exception {
+        JdbcMySQLClient client = dorisClient();
+        Assert.assertEquals(ScalarType.createDecimalV3Type(10, 2), dorisType(client, "decimal(10,2)", 38, 9));
+        Assert.assertEquals(ScalarType.createDecimalV3Type(10, 0), dorisType(client, "DECIMAL(10)", 38, 9));
+        Assert.assertEquals(ScalarType.createDecimalV3Type(12, 3), dorisType(client, "decimal(12, 3) unsigned", 38, 9));
+        Assert.assertEquals(ScalarType.createDecimalV3Type(18, 4), dorisType(client, "decimalv3(18,4)", 38, 9));
+        Assert.assertEquals(ScalarType.createStringType(), dorisType(client, "decimal(76,6)", 38, 9));
+        Assert.assertEquals(ScalarType.createVarcharType(20), dorisType(client, "varchar(20) not null", 30, 0));
+        Assert.assertEquals(ScalarType.createCharType(8), dorisType(client, "char(8)", 30, 0));
+        Assert.assertEquals(ScalarType.createVarbinaryType(16), dorisType(client, "varbinary(16)", 30, 0));
+        Assert.assertEquals(ArrayType.create(ScalarType.createDecimalV3Type(10, 0), true),
+                dorisType(client, "array<decimal(10)>", 38, 9));
+        Assert.assertEquals(ArrayType.create(ScalarType.createDecimalV3Type(10, 2), true),
+                dorisType(client, "ARRAY<DECIMAL(10,2) UNSIGNED>", 38, 9));
+        Assert.assertEquals(ArrayType.create(ScalarType.createVarcharType(5), true),
+                dorisType(client, "array<varchar(5)>", 30, 0));
+    }
+
+    @Test
+    public void testMalformedDorisTypeArguments() throws Exception {
+        JdbcMySQLClient client = dorisClient();
+        // A top-level column falls back to the precision, scale and length in its JDBC metadata.
+        Assert.assertEquals(ScalarType.createDecimalV3Type(18, 4), dorisType(client, "decimal(x,2)", 18, 4));
+        Assert.assertEquals(ScalarType.createDecimalV3Type(18, 4), dorisType(client, "decimal(10,2", 18, 4));
+        Assert.assertEquals(ScalarType.createDecimalV3Type(18, 4), dorisType(client, "decimal(1,2,3)", 18, 4));
+        Assert.assertEquals(ScalarType.createVarcharType(30), dorisType(client, "varchar(*)", 30, 0));
+        Assert.assertEquals(ScalarType.createCharType(30), dorisType(client, "char(`len`)", 30, 0));
+        // An array element must not borrow the metadata of the outer array column.
+        Assert.assertEquals(ArrayType.create(Type.UNSUPPORTED, true), dorisType(client, "array<decimal(x,2)>", 18, 4));
+        Assert.assertEquals(ArrayType.create(Type.UNSUPPORTED, true), dorisType(client, "array<varchar(*)>", 30, 0));
+        Assert.assertEquals(ArrayType.create(Type.UNSUPPORTED, true), dorisType(client, "array<char(-1)>", 30, 0));
+    }
+
+    private static JdbcMySQLClient dorisClient() throws Exception {
+        // Avoid opening a remote connection: run the real type mapping of a client that detected Doris.
+        JdbcMySQLClient client = Mockito.mock(JdbcMySQLClient.class, Mockito.CALLS_REAL_METHODS);
+        Field isDoris = JdbcMySQLClient.class.getDeclaredField("isDoris");
+        isDoris.setAccessible(true);
+        isDoris.set(client, true);
+        return client;
+    }
+
+    private static Type dorisType(JdbcMySQLClient client, String typeName, int columnSize, int decimalDigits)
+            throws Exception {
+        JdbcFieldSchema field = new JdbcFieldSchema(Mockito.mock(ResultSet.class));
+        field.setDataTypeName(Optional.of(typeName));
+        field.setColumnSize(Optional.of(columnSize));
+        field.setDecimalDigits(Optional.of(decimalDigits));
+        return client.jdbcTypeToDoris(field);
     }
 }

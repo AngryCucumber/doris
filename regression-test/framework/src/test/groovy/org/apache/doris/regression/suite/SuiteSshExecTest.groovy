@@ -56,6 +56,25 @@ class SuiteSshExecTest {
     }
 
     @Test
+    void copiesLocalFixturePathsContainingShellCharacters() {
+        def sourceDirectory = Files.createDirectory(directory.resolve("source dir"))
+        def source = Files.writeString(sourceDirectory.resolve("it's \$HOME; *.txt"), "quoted fixture")
+        def targetDirectory = Files.createDirectory(directory.resolve("target dir"))
+        Suite.scpFiles(localUser, "127.0.0.1", source.toString(), targetDirectory.toString(), false)
+        assertEquals("quoted fixture", Files.readString(targetDirectory.resolve("it's \$HOME; *.txt")))
+        Suite.scpFiles(localUser, "127.0.0.1", sourceDirectory.toString(), targetDirectory.toString(), true)
+        assertEquals("quoted fixture", Files.readString(
+                targetDirectory.resolve("source dir").resolve("it's \$HOME; *.txt")))
+    }
+
+    @Test
+    void unresolvableSshHostAliasIsNotTreatedAsLocal() {
+        // Such aliases exist only in the SSH client configuration and must still be copied with scp.
+        assertFalse(Suite.isLocalHostForUser(localUser, "massdb-ssh-alias.invalid"))
+        assertTrue(Suite.isLocalHostForUser(localUser, "127.0.0.1"))
+    }
+
+    @Test
     void copyingLocalFixtureToItselfPreservesItsContents() {
         def source = Files.writeString(directory.resolve("source.txt"), "unchanged")
         Suite.scpFiles(localUser, "127.0.0.1", source.toString(), source.toString(), false)

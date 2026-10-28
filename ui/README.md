@@ -38,6 +38,7 @@ npm run build               # production assets and legal/ in dist/
 npm run check:notices       # versions, content and bundle hashes
 npx playwright install chromium
 npm run test:legal          # browser checks; screenshots in ../.build-records/ui/screenshots/
+npm run test:base-href      # deployment-prefix detection of src/index.html, no build or browser needed
 ```
 
 The browser tests use a local static server and mock the login API. They cover

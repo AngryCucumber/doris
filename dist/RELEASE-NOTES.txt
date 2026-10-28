@@ -90,6 +90,19 @@ In same-host validation, deploying these symbols added approximately 300-400 MiB
 of RSS per BE. RSS includes shareable file mappings. Slim deployment without the
 separate symbols did not exhibit this fixed increase.
 
+Code review fixes: rebuilding the storage-medium map no longer waits for a table
+whose lock is held. The table is skipped, the incomplete map is reused for at most
+storage_medium_map_retry_second (default 5) and then rebuilt, and an expired SSD
+partition whose table cannot be locked no longer forces a rebuild on every report.
+Tablet reports no longer abort when a replica of a cooling-down tablet is deleted
+concurrently. JDBC catalogs accept Doris DECIMAL(p) and type declarations followed
+by attributes. Reloading a Playground page for a database or table named like a
+page, such as home or Session, loads the UI again. A prepared Group Commit insert
+waits for its BE at most the internal Group Commit load timeout plus
+group_commit_insert_rpc_timeout_second (default 300) instead of the whole insert
+timeout. The BE request is not cancelled, so rows of a timed-out insert may still be
+written; do not retry such an insert blindly.
+
 rc415 更新：源码基线升级至 Apache Doris 4.1.5-release；保留 MassDB 品牌、
 JDBC 数组精度、报告去重与并行处理、存储介质缓存、compaction 防护、
 Group Commit 超时与元数据工具初始化修复。已有上游修复使用 4.1.5 的实现。
@@ -100,4 +113,11 @@ Group Commit 超时与元数据工具初始化修复。已有上游修复使用 
 lib/debug_info/<binary>.dbg。只部署精简包时，部分地址仍可能无法解析为函数名。
 本次同机验证中，部署完整符号使每个 BE 的 RSS 增加约 300-400 MiB（含可共享文件映射）；
 不部署分离符号的精简配置未出现这部分固定增量。
+代码审查修复：重建存储介质映射时不再等待被长时间加锁的表，该表本轮跳过，不完整的映射
+最多复用 storage_medium_map_retry_second（默认 5 秒）后重建；已到期 SSD 分区拿不到写锁时
+不再导致每次上报都重建。冷却中 tablet 的副本被并发删除时，tablet 上报不再中断。
+JDBC catalog 支持 Doris 的 DECIMAL(p) 以及后接属性的类型声明。库名或表名与页面同名
+（如 home、Session）时，刷新 Playground 页面可正常加载。预编译 Group Commit 插入等待
+BE 的时间不超过内部攒批导入超时加 group_commit_insert_rpc_timeout_second（默认 300 秒），
+不再等满整个导入超时；BE 端请求不会被取消，超时报错的插入仍可能写入，不应直接重试。
 历史二进制审查记录仅适用于原审查包，不代表 rc415 已完成构建或验证。

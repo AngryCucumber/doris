@@ -647,12 +647,14 @@ public class LocalTabletInvertedIndex extends TabletInvertedIndex {
         }
 
         // check cooldown replica is alive
-        Map<Long, Replica> replicaMap = replicaMetaTable.row(beTabletInfo.getTabletId());
-        if (replicaMap.isEmpty()) {
+        // This runs after tabletReport released the index lock, while another report worker may delete
+        // a replica of the same tablet. Iterate a copy taken under the lock, not the live row view.
+        List<Replica> replicas = getReplicasByTabletId(beTabletInfo.getTabletId());
+        if (replicas.isEmpty()) {
             return;
         }
         boolean replicaAlive = false;
-        for (Replica replica : replicaMap.values()) {
+        for (Replica replica : replicas) {
             if (replica.getId() == cooldownConf.first) {
                 if (replica.isAlive()) {
                     replicaAlive = true;

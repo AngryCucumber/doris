@@ -14,7 +14,6 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
-// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.task;
 
@@ -72,14 +71,6 @@ public class AgentTaskCleanupDaemon extends MasterDaemon {
             if (agentTask instanceof PushTask) {
                 PushTask task = ((PushTask) agentTask);
                 task.countDownLatchWithStatus(beId, agentTask.getTabletId(), new Status(TStatusCode.ABORTED, errMsg));
-            }
-            if (agentTask instanceof PublishVersionTask
-                    && ((PublishVersionTask) agentTask).getSuccTablets() == null) {
-                // BE is down: this replica's publish is treated as failed. Set an empty map so that
-                // downstream checkReplicaContinuousVersionSucc judges this replica as not-succeeded and
-                // goes through quorum, instead of NPE-ing on a null succTablets. (defensive; also covered
-                // by PublishVersionTask defaulting succTablets to an empty map)
-                ((PublishVersionTask) agentTask).setSuccTablets(Maps.newHashMap());
             }
             agentTask.setFinished(true);
             agentTask.setErrorCode(TStatusCode.ABORTED);

@@ -421,6 +421,12 @@ public class JdbcMySQLClient extends JdbcClient {
     }
 
     private Type dorisTypeToDoris(JdbcFieldSchema fieldSchema) {
+        return dorisTypeToDoris(fieldSchema, false);
+    }
+
+    // The column metadata of an array element's copied field schema describes the outer array column, so
+    // an element whose type arguments cannot be parsed is unsupported instead of borrowing that metadata.
+    private Type dorisTypeToDoris(JdbcFieldSchema fieldSchema, boolean isArrayElement) {
         String type = fieldSchema.getDataTypeName().orElse("unknown");
         if (type == null || type.isEmpty()) {
             return Type.UNSUPPORTED;
@@ -433,7 +439,7 @@ public class JdbcMySQLClient extends JdbcClient {
             String innerType = upperType.substring(6, upperType.length() - 1).trim();
             JdbcFieldSchema innerFieldSchema = new JdbcFieldSchema(fieldSchema);
             innerFieldSchema.setDataTypeName(Optional.of(innerType));
-            Type arrayInnerType = dorisTypeToDoris(innerFieldSchema);
+            Type arrayInnerType = dorisTypeToDoris(innerFieldSchema, true);
             return ArrayType.create(arrayInnerType, true);
         }
 
@@ -460,12 +466,16 @@ public class JdbcMySQLClient extends JdbcClient {
                 return Type.DOUBLE;
             case "DECIMAL":
             case "DECIMALV3": {
-                // Array metadata describes the outer column, not the element's precision and scale.
                 if (openParen != -1) {
-                    String[] precisionAndScale = upperType.substring(openParen + 1, upperType.length() - 1).split(",");
-                    int precision = Integer.parseInt(precisionAndScale[0].trim());
-                    int scale = Integer.parseInt(precisionAndScale[1].trim());
-                    return createDecimalOrStringType(precision, scale);
+                    int[] precisionAndScale = parseDorisTypeArguments(upperType, openParen, 2);
+                    if (precisionAndScale != null) {
+                        // DECIMAL(p) means DECIMAL(p, 0).
+                        int scale = precisionAndScale.length > 1 ? precisionAndScale[1] : 0;
+                        return createDecimalOrStringType(precisionAndScale[0], scale);
+                    }
+                    if (isArrayElement) {
+                        return Type.UNSUPPORTED;
+                    }
                 }
                 int precision = fieldSchema.requiredColumnSize();
                 int scale = fieldSchema.requiredDecimalDigits();
@@ -484,10 +494,14 @@ public class JdbcMySQLClient extends JdbcClient {
                 return ScalarType.createDatetimeV2Type(scale);
             }
             case "CHAR":
-            case "CHARACTER":
-                return ScalarType.createCharType(dorisTypeLength(upperType, openParen, fieldSchema));
-            case "VARCHAR":
-                return ScalarType.createVarcharType(dorisTypeLength(upperType, openParen, fieldSchema));
+            case "CHARACTER": {
+                int length = dorisTypeLength(upperType, openParen, fieldSchema, isArrayElement);
+                return length < 0 ? Type.UNSUPPORTED : ScalarType.createCharType(length);
+            }
+            case "VARCHAR": {
+                int length = dorisTypeLength(upperType, openParen, fieldSchema, isArrayElement);
+                return length < 0 ? Type.UNSUPPORTED : ScalarType.createVarcharType(length);
+            }
             case "STRING":
             case "TEXT":
             case "JSON":
@@ -497,15 +511,51 @@ public class JdbcMySQLClient extends JdbcClient {
                 return ScalarType.createHllType();
             case "BITMAP":
                 return Type.BITMAP;
-            case "VARBINARY":
-                return ScalarType.createVarbinaryType(dorisTypeLength(upperType, openParen, fieldSchema));
+            case "VARBINARY": {
+                int length = dorisTypeLength(upperType, openParen, fieldSchema, isArrayElement);
+                return length < 0 ? Type.UNSUPPORTED : ScalarType.createVarbinaryType(length);
+            }
             default:
                 return Type.UNSUPPORTED;
         }
     }
 
-    private int dorisTypeLength(String type, int openParen, JdbcFieldSchema fieldSchema) {
-        return openParen == -1 ? fieldSchema.requiredColumnSize()
-                : Integer.parseInt(type.substring(openParen + 1, type.length() - 1).trim());
+    // Returns -1 when the declared length of an array element cannot be read from its type text.
+    private int dorisTypeLength(String type, int openParen, JdbcFieldSchema fieldSchema, boolean isArrayElement) {
+        if (openParen != -1) {
+            int[] length = parseDorisTypeArguments(type, openParen, 1);
+            if (length != null) {
+                return length[0];
+            }
+            if (isArrayElement) {
+                return -1;
+            }
+        }
+        return fieldSchema.requiredColumnSize();
+    }
+
+    // Parses the non-negative integers between the opening parenthesis and the first closing one, so
+    // that attributes after the arguments are ignored. Returns null if they are missing or malformed.
+    private static int[] parseDorisTypeArguments(String type, int openParen, int maxArguments) {
+        int closeParen = type.indexOf(')', openParen + 1);
+        if (closeParen == -1) {
+            return null;
+        }
+        String[] arguments = type.substring(openParen + 1, closeParen).split(",", -1);
+        if (arguments.length > maxArguments) {
+            return null;
+        }
+        int[] values = new int[arguments.length];
+        for (int i = 0; i < arguments.length; i++) {
+            try {
+                values[i] = Integer.parseInt(arguments[i].trim());
+            } catch (NumberFormatException e) {
+                return null;
+            }
+            if (values[i] < 0) {
+                return null;
+            }
+        }
+        return values;
     }
 }

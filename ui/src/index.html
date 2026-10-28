@@ -21,11 +21,28 @@ under the License.
 <!DOCTYPE html>
 <html lang="en">
 <script>
+// The segments before the application route form the deployment prefix. A prefix may contain route
+// names (/home/team/login) and database or table names after a route may equal them
+// (/Playground/result/home), so take the first route segment from which the remaining path is a
+// complete route: each route allows at most this many segments, counting itself.
 var segments = location.pathname.split('/');
-var routes = ['login', 'legal-notices', 'home', 'Playground', 'System', 'QueryProfile', 'Session', 'Configuration'];
+var routeSegments = {
+    'login': 1, 'legal-notices': 1, 'home': 1, 'Playground': 3, 'System': 1,
+    'QueryProfile': 2, 'Session': 1, 'Configuration': 1
+};
+var playgroundViews = ['import', 'result', 'structure', 'default', 'history', 'favorite'];
+var pathEnd = segments[segments.length - 1] === '' ? segments.length - 1 : segments.length;
 var routeIndex = -1;
-for (var index = 1; index < segments.length; index++) {
-    if (routes.indexOf(segments[index]) !== -1) routeIndex = index;
+for (var index = 1; index < pathEnd && routeIndex === -1; index++) {
+    var route = segments[index];
+    var routeLength = pathEnd - index;
+    if (!Object.prototype.hasOwnProperty.call(routeSegments, route) || routeLength > routeSegments[route]) {
+        continue;
+    }
+    if (route === 'Playground' && routeLength > 1 && playgroundViews.indexOf(segments[index + 1]) === -1) {
+        continue;
+    }
+    routeIndex = index;
 }
 var res = routeIndex !== -1 ? segments.slice(0, routeIndex).join('/') + '/' : '/';
 if (routeIndex === -1 && segments.length > 4) {
