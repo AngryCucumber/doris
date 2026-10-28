@@ -90,10 +90,12 @@ In same-host validation, deploying these symbols added approximately 300-400 MiB
 of RSS per BE. RSS includes shareable file mappings. Slim deployment without the
 separate symbols did not exhibit this fixed increase.
 
-Code review fixes: rebuilding the storage-medium map no longer waits for a table
-whose lock is held. The table is skipped, the incomplete map is reused for at most
-storage_medium_map_retry_second (default 5) and then rebuilt, and an expired SSD
-partition whose table cannot be locked no longer forces a rebuild on every report.
+Code review fixes: rebuilding the storage-medium map no longer waits for tables
+whose locks are held. Each rebuild waits at most about 100 ms per phase in total,
+however many tables are busy. Busy tables are skipped, the incomplete map is
+reused for at most storage_medium_map_retry_second (default 5) and then rebuilt,
+and an expired SSD partition whose table cannot be locked no longer forces a
+rebuild on every report.
 Tablet reports no longer abort when a replica of a cooling-down tablet is deleted
 concurrently. JDBC catalogs accept Doris DECIMAL(p) and type declarations followed
 by attributes. Reloading a Playground page for a database or table named like a
@@ -113,7 +115,8 @@ Group Commit 超时与元数据工具初始化修复。已有上游修复使用 
 lib/debug_info/<binary>.dbg。只部署精简包时，部分地址仍可能无法解析为函数名。
 本次同机验证中，部署完整符号使每个 BE 的 RSS 增加约 300-400 MiB（含可共享文件映射）；
 不部署分离符号的精简配置未出现这部分固定增量。
-代码审查修复：重建存储介质映射时不再等待被长时间加锁的表，该表本轮跳过，不完整的映射
+代码审查修复：重建存储介质映射时不再等待被长时间加锁的表，每轮扫描与冷却阶段各自总共最多
+等待约 100 毫秒，与忙表数量无关；忙表本轮跳过，不完整的映射
 最多复用 storage_medium_map_retry_second（默认 5 秒）后重建；已到期 SSD 分区拿不到写锁时
 不再导致每次上报都重建。冷却中 tablet 的副本被并发删除时，tablet 上报不再中断。
 JDBC catalog 支持 Doris 的 DECIMAL(p) 以及后接属性的类型声明。库名或表名与页面同名

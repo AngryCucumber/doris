@@ -147,15 +147,17 @@ successful retries; the two performance series are never pooled together.
 Fixes for findings 1-9 of `docs/massdb-sql-rc415-code-review-20261028.md` that
 belong to this branch. Findings P1-P8 are inherited from 4.1.5 and unchanged.
 
-- `Env.java`, `Config.java`: the storage-medium map rebuild takes table read
-  locks with the existing 100 ms try-lock timeout instead of waiting while every
-  report worker is queued on the build lock. A skipped table, or an expired SSD
-  partition whose write lock is unavailable, marks the map incomplete; it is
-  logged and reused only for `storage_medium_map_retry_second` (default 5, 0
-  rebuilds on the next report). Expired partitions no longer set the next
-  cooldown deadline, so a failed cooldown no longer rebuilds on every report.
-  The scan still records the metadata version before it starts; a completed
-  cooldown changes metadata and causes one more scan.
+- `Env.java`, `Config.java`: the storage-medium map rebuild no longer waits for
+  busy table locks while every report worker is queued on the build lock. The
+  scan and the cooldown phase each share one 100 ms lock-wait budget across all
+  tables, so many busy tables cannot add 100 ms each; once a phase's budget is
+  spent, later busy tables are tried without waiting. A skipped table, or an
+  expired SSD partition whose write lock is unavailable, marks the map
+  incomplete; it is logged and reused only for `storage_medium_map_retry_second`
+  (default 5, 0 rebuilds on the next report). Expired partitions no longer set
+  the next cooldown deadline, so a failed cooldown no longer rebuilds on every
+  report. The scan still records the metadata version before it starts; a
+  completed cooldown changes metadata and causes one more scan.
 - `LocalTabletInvertedIndex.java`: the cooldown replica check iterates a copy of
   the tablet's replicas taken under the index lock, because it runs after the
   report releases that lock while another report worker may delete a replica.

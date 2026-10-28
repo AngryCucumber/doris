@@ -7,13 +7,18 @@
 
 package org.apache.doris.catalog.massdb;
 
+import org.apache.doris.catalog.Column;
 import org.apache.doris.catalog.DataProperty;
 import org.apache.doris.catalog.Database;
 import org.apache.doris.catalog.Env;
+import org.apache.doris.catalog.HashDistributionInfo;
+import org.apache.doris.catalog.KeysType;
+import org.apache.doris.catalog.MaterializedIndex;
 import org.apache.doris.catalog.OlapTable;
 import org.apache.doris.catalog.Partition;
 import org.apache.doris.catalog.PartitionInfo;
 import org.apache.doris.catalog.ReplicaAllocation;
+import org.apache.doris.catalog.Table;
 import org.apache.doris.common.Config;
 import org.apache.doris.datasource.InternalCatalog;
 import org.apache.doris.persist.EditLog;
@@ -452,5 +457,123 @@ public class StorageMediumMapCacheTest {
         Assert.assertFalse(tableLock.isWriteLocked());
         Assert.assertEquals(0, tableLock.getReadLockCount());
         Assert.assertEquals(TStorageMedium.HDD, env.getPartitionIdToStorageMediumMap().get(PARTITION_ID));
+    }
+
+    // Real tables with their real fair locks, registered next to the mocked healthy table.
+    private List<OlapTable> addRealTables(int count, DataProperty property) {
+        List<Table> tables = new ArrayList<>();
+        tables.add(table);
+        List<OlapTable> added = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            long id = 100 + i;
+            PartitionInfo info = new PartitionInfo();
+            HashDistributionInfo distribution = new HashDistributionInfo(1, new ArrayList<Column>());
+            OlapTable real = new OlapTable(id, "real_" + i, new ArrayList<Column>(), KeysType.DUP_KEYS, info,
+                    distribution);
+            long partitionId = 1000 + i;
+            real.addPartition(new Partition(partitionId, "p", new MaterializedIndex(partitionId,
+                    MaterializedIndex.IndexState.NORMAL), distribution));
+            info.addPartition(partitionId, new DataProperty(property.getStorageMedium(), property.getCooldownTimeMs(),
+                    ""), ReplicaAllocation.DEFAULT_ALLOCATION, false, true);
+            Mockito.when(database.getTableNullable(id)).thenReturn(real);
+            tables.add(real);
+            added.add(real);
+        }
+        Mockito.when(database.getTables()).thenReturn(tables);
+        return added;
+    }
+
+    private static Future<?> holdLocks(ExecutorService pool, List<OlapTable> tables, boolean write,
+            CountDownLatch locked, CountDownLatch release) {
+        return pool.submit(() -> {
+            for (OlapTable real : tables) {
+                if (write) {
+                    real.writeLock();
+                } else {
+                    real.readLock();
+                }
+            }
+            try {
+                locked.countDown();
+                release.await();
+            } finally {
+                for (OlapTable real : tables) {
+                    if (write) {
+                        real.writeUnlock();
+                    } else {
+                        real.readUnlock();
+                    }
+                }
+            }
+            return null;
+        });
+    }
+
+    // Before the shared budget, each of the 16 busy tables added a 100 ms try-lock wait (1.6 s in total) while
+    // every other report worker waited on the build lock.
+    @Test
+    public void manyBusyTablesShareOneReadLockWait() throws Exception {
+        List<OlapTable> busy = addRealTables(16, new DataProperty(TStorageMedium.HDD));
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try {
+            Future<?> holder = holdLocks(pool, busy, true, locked, release);
+            Assert.assertTrue(locked.await(10, TimeUnit.SECONDS));
+            long start = System.nanoTime();
+            HashMap<Long, TStorageMedium> map = env.getPartitionIdToStorageMediumMap();
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+            Assert.assertTrue("rebuild waited " + elapsedMs + " ms", elapsedMs < 800);
+            Assert.assertEquals(TStorageMedium.SSD, map.get(PARTITION_ID));
+            for (int i = 0; i < busy.size(); i++) {
+                Assert.assertFalse(map.containsKey(1000L + i));
+            }
+            release.countDown();
+            holder.get(10, TimeUnit.SECONDS);
+            TimeUnit.MILLISECONDS.sleep(Config.storage_medium_map_retry_second * 1000L + 100);
+            map = env.getPartitionIdToStorageMediumMap();
+            for (int i = 0; i < busy.size(); i++) {
+                Assert.assertEquals(TStorageMedium.HDD, map.get(1000L + i));
+            }
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    public void manyCooldownsBlockedByReadersShareOneWriteLockWait() throws Exception {
+        List<OlapTable> expired = addRealTables(16,
+                new DataProperty(TStorageMedium.SSD, System.currentTimeMillis() - 1000, ""));
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try {
+            // Long readers do not stop the scan, but every cooldown needs the table write lock.
+            Future<?> holder = holdLocks(pool, expired, false, locked, release);
+            Assert.assertTrue(locked.await(10, TimeUnit.SECONDS));
+            long start = System.nanoTime();
+            HashMap<Long, TStorageMedium> map = env.getPartitionIdToStorageMediumMap();
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+            Assert.assertTrue("rebuild waited " + elapsedMs + " ms", elapsedMs < 800);
+            Assert.assertEquals(TStorageMedium.SSD, map.get(PARTITION_ID));
+            for (int i = 0; i < expired.size(); i++) {
+                Assert.assertFalse(map.containsKey(1000L + i));
+                Assert.assertEquals(TStorageMedium.SSD,
+                        expired.get(i).getPartitionInfo().getDataProperty(1000L + i).getStorageMedium());
+            }
+            release.countDown();
+            holder.get(10, TimeUnit.SECONDS);
+            TimeUnit.MILLISECONDS.sleep(Config.storage_medium_map_retry_second * 1000L + 100);
+            map = env.getPartitionIdToStorageMediumMap();
+            for (int i = 0; i < expired.size(); i++) {
+                Assert.assertEquals(TStorageMedium.HDD, map.get(1000L + i));
+                Assert.assertEquals(TStorageMedium.HDD,
+                        expired.get(i).getPartitionInfo().getDataProperty(1000L + i).getStorageMedium());
+            }
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
     }
 }

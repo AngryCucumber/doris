@@ -5156,6 +5156,20 @@ public class Env {
         }
     }
 
+    // Total time one rebuild phase may spend waiting for busy table locks. Report workers queue on
+    // storageMediumMapBuildLock meanwhile, so each busy table must not add another full try-lock timeout.
+    private static final class LockWaitBudget {
+        private long remainingNs = TimeUnit.MILLISECONDS.toNanos(Table.TRY_LOCK_TIMEOUT_MS);
+
+        long timeoutMs() {
+            return TimeUnit.NANOSECONDS.toMillis(Math.max(0, remainingNs));
+        }
+
+        void spentSince(long startNs) {
+            remainingNs -= System.nanoTime() - startNs;
+        }
+    }
+
     private volatile StorageMediumMapCache storageMediumMapCache = null;
     private final Object storageMediumMapBuildLock = new Object();
 
@@ -5169,7 +5183,8 @@ public class Env {
 
         // Multiple report workers may reach here together when the cache expires. Let one of them
         // rebuild and the others reuse the result instead of scanning the whole catalog concurrently.
-        // The rebuild never waits indefinitely for a table lock, because the other workers are queued here.
+        // The other workers are queued here, so a rebuild waits for busy table locks at most one
+        // LockWaitBudget per phase in total, however many tables are busy.
         synchronized (storageMediumMapBuildLock) {
             cache = storageMediumMapCache;
             if (cache != null && cache.isValid(cacheValidMs, retryMs)) {
@@ -5191,6 +5206,7 @@ public class Env {
         // Tables missing from the map or still holding expired SSD partitions; both make it incomplete.
         List<String> readLockBusyTables = new ArrayList<>();
         List<String> cooldownFailedTables = new ArrayList<>();
+        LockWaitBudget readLockBudget = new LockWaitBudget();
 
         // record partition which need to change storage medium
         // dbId -> (tableId -> partitionId)
@@ -5214,7 +5230,10 @@ public class Env {
                 OlapTable olapTable = (OlapTable) table;
                 // A table write lock may be held for a long time. Skip the table instead of blocking
                 // every report worker queued on storageMediumMapBuildLock; it is retried soon.
-                if (!olapTable.tryReadLock(Table.TRY_LOCK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                long lockStartNs = System.nanoTime();
+                boolean locked = olapTable.tryReadLock(readLockBudget.timeoutMs(), TimeUnit.MILLISECONDS);
+                readLockBudget.spentSince(lockStartNs);
+                if (!locked) {
                     readLockBusyTables.add(dbId + "." + table.getName() + "(" + tableId + ")");
                     continue;
                 }
@@ -5252,6 +5271,7 @@ public class Env {
         } // end for dbs
 
         // handle data property changed
+        LockWaitBudget writeLockBudget = new LockWaitBudget();
         for (Long dbId : changedPartitionsMap.keySet()) {
             Database db = getInternalCatalog().getDbNullable(dbId);
             if (db == null) {
@@ -5268,7 +5288,10 @@ public class Env {
                 OlapTable olapTable = (OlapTable) table;
                 // use try lock to avoid blocking a long time.
                 // if block too long, backend report rpc will timeout.
-                if (!olapTable.tryWriteLockIfExist(Table.TRY_LOCK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                long lockStartNs = System.nanoTime();
+                boolean locked = olapTable.tryWriteLockIfExist(writeLockBudget.timeoutMs(), TimeUnit.MILLISECONDS);
+                writeLockBudget.spentSince(lockStartNs);
+                if (!locked) {
                     LOG.warn("try get table {} writelock but failed" + " when checking backend storage medium",
                             table.getName());
                     cooldownFailedTables.add(dbId + "." + table.getName() + "(" + tableId + ")");
