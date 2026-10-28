@@ -14,6 +14,7 @@ header:
     - "docker-compose/docker-compose.same-host.yml"
     - "docker/compilation/Dockerfile.ui"
     - "fe/**/src/*/java/**/massdb/**/*.java"
+    - "fe/be-java-extensions/jdbc-scanner/src/test/java/org/apache/doris/jdbc/massdb/MySQLJdbcArrayTest.java"
     - "fe/fe-core/src/test/java/org/apache/doris/master/ReportHandlerTest.java"
     - "ui/scripts/collect-bundled-licenses.cjs"
     - "ui/scripts/legal-notices.test.cjs"

@@ -14,11 +14,14 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.datasource.jdbc.client;
 
 import org.junit.Assert;
 import org.junit.Test;
+
+import java.util.Locale;
 
 public class JdbcMySQLClientTest {
 
@@ -33,5 +36,20 @@ public class JdbcMySQLClientTest {
         Assert.assertFalse(JdbcMySQLClient.isDorisCompatibleVersionComment("MySQL Community Server - GPL"));
         Assert.assertFalse(JdbcMySQLClient.isDorisCompatibleVersionComment(""));
         Assert.assertFalse(JdbcMySQLClient.isDorisCompatibleVersionComment(null));
+    }
+
+    @Test
+    public void testMassDbDetectionIsIndependentOfDefaultLocale() {
+        Locale original = Locale.getDefault();
+        try {
+            Locale.setDefault(Locale.forLanguageTag("tr-TR"));
+            Assert.assertTrue(JdbcMySQLClient.isDorisCompatibleVersionComment("massdb-2.0.5-sql-rc415"));
+            Assert.assertTrue(JdbcMySQLClient.isDorisCompatibleVersionComment("MASSDB SQL 2.0.5-rc415"));
+            Assert.assertTrue(JdbcMySQLClient.isDorisCompatibleVersionComment("APACHE DORIS 4.1.5"));
+            Assert.assertTrue(JdbcMySQLClient.isDorisCompatibleVersionComment("SelectDB Cloud version 4.1.5"));
+            Assert.assertFalse(JdbcMySQLClient.isDorisCompatibleVersionComment("MySQL Community Server - GPL"));
+        } finally {
+            Locale.setDefault(original);
+        }
     }
 }

@@ -1,8 +1,59 @@
 # MassDB SQL Modifications
 
-MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c524008e8ab2e43b79312f716a3a423a8` (`4.0.5-rc01`), verified against the [Apache repository](https://github.com/apache/doris/commit/59de8c4c524008e8ab2e43b79312f716a3a423a8) on 2026-09-06.
+MassDB SQL is derived from Apache Doris. Upstream source baseline: `917b20be83878e98f94e3ebf7efccc80346e3e50` (`4.1.5-release`), verified against the [Apache repository](https://github.com/apache/doris/commit/917b20be83878e98f94e3ebf7efccc80346e3e50) on 2026-10-28.
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
+
+## Doris 4.1.5 baseline and MassDB 2.0.5-rc415 (2026-10-28)
+
+- Base branch `4.1.5` on upstream tag `4.1.5-release`; migrate the product
+  changes from `2.0.5` at `5d034e7c8b378d1a9e324f0cff5a57e42ddf625f`.
+  Product numbering remains independent: `massdb-sql-2.0.5-rc415` for packages
+  and `massdb-2.0.5-sql-rc415` for runtime product identification.
+- Preserve Group Commit RPC deadlines, restart handling, report deduplication,
+  per-backend report workers, storage-medium caching, compaction safeguards,
+  metadata-tool startup initialization, JDBC array fidelity and product UI.
+- Adapt the report-diff executor rejection policy to `LocalTabletInvertedIndex`;
+  preserve the upstream abstract `TabletInvertedIndex` and its cloud implementation.
+- Retain upstream Group Commit fixes #60652/#61555 (included by #61953) and
+  the already-applied aborted-load locking fix #61881. These replace local
+  backport commits `3d3b870a175`, `508fb026de8` and `5abf4fdd0d5`.
+- Retain upstream bound-reader splitting #63138/#65687 and the CLucene
+  multi-segment `readBlock` implementation #66736/#66738. These supersede
+  local workarounds `597b5e8ebde`, `88078697871` and `c416a6f7bfb`; preserve
+  upstream NestedGroup and scoring behavior.
+- Preserve upstream JDBC timestamp/time-zone fixes and detection of Doris,
+  SelectDB and VeloDB while adding MassDB detection and exact array decoding.
+- Migrate BE modifications and source-header registrations from `http`, `olap`
+  and `vec` to the upstream `service/http`, `storage` and `exprs` paths.
+  Keep the upstream removal of the obsolete GCC 7 image and its newer build
+  module, profiling and License Eyes workflows.
+- Update active source provenance and release notes. Earlier sections and
+  dated binary/package review evidence describe the original 4.0.5-based
+  packages; their hashes and verification results do not describe rc415.
+- Add JDBC unit coverage for exact large integers and decimals, signed zero,
+  nested NULL arrays, NULL dates/booleans, timestamp fractions at precisions
+  0–6 and MassDB recognition under a Turkish default locale.
+
+Validation for this migration:
+
+- FE main/test compilation and 36 selected tests passed: `ReportHandlerTest`,
+  `SystemInfoServiceTest`, `JdbcMySQLClientTest`, `GroupCommitManagerTest`,
+  `GroupCommitManagerBackendSelectionTest` and `DatabaseTransactionMgrTest`.
+- JDBC scanner compilation and 28 tests passed: `MySQLJdbcArrayTest`,
+  `JdbcTimestampSemanticsTest`, `JdbcTimestampBindTest` and `BaseJdbcExecutorTest`.
+- All Java modules passed `mvn checkstyle:check`. The 35 product/release Python
+  tests, UI production build, `check:notices`, browser `test:legal`, source-header
+  checks, shell syntax checks and `git diff --check` passed.
+- Nine migrated BE/test translation units passed Clang syntax checks, including
+  search, compaction, metadata-tool initialization, HTTP version display and
+  heartbeat changes. Checks used 0.24.0 Thrift-generated sources/headers and the
+  checksum-verified timsort header required by the new baseline.
+- The host still has the older native dependency installation. FE verification
+  used a locally built Thrift 0.24.0 compiler instead of the installed 0.16.0.
+  Full BE unit-test linking was blocked by missing `libarrow_compute.a`; the
+  native dependency set must be rebuilt for 4.1.5 before full BE verification.
+  No rc415 distribution package or live-cluster regression result is claimed.
 
 ## Complete rc02 release builds (2026-09-09)
 

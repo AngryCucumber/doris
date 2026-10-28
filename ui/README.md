@@ -137,7 +137,7 @@ reference a development build displays `unknown`. A release rejects unknown
 or dirty source state. An explicit commit string alone does not prove a source
 tree is clean; use a committed clean checkout or a verified Git export.
 MassDB `2.0.5` remains its own product version, independently of the
-Apache Doris `4.0.5-rc01` source baseline.
+Apache Doris `4.1.5-release` source baseline.
 
 The 11 independent implementation files use the company commercial header;
 four earlier independent Apache files retain their original grants. Run

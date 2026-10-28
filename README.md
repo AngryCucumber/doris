@@ -47,8 +47,8 @@ The existing ARM64 Compose deployment examples are documented in
 
 ## Upstream source and licenses
 
-The recorded source baseline is Apache Doris `4.0.5-rc01`, commit
-[`59de8c4c524008e8ab2e43b79312f716a3a423a8`](https://github.com/apache/doris/commit/59de8c4c524008e8ab2e43b79312f716a3a423a8).
+The recorded source baseline is Apache Doris `4.1.5-release`, commit
+[`917b20be83878e98f94e3ebf7efccc80346e3e50`](https://github.com/apache/doris/commit/917b20be83878e98f94e3ebf7efccc80346e3e50).
 MassDB product versions are independent of upstream version numbers.
 [MODIFICATIONS.md](MODIFICATIONS.md) records fork changes and source attribution;
 [dist/product-provenance.json](dist/product-provenance.json) supplies build metadata.

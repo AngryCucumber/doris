@@ -355,7 +355,7 @@ if '--assemble-package' in sys.argv:
             with self.subTest(avx2=avx2):
                 checkout, env = self.release_layout_fixture("cpu-" + str(avx2))
                 command = ["bash", str(checkout / "build-for-release.sh"),
-                           "--version", "2.0.5-rc02", "-j", "4", "--tar"]
+                           "--version", "2.0.5-rc415", "-j", "4", "--tar"]
                 if not avx2:
                     command.append("--noavx2")
                 result = subprocess.run(command, env=env, capture_output=True, text=True)
@@ -373,7 +373,7 @@ if '--assemble-package' in sys.argv:
         for jobs in ("0", "-1", "abc", "1.5"):
             with self.subTest(jobs=jobs):
                 result = subprocess.run(["bash", str(checkout / "build-for-release.sh"),
-                                         "--version", "2.0.5-rc02", "-j", jobs],
+                                         "--version", "2.0.5-rc415", "-j", jobs],
                                         env=env, capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("Invalid parallelism", result.stderr)
