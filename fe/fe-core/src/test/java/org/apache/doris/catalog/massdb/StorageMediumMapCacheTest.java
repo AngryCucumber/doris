@@ -26,15 +26,18 @@ import org.junit.Test;
 import org.mockito.Mockito;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public class StorageMediumMapCacheTest {
@@ -43,6 +46,8 @@ public class StorageMediumMapCacheTest {
     private int previousRetrySeconds;
     private Env env;
     private InternalCatalog catalog;
+    private Database database;
+    private EditLog editLog;
     private OlapTable table;
     private PartitionInfo partitionInfo;
 
@@ -53,9 +58,10 @@ public class StorageMediumMapCacheTest {
         Config.storage_medium_map_cache_second = 60;
         Config.storage_medium_map_retry_second = 1;
         env = Mockito.spy(new Env(false));
-        env.setEditLog(Mockito.mock(EditLog.class));
+        editLog = Mockito.mock(EditLog.class);
+        env.setEditLog(editLog);
         catalog = Mockito.mock(InternalCatalog.class);
-        Database database = Mockito.mock(Database.class);
+        database = Mockito.mock(Database.class);
         table = Mockito.mock(OlapTable.class);
         Partition partition = Mockito.mock(Partition.class);
         partitionInfo = new PartitionInfo();
@@ -171,6 +177,10 @@ public class StorageMediumMapCacheTest {
         Mockito.when(table.tryReadLock(Mockito.anyLong(), Mockito.any())).thenAnswer(invocation ->
                 tableLock.readLock().tryLock(invocation.getArgument(0), invocation.getArgument(1)));
         Mockito.doAnswer(invocation -> {
+            tableLock.readLock().lock();
+            return null;
+        }).when(table).readLock();
+        Mockito.doAnswer(invocation -> {
             tableLock.readLock().unlock();
             return null;
         }).when(table).readUnlock();
@@ -265,5 +275,182 @@ public class StorageMediumMapCacheTest {
         } finally {
             workers.shutdownNow();
         }
+    }
+
+    private OlapTable addHddTable(long tableId, long partitionId) {
+        OlapTable other = Mockito.mock(OlapTable.class);
+        Partition otherPartition = Mockito.mock(Partition.class);
+        PartitionInfo otherInfo = new PartitionInfo();
+        otherInfo.addPartition(partitionId, new DataProperty(TStorageMedium.HDD),
+                ReplicaAllocation.DEFAULT_ALLOCATION, false, true);
+        Mockito.when(other.isManagedTable()).thenReturn(true);
+        Mockito.when(other.getId()).thenReturn(tableId);
+        Mockito.when(other.getName()).thenReturn("table_" + tableId);
+        Mockito.when(other.getPartitionInfo()).thenReturn(otherInfo);
+        Mockito.when(other.getAllPartitions()).thenReturn(Collections.singletonList(otherPartition));
+        Mockito.when(other.tryReadLock(Mockito.anyLong(), Mockito.any())).thenReturn(true);
+        Mockito.when(otherPartition.getId()).thenReturn(partitionId);
+        Mockito.when(database.getTables()).thenReturn(Arrays.asList(table, other));
+        return other;
+    }
+
+    @Test
+    public void busyTableIsSkippedWhileOtherTablesAreServed() throws Exception {
+        addHddTable(17L, 19L);
+        Mockito.when(table.tryReadLock(Mockito.anyLong(), Mockito.any())).thenReturn(false, true);
+        HashMap<Long, TStorageMedium> map = env.getPartitionIdToStorageMediumMap();
+        Assert.assertFalse(map.containsKey(PARTITION_ID));
+        Assert.assertEquals(TStorageMedium.HDD, map.get(19L));
+        TimeUnit.MILLISECONDS.sleep(Config.storage_medium_map_retry_second * 1000L + 100);
+        map = env.getPartitionIdToStorageMediumMap();
+        Assert.assertEquals(TStorageMedium.SSD, map.get(PARTITION_ID));
+        Assert.assertEquals(TStorageMedium.HDD, map.get(19L));
+    }
+
+    @Test
+    public void incompleteMapIsStillRebuiltOnMetadataChange() {
+        Config.storage_medium_map_retry_second = 60;
+        Mockito.when(table.tryReadLock(Mockito.anyLong(), Mockito.any())).thenReturn(false, true);
+        Assert.assertFalse(env.getPartitionIdToStorageMediumMap().containsKey(PARTITION_ID));
+        partitionInfo.setDataProperty(PARTITION_ID, new DataProperty(TStorageMedium.HDD));
+        Assert.assertEquals(TStorageMedium.HDD, env.getPartitionIdToStorageMediumMap().get(PARTITION_ID));
+        Mockito.verify(catalog, Mockito.times(2)).getDbIds();
+    }
+
+    @Test
+    public void retryIntervalIsCappedByCacheTtl() throws Exception {
+        Config.storage_medium_map_cache_second = 1;
+        Config.storage_medium_map_retry_second = 30;
+        Mockito.when(table.tryReadLock(Mockito.anyLong(), Mockito.any())).thenReturn(false, true);
+        Assert.assertFalse(env.getPartitionIdToStorageMediumMap().containsKey(PARTITION_ID));
+        Assert.assertFalse(env.getPartitionIdToStorageMediumMap().containsKey(PARTITION_ID));
+        Mockito.verify(catalog, Mockito.times(1)).getDbIds();
+        TimeUnit.MILLISECONDS.sleep(1100);
+        Assert.assertEquals(TStorageMedium.SSD, env.getPartitionIdToStorageMediumMap().get(PARTITION_ID));
+        Mockito.verify(catalog, Mockito.times(2)).getDbIds();
+    }
+
+    @Test
+    public void partitionAlteredBeforeCooldownIsNotMovedToHdd() {
+        long future = System.currentTimeMillis() + TimeUnit.HOURS.toMillis(1);
+        partitionInfo.setDataProperty(PARTITION_ID,
+                new DataProperty(TStorageMedium.SSD, System.currentTimeMillis() - 1000, ""));
+        // Another thread changes the cooldown time after the scan, before the write lock is taken.
+        Mockito.when(table.tryWriteLockIfExist(Mockito.anyLong(), Mockito.any())).thenAnswer(invocation -> {
+            partitionInfo.setDataProperty(PARTITION_ID, new DataProperty(TStorageMedium.SSD, future, ""));
+            return true;
+        });
+        Assert.assertFalse(env.getPartitionIdToStorageMediumMap().containsKey(PARTITION_ID));
+        Assert.assertEquals(TStorageMedium.SSD, partitionInfo.getDataProperty(PARTITION_ID).getStorageMedium());
+        Assert.assertEquals(future, partitionInfo.getDataProperty(PARTITION_ID).getCooldownTimeMs());
+        Mockito.verify(editLog, Mockito.never()).logModifyPartition(Mockito.any());
+        // The change bumped the metadata version, so the next report rebuilds with the new property.
+        Assert.assertEquals(TStorageMedium.SSD, env.getPartitionIdToStorageMediumMap().get(PARTITION_ID));
+        Mockito.verify(catalog, Mockito.times(2)).getDbIds();
+    }
+
+    @Test
+    public void tableDroppedBeforeCooldownIsIgnored() {
+        partitionInfo.setDataProperty(PARTITION_ID,
+                new DataProperty(TStorageMedium.SSD, System.currentTimeMillis() - 1000, ""));
+        Mockito.when(database.getTableNullable(7L)).thenReturn(null);
+        Assert.assertFalse(env.getPartitionIdToStorageMediumMap().containsKey(PARTITION_ID));
+        Assert.assertEquals(TStorageMedium.SSD, partitionInfo.getDataProperty(PARTITION_ID).getStorageMedium());
+        Mockito.verify(editLog, Mockito.never()).logModifyPartition(Mockito.any());
+        Mockito.verify(table, Mockito.never()).tryWriteLockIfExist(Mockito.anyLong(), Mockito.any());
+    }
+
+    // Report workers rebuild the map while a writer changes the table under its real lock, sometimes holding it
+    // longer than the try-lock timeout and sometimes leaving an expired SSD partition for the workers to cool down.
+    @Test
+    public void concurrentReportsAndTableChangesStayConsistent() throws Exception {
+        Config.storage_medium_map_retry_second = 0;
+        addHddTable(17L, 19L);
+        ReentrantReadWriteLock tableLock = new ReentrantReadWriteLock();
+        Mockito.when(table.tryReadLock(Mockito.anyLong(), Mockito.any())).thenAnswer(invocation ->
+                tableLock.readLock().tryLock(invocation.getArgument(0), invocation.getArgument(1)));
+        Mockito.doAnswer(invocation -> {
+            tableLock.readLock().lock();
+            return null;
+        }).when(table).readLock();
+        Mockito.doAnswer(invocation -> {
+            tableLock.readLock().unlock();
+            return null;
+        }).when(table).readUnlock();
+        Mockito.when(table.tryWriteLockIfExist(Mockito.anyLong(), Mockito.any())).thenAnswer(invocation ->
+                tableLock.writeLock().tryLock(invocation.getArgument(0), invocation.getArgument(1)));
+        Mockito.doAnswer(invocation -> {
+            tableLock.writeLock().unlock();
+            return null;
+        }).when(table).writeUnlock();
+        Mockito.when(table.isWriteLockHeldByCurrentThread()).thenAnswer(invocation ->
+                tableLock.isWriteLockedByCurrentThread());
+
+        long deadline = System.currentTimeMillis() + 2000;
+        ConcurrentLinkedQueue<Throwable> failures = new ConcurrentLinkedQueue<>();
+        AtomicInteger withPartition = new AtomicInteger();
+        AtomicInteger withoutPartition = new AtomicInteger();
+        AtomicInteger longHolds = new AtomicInteger();
+        ExecutorService threads = Executors.newFixedThreadPool(7);
+        try {
+            List<Future<?>> futures = new ArrayList<>();
+            futures.add(threads.submit(() -> {
+                for (int i = 0; System.currentTimeMillis() < deadline; i++) {
+                    tableLock.writeLock().lock();
+                    try {
+                        DataProperty next = i % 3 == 0 ? new DataProperty(TStorageMedium.HDD)
+                                : i % 3 == 1 ? new DataProperty(TStorageMedium.SSD)
+                                : new DataProperty(TStorageMedium.SSD, System.currentTimeMillis() - 1, "");
+                        partitionInfo.setDataProperty(PARTITION_ID, next);
+                        if (i % 10 == 0) {
+                            longHolds.incrementAndGet();
+                            TimeUnit.MILLISECONDS.sleep(150);
+                        }
+                    } finally {
+                        tableLock.writeLock().unlock();
+                    }
+                    TimeUnit.MILLISECONDS.sleep(1);
+                }
+                tableLock.writeLock().lock();
+                try {
+                    partitionInfo.setDataProperty(PARTITION_ID, new DataProperty(TStorageMedium.HDD));
+                } finally {
+                    tableLock.writeLock().unlock();
+                }
+                return null;
+            }));
+            for (int worker = 0; worker < 6; worker++) {
+                futures.add(threads.submit(() -> {
+                    while (System.currentTimeMillis() < deadline) {
+                        try {
+                            HashMap<Long, TStorageMedium> map = env.getPartitionIdToStorageMediumMap();
+                            Assert.assertEquals(TStorageMedium.HDD, map.get(19L));
+                            if (map.containsKey(PARTITION_ID)) {
+                                Assert.assertNotNull(map.get(PARTITION_ID));
+                                withPartition.incrementAndGet();
+                            } else {
+                                withoutPartition.incrementAndGet();
+                            }
+                        } catch (Throwable t) {
+                            failures.add(t);
+                            return null;
+                        }
+                    }
+                    return null;
+                }));
+            }
+            for (Future<?> future : futures) {
+                future.get(30, TimeUnit.SECONDS);
+            }
+        } finally {
+            threads.shutdownNow();
+        }
+        Assert.assertTrue(String.valueOf(failures), failures.isEmpty());
+        Assert.assertTrue("lock held past the try-lock timeout", longHolds.get() > 0);
+        Assert.assertTrue("some reports saw the busy table skipped", withoutPartition.get() > 0);
+        Assert.assertTrue("some reports saw the table", withPartition.get() > 0);
+        Assert.assertFalse(tableLock.isWriteLocked());
+        Assert.assertEquals(0, tableLock.getReadLockCount());
+        Assert.assertEquals(TStorageMedium.HDD, env.getPartitionIdToStorageMediumMap().get(PARTITION_ID));
     }
 }

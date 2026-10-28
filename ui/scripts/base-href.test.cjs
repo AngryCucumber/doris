@@ -47,6 +47,18 @@ test('routes whose database or table names match route names keep the deployment
     }
 });
 
+test('encoded names and empty segments do not move the prefix', () => {
+    for (const prefix of ['', '/proxy/fe', '/home/team']) {
+        for (const route of ['/Playground/structure/%E4%B8%AD%E6%96%87-%E8%A1%A8', '/Playground/result/home%20db',
+            '/Playground/structure/Session%2Dorders', '/QueryProfile/%E4%B8%AD']) {
+            assert.equal(baseFor(prefix + route), prefix + '/', prefix + route);
+        }
+    }
+    assert.equal(baseFor('/proxy//fe/home'), '/proxy//fe/');
+    assert.equal(baseFor('//home'), '//');
+    assert.equal(baseFor('/home//'), '/');
+});
+
 test('paths without a known route keep the upstream four-segment prefix rule', () => {
     assert.equal(baseFor('/'), '/');
     assert.equal(baseFor('/unknown'), '/');

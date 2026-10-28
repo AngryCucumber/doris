@@ -52,6 +52,22 @@ public class GroupCommitInsertRpcTimeoutTest {
     }
 
     @Test
+    public void extremeSettingsDoNotOverflow() {
+        Assert.assertEquals(14400, GroupCommitPlanner.getGroupCommitInsertRpcTimeoutSec(14400, Integer.MAX_VALUE));
+        Assert.assertEquals(21474836 + 300,
+                GroupCommitPlanner.getGroupCommitInsertRpcTimeoutSec(Integer.MAX_VALUE, Integer.MAX_VALUE));
+        Assert.assertEquals(900, GroupCommitPlanner.getGroupCommitInsertRpcTimeoutSec(14400, -5000));
+        Config.group_commit_timeout_multipler = Integer.MAX_VALUE;
+        Assert.assertEquals(Integer.MAX_VALUE,
+                GroupCommitPlanner.getGroupCommitInsertRpcTimeoutSec(Integer.MAX_VALUE, Integer.MAX_VALUE));
+        Config.group_commit_timeout_multipler = 10;
+        Config.group_commit_insert_rpc_timeout_second = Integer.MAX_VALUE;
+        Assert.assertEquals(Integer.MAX_VALUE,
+                GroupCommitPlanner.getGroupCommitInsertRpcTimeoutSec(Integer.MAX_VALUE, 10000));
+        Assert.assertEquals(14400, GroupCommitPlanner.getGroupCommitInsertRpcTimeoutSec(14400, 10000));
+    }
+
+    @Test
     public void zeroMarginOrMultiplierKeepsTheInsertTimeout() {
         Config.group_commit_insert_rpc_timeout_second = 0;
         Assert.assertEquals(14400, GroupCommitPlanner.getGroupCommitInsertRpcTimeoutSec(14400, 10000));

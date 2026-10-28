@@ -32,7 +32,13 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
 public class CooldownReplicaCheckTest {
     private static final long DB_ID = 1L;
@@ -98,5 +104,123 @@ public class CooldownReplicaCheckTest {
         Assert.assertTrue(toPush.isEmpty());
         Assert.assertEquals(1, toUpdate.size());
         Assert.assertEquals(TABLET_ID, toUpdate.get(0).getTabletId());
+    }
+
+    private static Replica replica(long backendId) {
+        Replica replica = Mockito.mock(Replica.class, Mockito.withSettings().stubOnly());
+        Mockito.when(replica.getBackendIdWithoutException()).thenReturn(backendId);
+        Mockito.when(replica.getId()).thenReturn(100 + backendId);
+        return replica;
+    }
+
+    private static InternalCatalog catalogWithTablet() {
+        Tablet tablet = Mockito.mock(Tablet.class);
+        Mockito.when(tablet.getCooldownConf()).thenReturn(Pair.of(999L, COOLDOWN_TERM));
+        MaterializedIndex materializedIndex = Mockito.mock(MaterializedIndex.class);
+        Mockito.when(materializedIndex.getTablet(TABLET_ID)).thenReturn(tablet);
+        Partition partition = Mockito.mock(Partition.class);
+        Mockito.when(partition.getIndex(INDEX_ID)).thenReturn(materializedIndex);
+        OlapTable table = Mockito.mock(OlapTable.class);
+        Mockito.when(table.getPartition(PARTITION_ID)).thenReturn(partition);
+        Database database = Mockito.mock(Database.class);
+        Mockito.when(database.getTable(TABLE_ID)).thenReturn(Optional.of((Table) table));
+        InternalCatalog catalog = Mockito.mock(InternalCatalog.class);
+        Mockito.when(catalog.getDbNullable(DB_ID)).thenReturn(database);
+        return catalog;
+    }
+
+    // Runs handleCooldownConf on this thread; MockedStatic only applies to the thread that created it.
+    private static void checkCooldown(LocalTabletInvertedIndex index, int times, Consumer<List<CooldownConf>> verify)
+            throws Exception {
+        TTabletInfo reported = new TTabletInfo();
+        reported.setTabletId(TABLET_ID);
+        reported.setCooldownTerm(COOLDOWN_TERM);
+        Method handleCooldownConf = LocalTabletInvertedIndex.class.getDeclaredMethod("handleCooldownConf",
+                TabletMeta.class, TTabletInfo.class, List.class, List.class);
+        handleCooldownConf.setAccessible(true);
+        InternalCatalog catalog = catalogWithTablet();
+        try (MockedStatic<Env> env = Mockito.mockStatic(Env.class)) {
+            env.when(Env::getCurrentInternalCatalog).thenReturn(catalog);
+            for (int i = 0; i < times; i++) {
+                List<CooldownConf> toPush = new ArrayList<>();
+                List<CooldownConf> toUpdate = new ArrayList<>();
+                handleCooldownConf.invoke(index, index.getTabletMeta(TABLET_ID), reported, toPush, toUpdate);
+                Assert.assertTrue(toPush.isEmpty());
+                verify.accept(toUpdate);
+            }
+        }
+    }
+
+    @Test
+    public void replicaAddedDuringCooldownCheckDoesNotAbortReport() throws Exception {
+        LocalTabletInvertedIndex index = new LocalTabletInvertedIndex();
+        index.addTablet(TABLET_ID, new TabletMeta(DB_ID, TABLE_ID, PARTITION_ID, INDEX_ID, 0, TStorageMedium.HDD));
+        AtomicBoolean armed = new AtomicBoolean();
+        AtomicBoolean added = new AtomicBoolean();
+        for (long backendId = 1; backendId <= 3; backendId++) {
+            Replica replica = Mockito.mock(Replica.class);
+            long replicaId = 100 + backendId;
+            Mockito.when(replica.getBackendIdWithoutException()).thenReturn(backendId);
+            Mockito.when(replica.getId()).thenAnswer(invocation -> {
+                if (armed.get() && added.compareAndSet(false, true)) {
+                    index.addReplica(TABLET_ID, replica(4));
+                }
+                return replicaId;
+            });
+            index.addReplica(TABLET_ID, replica);
+        }
+        armed.set(true);
+        checkCooldown(index, 1, toUpdate -> Assert.assertEquals(1, toUpdate.size()));
+        Assert.assertTrue(added.get());
+        Assert.assertEquals(4, index.getReplicasByTabletId(TABLET_ID).size());
+    }
+
+    @Test
+    public void tabletWithoutReplicasIsSkipped() throws Exception {
+        LocalTabletInvertedIndex index = new LocalTabletInvertedIndex();
+        index.addTablet(TABLET_ID, new TabletMeta(DB_ID, TABLE_ID, PARTITION_ID, INDEX_ID, 0, TStorageMedium.HDD));
+        index.addReplica(TABLET_ID, replica(1));
+        index.deleteReplica(TABLET_ID, 1);
+        checkCooldown(index, 1, toUpdate -> Assert.assertTrue(toUpdate.isEmpty()));
+    }
+
+    // One thread keeps running the cooldown check while another replaces replicas of the same tablet, as two
+    // report workers handling different backends do.
+    @Test
+    public void concurrentReplicaChangesDuringCooldownChecks() throws Exception {
+        LocalTabletInvertedIndex index = new LocalTabletInvertedIndex();
+        index.addTablet(TABLET_ID, new TabletMeta(DB_ID, TABLE_ID, PARTITION_ID, INDEX_ID, 0, TStorageMedium.HDD));
+        int backends = 64;
+        Replica[] replicas = new Replica[backends + 1];
+        for (int backendId = 1; backendId <= backends; backendId++) {
+            replicas[backendId] = replica(backendId);
+            index.addReplica(TABLET_ID, replicas[backendId]);
+        }
+        AtomicBoolean stop = new AtomicBoolean();
+        AtomicInteger changes = new AtomicInteger();
+        ExecutorService mutator = Executors.newSingleThreadExecutor();
+        try {
+            Future<?> changing = mutator.submit(() -> {
+                for (int i = 0; !stop.get(); i++) {
+                    int backendId = 1 + i % backends;
+                    index.deleteReplica(TABLET_ID, backendId);
+                    index.addReplica(TABLET_ID, replicas[backendId]);
+                    changes.incrementAndGet();
+                }
+            });
+            long deadline = System.currentTimeMillis() + 2000;
+            int checks = 0;
+            while (System.currentTimeMillis() < deadline) {
+                checkCooldown(index, 200, toUpdate -> Assert.assertEquals(1, toUpdate.size()));
+                checks += 200;
+            }
+            stop.set(true);
+            changing.get(10, TimeUnit.SECONDS);
+            Assert.assertTrue(checks > 0 && changes.get() > 0);
+        } finally {
+            stop.set(true);
+            mutator.shutdownNow();
+        }
+        Assert.assertEquals(backends, index.getReplicasByTabletId(TABLET_ID).size());
     }
 }

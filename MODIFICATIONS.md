@@ -160,9 +160,10 @@ belong to this branch. Findings P1-P8 are inherited from 4.1.5 and unchanged.
   the tablet's replicas taken under the index lock, because it runs after the
   report releases that lock while another report worker may delete a replica.
 - `JdbcMySQLClient.java`: Doris type arguments are read up to the first closing
-  parenthesis. `DECIMAL(p)` maps to scale 0. A malformed top-level declaration
-  uses the column's JDBC metadata as before this branch; a malformed array
-  element maps to an unsupported element instead of the outer column metadata.
+  parenthesis. `DECIMAL(p)` maps to scale 0. Empty, overflowing or extra
+  arguments and a scale above the precision are malformed. A malformed top-level
+  declaration uses the column's JDBC metadata as before this branch; a malformed
+  array element maps to an unsupported element instead of the outer metadata.
 - `ui/src/index.html`: the deployment prefix ends before the first route segment
   from which the remaining path is a complete route, so database or table names
   equal to route names (`/Playground/result/home`) no longer become the prefix.
@@ -199,8 +200,12 @@ with the previous script), and released a hung prepared group-commit insert afte
 605 s. BE, Cloud meta-service, `meta_tool` and the BE Java extensions of this tree
 also build on this host against a locally built 4.1.5 third-party set; with that
 BE the live checks pass again, the `meta_tool` round trip passes, and vertical and
-horizontal compaction keep row and inverted-index counts. Cloud mode runtime was
-not exercised.
+horizontal compaction keep row and inverted-index counts. Concurrency follow-up:
+two-thread stress tests for the storage-medium map and the cooldown replica check
+(the latter fails with ConcurrentModificationException on the previous code),
+three BEs reporting in parallel through three report workers during concurrent
+DDL, and eight prepared group-commit inserts hung together, all released at 605 s
+while the FE kept serving queries. Cloud mode runtime was not exercised.
 
 ## rc415 regression hardening (2026-10-28)
 

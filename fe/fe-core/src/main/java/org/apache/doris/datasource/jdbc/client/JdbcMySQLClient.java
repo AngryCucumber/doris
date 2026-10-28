@@ -468,9 +468,9 @@ public class JdbcMySQLClient extends JdbcClient {
             case "DECIMALV3": {
                 if (openParen != -1) {
                     int[] precisionAndScale = parseDorisTypeArguments(upperType, openParen, 2);
-                    if (precisionAndScale != null) {
-                        // DECIMAL(p) means DECIMAL(p, 0).
-                        int scale = precisionAndScale.length > 1 ? precisionAndScale[1] : 0;
+                    // DECIMAL(p) means DECIMAL(p, 0); a scale above the precision is malformed.
+                    int scale = precisionAndScale == null || precisionAndScale.length < 2 ? 0 : precisionAndScale[1];
+                    if (precisionAndScale != null && scale <= precisionAndScale[0]) {
                         return createDecimalOrStringType(precisionAndScale[0], scale);
                     }
                     if (isArrayElement) {

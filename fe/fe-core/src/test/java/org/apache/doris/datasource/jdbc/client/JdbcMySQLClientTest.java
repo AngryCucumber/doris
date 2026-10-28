@@ -96,6 +96,31 @@ public class JdbcMySQLClientTest {
         Assert.assertEquals(ArrayType.create(Type.UNSUPPORTED, true), dorisType(client, "array<char(-1)>", 30, 0));
     }
 
+    @Test
+    public void testDorisTypeArgumentBoundaries() throws Exception {
+        JdbcMySQLClient client = dorisClient();
+        // Empty, incomplete, overflowing or inconsistent arguments are malformed.
+        for (String malformed : new String[] {"decimal()", "decimal(10,)", "decimal(,2)", "decimal(99999999999,2)",
+                "decimal(5,10)", "decimal(10,2))x"}) {
+            Type expected = malformed.endsWith("x") ? ScalarType.createDecimalV3Type(10, 2)
+                    : ScalarType.createDecimalV3Type(18, 4);
+            Assert.assertEquals(malformed, expected, dorisType(client, malformed, 18, 4));
+            Assert.assertEquals(malformed, malformed.endsWith("x") ? ArrayType.create(expected, true)
+                    : ArrayType.create(Type.UNSUPPORTED, true), dorisType(client, "array<" + malformed + ">", 18, 4));
+        }
+        Assert.assertEquals(ScalarType.createVarcharType(30), dorisType(client, "varchar()", 30, 0));
+        Assert.assertEquals(ScalarType.createVarcharType(30), dorisType(client, "varchar(1,2)", 30, 0));
+        // Precision equal to scale, the largest DECIMAL128 precision, and one above it.
+        Assert.assertEquals(ScalarType.createDecimalV3Type(5, 5), dorisType(client, "decimal(5,5)", 18, 4));
+        Assert.assertEquals(ScalarType.createDecimalV3Type(38, 0), dorisType(client, "decimal(38)", 18, 4));
+        Assert.assertEquals(ScalarType.createStringType(), dorisType(client, "decimal(39,2)", 18, 4));
+        // Nested arrays parse every level from the type text.
+        Assert.assertEquals(ArrayType.create(ArrayType.create(ScalarType.createDecimalV3Type(10, 0), true), true),
+                dorisType(client, "array<array<decimal(10)>>", 38, 9));
+        Assert.assertEquals(ArrayType.create(ArrayType.create(Type.UNSUPPORTED, true), true),
+                dorisType(client, "array<array<decimal(x)>>", 38, 9));
+    }
+
     private static JdbcMySQLClient dorisClient() throws Exception {
         // Avoid opening a remote connection: run the real type mapping of a client that detected Doris.
         JdbcMySQLClient client = Mockito.mock(JdbcMySQLClient.class, Mockito.CALLS_REAL_METHODS);
