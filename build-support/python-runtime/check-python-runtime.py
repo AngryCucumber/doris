@@ -247,11 +247,14 @@ def check_elf(root, arch, target, report):
     for path in elf_files(root):
         parsed[path.relative_to(root).as_posix()] = parse_elf(path)
     provided = {Path(name).name for name in parsed} | {info["soname"] for info in parsed.values() if info.get("soname")}
-    wrong_machine, misaligned, unsupported, glibc_new, glibcxx_new = [], [], [], [], []
+    wrong_machine, misaligned, unsupported, glibc_new = [], [], [], []
     external = {}
     maxima = {"GLIBC": None, "GLIBCXX": None, "CXXABI": None, "GCC": None}
     glibc_limit = version_tuple(target["glibc"])
-    glibcxx_limit = version_tuple(target["glibcxx"]) if target.get("glibcxx") else None
+    # libstdc++ exports both symbol families; an old libstdc++ can miss either (numpy needs CXXABI_1.3.9 first).
+    cxx_limits = {prefix: version_tuple(target[prefix.lower()]) for prefix in ("GLIBCXX", "CXXABI")
+                  if target.get(prefix.lower())}
+    cxx_new = {prefix: [] for prefix in cxx_limits}
     for name, info in parsed.items():
         if info.get("unsupported"):
             unsupported.append(name)
@@ -268,9 +271,10 @@ def check_elf(root, arch, target, report):
         glibc = newest(versions, "GLIBC")
         if glibc and glibc > glibc_limit:
             glibc_new.append(f"{name} (GLIBC_{'.'.join(map(str, glibc))})")
-        glibcxx = newest(versions, "GLIBCXX")
-        if glibcxx_limit and glibcxx and glibcxx > glibcxx_limit:
-            glibcxx_new.append(f"{name} (GLIBCXX_{'.'.join(map(str, glibcxx))})")
+        for prefix, limit in cxx_limits.items():
+            found = newest(versions, prefix)
+            if found and found > limit:
+                cxx_new[prefix].append(f"{name} ({prefix}_{'.'.join(map(str, found))})")
         origin = str((root / name).parent)
         for library in info["needed"]:
             if "/" in library and Path(library.replace("${ORIGIN}", origin).replace("$ORIGIN", origin)).exists():
@@ -289,10 +293,10 @@ def check_elf(root, arch, target, report):
     if glibc_new:
         report.add("error", "elf", f"{len(glibc_new)} ELF files need a glibc newer than the target {target['glibc']}",
                    glibc_new)
-    if glibcxx_new:
-        report.add("error", "elf",
-                   f"{len(glibcxx_new)} ELF files need a libstdc++ newer than GLIBCXX_{target['glibcxx']}",
-                   glibcxx_new)
+    for prefix, items in cxx_new.items():
+        if items:
+            report.add("error", "elf",
+                       f"{len(items)} ELF files need a libstdc++ newer than {prefix}_{target[prefix.lower()]}", items)
     if unsupported:
         report.add("warning", "elf", f"{len(unsupported)} ELF files are not 64-bit little-endian and were not checked",
                    unsupported)
@@ -300,10 +304,11 @@ def check_elf(root, arch, target, report):
     if unusual:
         report.add("warning", "elf", "Libraries the target OS must provide besides glibc and libstdc++",
                    [f"{library} (needed by {len(users)} files, e.g. {users[0]})" for library, users in unusual.items()])
-    newest_glibcxx = report.facts["newestSymbolVersions"].get("GLIBCXX")
-    report.add("info", "elf", f"Checked {len(parsed)} ELF files: newest GLIBC_"
-               f"{report.facts['newestSymbolVersions'].get('GLIBC', '-')}, GLIBCXX_{newest_glibcxx or '-'}"
-               + ("" if glibcxx_limit else "; set target.glibcxx to the oldest target libstdc++ to enforce it"))
+    newest_versions = report.facts["newestSymbolVersions"]
+    report.add("info", "elf", f"Checked {len(parsed)} ELF files: newest "
+               + ", ".join(f"{prefix}_{newest_versions.get(prefix, '-')}" for prefix in ("GLIBC", "GLIBCXX", "CXXABI"))
+               + ("" if len(cxx_limits) == 2 else
+                  "; set target.glibcxx and target.cxxabi to the oldest target libstdc++ to enforce them"))
 
 
 # ---------------------------------------------------------------- layout
@@ -653,7 +658,8 @@ def main():
     parser.add_argument("--config", type=Path, default=HERE / "python-runtime.json",
                         help="policy (layers, imports, licenses); default: the checked-in config")
     parser.add_argument("--target-glibc", help="oldest glibc on the target BEs (default: MANIFEST/config)")
-    parser.add_argument("--target-glibcxx", help="oldest libstdc++ symbol version, e.g. 3.4.25 (default: none)")
+    parser.add_argument("--target-glibcxx", help="oldest libstdc++ GLIBCXX version, e.g. 3.4.19 (default: MANIFEST)")
+    parser.add_argument("--target-cxxabi", help="oldest libstdc++ CXXABI version, e.g. 1.3.7 (default: MANIFEST)")
     parser.add_argument("--min-load-align", type=lambda value: int(value, 0),
                         help="required PT_LOAD alignment, 0x10000 for 64 KiB page kernels (default: MANIFEST/config)")
     parser.add_argument("--server-script", type=Path, default=ROOT / "be/src/udf/python/python_server.py",
@@ -680,6 +686,7 @@ def main():
             target.update({key: value for key, value in (manifest or {}).get("target", {}).items()
                            if key in target and value})
             target.update({key: value for key, value in (("glibc", args.target_glibc), ("glibcxx", args.target_glibcxx),
+                                                         ("cxxabi", args.target_cxxabi),
                                                          ("minLoadAlign", args.min_load_align)) if value})
             arch = (manifest or {}).get("arch") or os.uname().machine
             report.facts.update({"runtime": str(root), "arch": arch, "target": target,

@@ -489,7 +489,8 @@ def build(args):
         "env": {"name": env_name, "executable": f"envs/{env_name}/bin/python",
                 "sitePackages": f"envs/{env_name}/lib/python{major_minor}/site-packages"},
         "target": {"glibc": record["targetGlibc"], "glibcxx": config["target"].get("glibcxx"),
-                   "minLoadAlign": config["target"]["minLoadAlign"], "platformTags": record["platformTags"]},
+                   "cxxabi": config["target"].get("cxxabi"), "minLoadAlign": config["target"]["minLoadAlign"],
+                   "platformTags": record["platformTags"]},
         "layers": record["layers"],
         "lockSha256": record["lockSha256"],
         "packages": sorted(packages, key=lambda package: package["name"]),
@@ -510,6 +511,9 @@ def build(args):
         "be.conf（改完重启 BE）：\n" + "".join(f"  {key} = {value}\n" for key, value in be_conf.items()) + "\n"
         f"重启后执行 SHOW PYTHON VERSIONS; 应能看到 {version}；建函数时写 \"runtime_version\" = \"{version}\"（完整版本号）。\n"
         "envs/ 下只能放完整可用的环境，否则 BE 启动失败；升级 Python 补丁版本时新旧环境需并存到函数迁移完。\n"
+        f"目标系统：glibc ≥ {record['targetGlibc']}；BE 静态链接了 libstdc++，本运行时则使用系统的 libstdc++"
+        f"（GLIBCXX_{config['target'].get('glibcxx') or '?'}、CXXABI_{config['target'].get('cxxabi') or '?'} 及以上）、"
+        "libgcc_s 和 libz.so.1。\n"
         "组件和版本见 MANIFEST.json，许可证正文见 LICENSES/。\n", encoding="utf-8")
 
     tarball = out / f"massdb-python-runtime-{version}-{arch}-{record['lockSha256'][:8]}.tar.gz"

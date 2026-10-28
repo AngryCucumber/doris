@@ -336,6 +336,10 @@ while the FE kept serving queries. Cloud mode runtime was not exercised.
   `be/src/udf/python/python_server.py` and the license inventory.
   `python-runtime.json` holds the pins and policies; `test_python_runtime.py`
   covers both scripts with synthetic ELF files and layouts.
+- Target glibc 2.17 like the BE: only manylinux2014 wheels, with GLIBCXX 3.4.19
+  and CXXABI 1.3.7 enforced for the operating-system libstdc++ the runtime
+  uses (the BE links libstdc++ statically). pyarrow is pinned to 20.0.0, the
+  newest release with manylinux2014 aarch64 wheels.
 - Prototype only: package assembly, `be.conf`, `start_be.sh` and the legal
   inventory are unchanged, so product behavior is unchanged.
 

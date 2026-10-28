@@ -132,7 +132,7 @@ class BuildScriptTest(unittest.TestCase):
 
 class ElfCheckTest(unittest.TestCase):
     def target(self, **changes):
-        target = {"glibc": "2.28", "glibcxx": None, "minLoadAlign": 0x10000}
+        target = {"glibc": "2.17", "glibcxx": None, "cxxabi": None, "minLoadAlign": 0x10000}
         target.update(changes)
         return target
 
@@ -182,6 +182,30 @@ class ElfCheckTest(unittest.TestCase):
                              ["$ORIGIN/libgone.so (needed by 1 files, e.g. lib/libpython3.so)",
                               "libz.so.1 (needed by 1 files, e.g. ext.so)"])
             self.assertEqual(report.facts["systemLibraries"], ["$ORIGIN/libgone.so", "libstdc++.so.6", "libz.so.1"])
+
+    def test_cxxabi_limit_catches_what_glibcxx_alone_misses(self):
+        """On CentOS 7 (libstdc++ 4.8.5) numpy 2.5 fails on CXXABI_1.3.9 while its GLIBCXX need is old enough."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            make_elf(root / "numpy-like.so", 0x10000, ["libstdc++.so.6"],
+                     {"libstdc++.so.6": ["GLIBCXX_3.4.19", "CXXABI_1.3.9"]})
+            make_elf(root / "arrow-like.so", 0x10000, ["libstdc++.so.6"],
+                     {"libstdc++.so.6": ["GLIBCXX_3.4.21", "CXXABI_1.3.7"]})
+
+            def errors(**limits):
+                report = check.Report()
+                check.check_elf(root, "aarch64", self.target(**limits), report)
+                return {finding["message"]: finding["items"] for finding in report.findings
+                        if finding["level"] == "error"}, report
+
+            only_glibcxx, _ = errors(glibcxx="3.4.19")
+            self.assertEqual(list(only_glibcxx.values()), [["arrow-like.so (GLIBCXX_3.4.21)"]])
+            both, report = errors(glibcxx="3.4.19", cxxabi="1.3.7")
+            self.assertEqual(both, {
+                "1 ELF files need a libstdc++ newer than GLIBCXX_3.4.19": ["arrow-like.so (GLIBCXX_3.4.21)"],
+                "1 ELF files need a libstdc++ newer than CXXABI_1.3.7": ["numpy-like.so (CXXABI_1.3.9)"]})
+            info = next(finding["message"] for finding in report.findings if finding["level"] == "info")
+            self.assertEqual(info, "Checked 2 ELF files: newest GLIBC_-, GLIBCXX_3.4.21, CXXABI_1.3.9")
 
 
 class LayoutAndLicenseTest(unittest.TestCase):
