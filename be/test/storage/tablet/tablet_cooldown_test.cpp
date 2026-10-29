@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #include <fmt/format.h>
 #include <gen_cpp/AgentService_types.h>
@@ -200,6 +201,9 @@ private:
 class TabletCooldownTest : public testing::Test {
 public:
     static void SetUpTestSuite() {
+        _old_enable_file_cache = config::enable_file_cache;
+        // The mock remote filesystem does not install a disk FileCacheFactory.
+        config::enable_file_cache = false;
         s_fs.reset(
                 new RemoteFileSystemMock("", std::to_string(kResourceId), io::FileSystemType::S3));
         StorageResource resource {s_fs};
@@ -241,7 +245,11 @@ public:
         engine_ref = nullptr;
         exec_env->set_storage_engine(nullptr);
         exec_env->set_memtable_memory_limiter(nullptr);
+        config::enable_file_cache = _old_enable_file_cache;
     }
+
+private:
+    inline static bool _old_enable_file_cache = false;
 };
 
 static void create_tablet_request_with_sequence_col(int64_t tablet_id, int32_t schema_hash,

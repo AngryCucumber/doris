@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
+
 suite("test_show_data_warehouse") {
     def db1Name = "SHOW_DATA_1"
     def db2Name = "SHOW_DATA_2"
@@ -103,13 +105,13 @@ suite("test_show_data_warehouse") {
             current = System.currentTimeMillis()
             result = sql """ show data properties("entire_warehouse"="true","db_names"="${db1Name}"); """
             log.info("show data warehouse db1 result: ${result}");
-            if ((result.size() == 2) && result[0][1].toInteger() >= db1Size) {
+            if ((result.size() == 2) && result[0][1].toLong() >= db1Size) {
                 hitDb1 = true;
             }
 
             result = sql """ show data properties("entire_warehouse"="true","db_names"="${db2Name}"); """
             log.info("show data warehouse db2 result: ${result}");
-            if (result.size() == 2 && result[0][1].toInteger() >= db2Size) {
+            if (result.size() == 2 && result[0][1].toLong() >= db2Size) {
                 hitDb2 = true;
             }
             if (hitDb1 && hitDb2) {
@@ -124,9 +126,9 @@ suite("test_show_data_warehouse") {
         result = sql """ show data properties("entire_warehouse"="true","db_names"="${db1Name},${db2Name}"); """
         log.info("show data warehouse db1 and db2 result: ${result}");
         assertEquals(result.size(), 3)
-        assert result[0][1].toInteger() >= db1Size
-        assert result[1][1].toInteger() >= db2Size
-        assert result[2][1].toInteger() >= db1Size + db2Size
+        assert result[0][1].toLong() >= db1Size
+        assert result[1][1].toLong() >= db2Size
+        assert result[2][1].toLong() >= db1Size + db2Size
 
         result = sql """show data properties("entire_warehouse"="true")"""
         assertTrue(result.size() >= 3)
@@ -136,7 +138,7 @@ suite("test_show_data_warehouse") {
         assertTrue(result.size() > 0)
         for (row : result) {
             if (row[0].toString().equalsIgnoreCase("total")) {
-                assertTrue(row[2].toInteger() > 0)
+                assertTrue(row[2].toLong() > 0)
             }
         }
     } finally {

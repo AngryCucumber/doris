@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #include "storage/compaction/collection_statistics.h"
 
@@ -108,7 +109,11 @@ private:
 
 class MockVLiteral : public VLiteral {
 public:
-    MockVLiteral(const std::string& value) : _value(value) {}
+    MockVLiteral(const std::string& value) : _value(value) {
+        // The BE_TEST default constructor leaves the node type uninitialized.
+        // A recycled SLOT_REF value would make the collector cast this literal to VSlotRef.
+        _node_type = TExprNodeType::STRING_LITERAL;
+    }
 
     std::string value() const override { return _value; }
     std::string value(const DataTypeSerDe::FormatOptions& options) const override { return _value; }

@@ -14,11 +14,13 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #include "util/debug_util.h"
 
 #include <butil/iobuf.h>
 #include <butil/strings/string_piece.h>
+#include <gen_cpp/version.h>
 
 // brpc's header uses the butil types above without including their definitions.
 #include <brpc/builtin/prometheus_metrics_service.h>
@@ -48,7 +50,7 @@ TEST(DebugUtilTest, BeVersionMetricIsExportedWithBuildLabels) {
     }
 
     std::stringstream sample;
-    sample << "doris_be_version{version=\"" << version::doris_build_version() << "\",major=\""
+    sample << "doris_be_version{version=\"" << DORIS_PRODUCT_VERSION << "\",major=\""
            << version::doris_build_version_major() << "\",minor=\""
            << version::doris_build_version_minor() << "\",patch=\""
            << version::doris_build_version_patch() << "\",hotfix=\""

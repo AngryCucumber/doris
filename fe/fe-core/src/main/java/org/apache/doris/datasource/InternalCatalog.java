@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.datasource;
 
@@ -225,6 +226,7 @@ public class InternalCatalog implements CatalogIf<Database> {
         for (MysqlCompatibleDatabase idb : mysqlCompatibleDatabases) {
             // do not call unprotectedCreateDb, because it will cause loop recursive when initializing Env singleton
             idToDb.put(idb.getId(), idb);
+            PartitionInfo.invalidateStorageMediumMap();
             fullNameToDb.put(idb.getFullName(), idb);
         }
     }
@@ -457,6 +459,7 @@ public class InternalCatalog implements CatalogIf<Database> {
      */
     public void unprotectCreateDb(Database db) {
         idToDb.put(db.getId(), db);
+        PartitionInfo.invalidateStorageMediumMap();
         fullNameToDb.put(db.getFullName(), db);
         Env.getCurrentGlobalTransactionMgr().addDatabaseTransactionMgr(db.getId());
     }
@@ -547,6 +550,7 @@ public class InternalCatalog implements CatalogIf<Database> {
 
             // 3. remove db from catalog
             idToDb.remove(db.getId());
+            PartitionInfo.invalidateStorageMediumMap();
             fullNameToDb.remove(db.getFullName());
             Env.getCurrentEnv().getFunctionRegistry().dropUdfByDb(db.getFullName());
             DropDbInfo info = new DropDbInfo(dbName, force, recycleTime);
@@ -601,6 +605,7 @@ public class InternalCatalog implements CatalogIf<Database> {
 
             fullNameToDb.remove(dbName);
             idToDb.remove(db.getId());
+            PartitionInfo.invalidateStorageMediumMap();
             Env.getCurrentEnv().getFunctionRegistry().dropUdfByDb(dbName);
         } finally {
             unlock();
@@ -647,6 +652,7 @@ public class InternalCatalog implements CatalogIf<Database> {
             }
             fullNameToDb.put(db.getFullName(), db);
             idToDb.put(db.getId(), db);
+            PartitionInfo.invalidateStorageMediumMap();
             // log
             RecoverInfo recoverInfo = new RecoverInfo(db.getId(), -1L, -1L, newDbName, "", "", "", "");
             Env.getCurrentEnv().getEditLog().logRecoverDb(recoverInfo);
@@ -4007,6 +4013,7 @@ public class InternalCatalog implements CatalogIf<Database> {
     public void clearDbs() {
         if (idToDb != null) {
             idToDb.clear();
+            PartitionInfo.invalidateStorageMediumMap();
         }
         if (fullNameToDb != null) {
             fullNameToDb.clear();
@@ -4070,6 +4077,7 @@ public class InternalCatalog implements CatalogIf<Database> {
                 throw new IOException(errMsg);
             }
             idToDb.put(db.getId(), db);
+            PartitionInfo.invalidateStorageMediumMap();
             fullNameToDb.put(db.getFullName(), db);
             Env.getCurrentGlobalTransactionMgr().addDatabaseTransactionMgr(db.getId());
 

@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
+
 def getMetrics = { ip, port ->
         def dst = 'http://' + ip + ':' + port
         def conn = new URL(dst + "/metrics").openConnection()
@@ -418,7 +420,8 @@ suite("test_crud_wlg") {
     sql "create workload group if not exists bypass_group $forComputeGroupStr properties (  'max_concurrency'='0','max_queue_size'='0','queue_timeout'='0');"
     sql "set workload_group=bypass_group;"
     test {
-        sql "select count(1) from ${table_name};"
+        // COUNT can become an FE metadata constant; exercise the BE workload queue.
+        sql "select * from ${table_name};"
         exception "query waiting queue is full"
     }
 

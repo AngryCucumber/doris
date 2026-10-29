@@ -14,13 +14,15 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 suite("set_and_unset_variable_command", "nonConcurrent") {
     sql "set enable_nereids_planner=true"
     sql "set enable_fallback_to_original_planner=false"
 
-    checkNereidsExecute("UNSET VARIABLE ALL")
+    // Reset globals first: resetting this session copies the current global defaults.
     checkNereidsExecute("UNSET global VARIABLE ALL")
+    checkNereidsExecute("UNSET VARIABLE ALL")
 
     checkNereidsExecute("set wait_timeout = 1000")
     qt_cmd """show variables like 'wait_timeout'"""

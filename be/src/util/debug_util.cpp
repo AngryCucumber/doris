@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #include "util/debug_util.h"
 
@@ -21,6 +22,7 @@
 #include <bvar/multi_dimension.h>
 #include <gen_cpp/HeartbeatService_types.h>
 #include <gen_cpp/PlanNodes_types.h>
+#include <gen_cpp/version.h>
 #include <gflags/gflags.h>
 #include <stdint.h>
 
@@ -140,13 +142,12 @@ void init_be_version_metrics() {
     static const bool initialized = [] {
         static bvar::MultiDimension<bvar::Status<uint64_t>> metrics(
                 "doris_be_version", {"version", "major", "minor", "patch", "hotfix", "short_hash"});
-        auto* metric = metrics.get_stats(
-                std::list<std::string> {version::doris_build_version(),
-                                        std::to_string(version::doris_build_version_major()),
-                                        std::to_string(version::doris_build_version_minor()),
-                                        std::to_string(version::doris_build_version_patch()),
-                                        std::to_string(version::doris_build_version_hotfix()),
-                                        version::doris_build_short_hash()});
+        auto* metric = metrics.get_stats(std::list<std::string> {
+                DORIS_PRODUCT_VERSION, std::to_string(version::doris_build_version_major()),
+                std::to_string(version::doris_build_version_minor()),
+                std::to_string(version::doris_build_version_patch()),
+                std::to_string(version::doris_build_version_hotfix()),
+                version::doris_build_short_hash()});
         DORIS_CHECK(metric != nullptr);
         metric->set_value(get_be_version_metric_value());
         return true;

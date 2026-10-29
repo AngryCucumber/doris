@@ -8,7 +8,7 @@ Version display: the legal page shows MassDB V2.0.5. SQL @@version_comment
 returns massdb-2.0.5-sql-rc415 without a Git hash. FE and BE heartbeat versions use
 the same value in SHOW FRONTENDS / BACKENDS and SHOW PROC '/frontends' / '/backends'.
 The FE home page, BE home page/footer, version HTTP APIs, FE bootstrap response
-and FE version metric label also use massdb-2.0.5-sql-rc415. Each node must run
+and FE/BE/Cloud version metric labels also use massdb-2.0.5-sql-rc415. Each node must run
 the updated binary and report a heartbeat. @@version and the MySQL handshake
 retain 5.7.99 for client compatibility. Internal build identifiers and package
 names retain massdb-sql-2.0.5-rc415, with source identity in the build records.
@@ -77,7 +77,27 @@ timeouts and metadata-tool initialization. Keep upstream fixes for Group Commit
 backend routing, aborted-load locking and CLucene multi-segment readers. The
 report-diff executor safeguard now lives in LocalTabletInvertedIndex.
 
+Regression hardening: interrupted report enqueue no longer strands a pending
+deduplication key. Storage-medium cache entries are invalidated by metadata
+changes and SSD cooldown deadlines. Ordered-compaction fallback replaces its
+input counters instead of adding them twice. The standalone metadata tool
+initializes schema and column caches, and stack symbol lookup recognizes the
+split debug files installed with Release binaries.
+The slim release package keeps debug symbols in its separate audit archive.
+Deploy the matching lib/debug_info/<binary>.dbg file when full stack symbol
+names are needed; the slim package alone may show unresolved addresses.
+In same-host validation, deploying these symbols added approximately 300-400 MiB
+of RSS per BE. RSS includes shareable file mappings. Slim deployment without the
+separate symbols did not exhibit this fixed increase.
+
 rc415 更新：源码基线升级至 Apache Doris 4.1.5-release；保留 MassDB 品牌、
 JDBC 数组精度、报告去重与并行处理、存储介质缓存、compaction 防护、
 Group Commit 超时与元数据工具初始化修复。已有上游修复使用 4.1.5 的实现。
+修复报告入队被中断后去重键滞留、存储介质缓存未随元数据变更或 SSD 冷却到期失效、
+有序 compaction 回退时输入计数重复累加等问题。补齐独立元数据工具所需的 schema/column
+缓存初始化；调用栈符号查找支持 Release 构建安装的分离调试文件。
+精简包仍将调试符号保存在独立审计归档中；需要完整调用栈名称时，应部署与程序匹配的
+lib/debug_info/<binary>.dbg。只部署精简包时，部分地址仍可能无法解析为函数名。
+本次同机验证中，部署完整符号使每个 BE 的 RSS 增加约 300-400 MiB（含可共享文件映射）；
+不部署分离符号的精简配置未出现这部分固定增量。
 历史二进制审查记录仅适用于原审查包，不代表 rc415 已完成构建或验证。

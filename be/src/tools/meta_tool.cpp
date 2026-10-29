@@ -22,8 +22,8 @@
 #include <gflags/gflags.h>
 
 #include <cctype>
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -57,9 +57,11 @@
 #include "storage/segment/column_reader.h"
 #include "storage/segment/encoding_info.h"
 #include "storage/storage_engine.h"
+#include "storage/tablet/tablet_column_object_pool.h"
 #include "storage/tablet/tablet_meta.h"
 #include "storage/tablet/tablet_meta_manager.h"
 #include "storage/tablet/tablet_schema.h"
+#include "storage/tablet/tablet_schema_cache.h"
 #include "storage/types.h"
 #include "util/coding.h"
 
@@ -86,6 +88,11 @@ struct ExecEnvCacheMgrTag {
     friend type stolen_member(ExecEnvCacheMgrTag);
 };
 template struct PrivateMemberRob<ExecEnvCacheMgrTag, &doris::ExecEnv::_cache_manager>;
+
+ACCESS_PRIVATE_FIELD(ExecEnv_tablet_schema_cache, doris::ExecEnv, doris::TabletSchemaCache*,
+                     _tablet_schema_cache)
+ACCESS_PRIVATE_FIELD(ExecEnv_tablet_column_object_pool, doris::ExecEnv,
+                     doris::TabletColumnObjectPool*, _tablet_column_object_pool)
 
 DEFINE_string(root_path, "", "storage root path");
 DEFINE_string(operation, "get_meta",
@@ -943,6 +950,14 @@ int main(int argc, char** argv) {
     // accessor above, since the public setter is BE_TEST-only).
     doris::ExecEnv::GetInstance()->*stolen_member(ExecEnvCacheMgrTag {}) =
             doris::CacheManager::create_global_instance();
+    // Deserializing a real TabletMeta also interns its schema and columns. The standalone
+    // tool does not run ExecEnv::init(), so install both caches before reading metadata.
+    doris::ExecEnv::GetInstance()->*GET_PRIVATE_FIELD(ExecEnv_tablet_schema_cache) =
+            doris::TabletSchemaCache::create_global_schema_cache(
+                    doris::config::tablet_schema_cache_capacity);
+    doris::ExecEnv::GetInstance()->*GET_PRIVATE_FIELD(ExecEnv_tablet_column_object_pool) =
+            doris::TabletColumnObjectPool::create_global_column_cache(
+                    doris::config::tablet_schema_cache_capacity);
 
     if (FLAGS_operation == "show_meta") {
         show_meta();

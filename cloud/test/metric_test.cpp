@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #include "common/metric.h"
 
@@ -23,6 +24,7 @@
 // brpc's header uses the butil types above without including their definitions.
 #include <brpc/builtin/prometheus_metrics_service.h>
 #include <gen_cpp/cloud_version.h>
+#include <gen_cpp/version.h>
 #include <gtest/gtest.h>
 
 #include <cstdlib>
@@ -62,7 +64,7 @@ TEST(MetricTest, CloudVersionMetricIsExportedWithBuildLabels) {
     }
 
     std::stringstream sample;
-    sample << "doris_cloud_version{version=\"" << DORIS_CLOUD_BUILD_VERSION << "\",major=\""
+    sample << "doris_cloud_version{version=\"" << DORIS_PRODUCT_VERSION << "\",major=\""
            << DORIS_CLOUD_BUILD_VERSION_MAJOR << "\",minor=\"" << DORIS_CLOUD_BUILD_VERSION_MINOR
            << "\",patch=\"" << DORIS_CLOUD_BUILD_VERSION_PATCH << "\",hotfix=\""
            << DORIS_CLOUD_BUILD_VERSION_HOTFIX << "\",short_hash=\"" << DORIS_CLOUD_BUILD_SHORT_HASH

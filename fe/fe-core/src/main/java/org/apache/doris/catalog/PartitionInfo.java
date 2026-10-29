@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.catalog;
 
@@ -44,6 +45,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 /*
@@ -51,6 +53,9 @@ import java.util.stream.Collectors;
  */
 public class PartitionInfo {
     private static final Logger LOG = LogManager.getLogger(PartitionInfo.class);
+    // A process-local generation avoids rescanning the catalog on every report while
+    // invalidating snapshots after storage metadata or catalog membership changes.
+    private static final AtomicLong STORAGE_MEDIUM_MAP_VERSION = new AtomicLong();
 
     @SerializedName("Type")
     protected PartitionType type;
@@ -115,6 +120,14 @@ public class PartitionInfo {
         this(type);
         this.partitionColumns = partitionColumns;
         this.isMultiColumnPartition = partitionColumns.size() > 1;
+    }
+
+    public static long getStorageMediumMapVersion() {
+        return STORAGE_MEDIUM_MAP_VERSION.get();
+    }
+
+    public static void invalidateStorageMediumMap() {
+        STORAGE_MEDIUM_MAP_VERSION.incrementAndGet();
     }
 
     public PartitionType getType() {
@@ -205,7 +218,7 @@ public class PartitionInfo {
         PartitionItem partitionItem = createAndCheckPartitionItem(desc, isTemp);
         setItemInternal(partitionId, isTemp, partitionItem);
 
-        idToDataProperty.put(partitionId, desc.getPartitionDataProperty());
+        setDataProperty(partitionId, desc.getPartitionDataProperty());
         idToReplicaAllocation.put(partitionId, desc.getReplicaAlloc());
         idToInMemory.put(partitionId, desc.isInMemory());
         idToStoragePolicy.put(partitionId, desc.getStoragePolicy());
@@ -221,7 +234,7 @@ public class PartitionInfo {
                                                       DataProperty dataProperty, ReplicaAllocation replicaAlloc,
                                                       boolean isInMemory, boolean isMutable) {
         setItemInternal(partitionId, isTemp, partitionItem);
-        idToDataProperty.put(partitionId, dataProperty);
+        setDataProperty(partitionId, dataProperty);
         idToReplicaAllocation.put(partitionId, replicaAlloc);
         idToInMemory.put(partitionId, isInMemory);
         idToStoragePolicy.put(partitionId, "");
@@ -295,6 +308,7 @@ public class PartitionInfo {
 
     public void setDataProperty(long partitionId, DataProperty newDataProperty) {
         idToDataProperty.put(partitionId, newDataProperty);
+        invalidateStorageMediumMap();
     }
 
     public void refreshTableStoragePolicy(String storagePolicy) {
@@ -359,6 +373,7 @@ public class PartitionInfo {
 
     public void dropPartition(long partitionId) {
         idToDataProperty.remove(partitionId);
+        invalidateStorageMediumMap();
         idToStoragePolicy.remove(partitionId);
         idToReplicaAllocation.remove(partitionId);
         idToInMemory.remove(partitionId);
@@ -377,7 +392,7 @@ public class PartitionInfo {
                              ReplicaAllocation replicaAlloc,
                              boolean isInMemory, boolean isMutable) {
         dataProperty.setMutable(isMutable);
-        idToDataProperty.put(partitionId, dataProperty);
+        setDataProperty(partitionId, dataProperty);
         idToReplicaAllocation.put(partitionId, replicaAlloc);
         idToInMemory.put(partitionId, isInMemory);
     }
@@ -424,6 +439,7 @@ public class PartitionInfo {
         Map<Long, Boolean> origIdToInMemory = idToInMemory;
         Map<Long, String> origIdToStoragePolicy = idToStoragePolicy;
         idToDataProperty = Maps.newHashMap();
+        invalidateStorageMediumMap();
         idToReplicaAllocation = Maps.newHashMap();
         idToItem = Maps.newHashMap();
         idToInMemory = Maps.newHashMap();
@@ -438,7 +454,7 @@ public class PartitionInfo {
                 // Reset DataProperty to default and clear storage policy to avoid carrying over
                 // source cluster's storage settings that have no meaning in cloud mode.
                 DataProperty origDataProperty = origIdToDataProperty.get(origPartId);
-                idToDataProperty.put(newPartId, new DataProperty(
+                setDataProperty(newPartId, new DataProperty(
                         DataProperty.DEFAULT_STORAGE_MEDIUM,
                         DataProperty.MAX_COOLDOWN_TIME_MS,
                         "",
@@ -446,7 +462,7 @@ public class PartitionInfo {
                 idToStoragePolicy.put(newPartId, "");
                 idToInMemory.put(newPartId, false);
             } else {
-                idToDataProperty.put(newPartId, origIdToDataProperty.get(origPartId));
+                setDataProperty(newPartId, origIdToDataProperty.get(origPartId));
                 idToStoragePolicy.put(newPartId, origIdToStoragePolicy.getOrDefault(origPartId, ""));
                 idToInMemory.put(newPartId, origIdToInMemory.get(origPartId));
             }

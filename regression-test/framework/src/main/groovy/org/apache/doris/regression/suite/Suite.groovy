@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
+
 package org.apache.doris.regression.suite
 
 import com.amazonaws.auth.AWSStaticCredentialsProvider
@@ -1442,9 +1444,28 @@ class Suite implements GroovyInterceptable {
         return sk
     }
 
+    private static boolean isLocalHostForUser(String username, String host) {
+        if (username != System.getProperty("user.name")) {
+            return false
+        }
+        def address = java.net.InetAddress.getByName(host)
+        return address.isAnyLocalAddress() || address.isLoopbackAddress() ||
+                java.net.NetworkInterface.getByInetAddress(address) != null
+    }
+
     static void scpFiles(String username, String host, String files, String filePath, boolean fromDst=true) {
         String cmd = "scp -o StrictHostKeyChecking=no -r ${username}@${host}:${files} ${filePath}"
-        if (!fromDst) {
+        if (isLocalHostForUser(username, host)) {
+            def source = new File(files)
+            def destination = new File(filePath)
+            if (destination.isDirectory()) {
+                destination = new File(destination, source.name)
+            }
+            if (source.exists() && source.canonicalFile == destination.canonicalFile) {
+                return
+            }
+            cmd = "cp -r -- ${files} ${filePath}"
+        } else if (!fromDst) {
             cmd = "scp -o StrictHostKeyChecking=no -r ${files} ${username}@${host}:${filePath}"
         }
         staticLogger.info("Execute: ${cmd}".toString())
@@ -1549,7 +1570,11 @@ class Suite implements GroovyInterceptable {
             }
         }
 
-        ipList.each { beid, ip ->
+        ipList.values().unique(false).each { ip ->
+            if (isLocalHostForUser(username, ip.toString())) {
+                executeCommand("mkdir -p -- ${quoteShellArgument(path)}".toString(), true)
+                return
+            }
             String cmd = "ssh -o StrictHostKeyChecking=no ${username}@${ip} \"mkdir -p ${path}\""
             logger.info("Execute: ${cmd}".toString())
             executeCommand(cmd, false)
@@ -1577,7 +1602,11 @@ class Suite implements GroovyInterceptable {
             }
         }
 
-        ipList.each { beid, ip ->
+        ipList.values().unique(false).each { ip ->
+            if (isLocalHostForUser(username, ip.toString())) {
+                executeCommand("rm -r -- ${quoteShellArgument(path)}".toString(), false)
+                return
+            }
             String cmd = "ssh -o StrictHostKeyChecking=no ${username}@${ip} \"rm -r ${path}\""
             logger.info("Execute: ${cmd}".toString())
             executeCommand(cmd, false)
@@ -3764,7 +3793,14 @@ class Suite implements GroovyInterceptable {
         }
 
         def udf_file_dir = new File(udf_file_path).parent
-        backendId_to_backendIP.values().each { be_ip ->
+        backendId_to_backendIP.values().unique(false).each { be_ip ->
+            def beAddress = java.net.InetAddress.getByName(be_ip.toString())
+            if (beAddress.isAnyLocalAddress() || beAddress.isLoopbackAddress() ||
+                    java.net.NetworkInterface.getByInetAddress(beAddress) != null) {
+                assertTrue(new File(udf_file_path).isFile(), "UDF file does not exist: ${udf_file_path}")
+                logger.info("Local backend ${be_ip}, skip scp udf file")
+                return
+            }
             sshExec("root", be_ip, "ssh-keygen -f '/root/.ssh/known_hosts' -R \"${be_ip}\"", false)
             sshExec("root", be_ip, "mkdir -p ${udf_file_dir}", false)
             scpFiles("root", be_ip, udf_file_path, udf_file_path, false)

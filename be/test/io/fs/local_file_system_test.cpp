@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #include "io/fs/local_file_system.h"
 
@@ -30,6 +31,7 @@
 #include <filesystem>
 #include <vector>
 
+#include "common/config.h"
 #include "common/status.h"
 #include "cpp/sync_point.h"
 #include "gtest/gtest_pred_impl.h"
@@ -547,23 +549,17 @@ TEST_F(LocalFileSystemTest, AbnormalWriteRead) {
 }
 
 TEST_F(LocalFileSystemTest, TestGlob) {
-    std::string path = "./be/ut_build_ASAN/test/file_path/";
+    std::string path = config::user_files_secure_path + "/file_path/";
     EXPECT_TRUE(io::global_local_filesystem()->delete_directory(path).ok());
-    EXPECT_TRUE(io::global_local_filesystem()
-                        ->create_directory("./be/ut_build_ASAN/test/file_path/1")
-                        .ok());
-    EXPECT_TRUE(io::global_local_filesystem()
-                        ->create_directory("./be/ut_build_ASAN/test/file_path/2")
-                        .ok());
-    EXPECT_TRUE(io::global_local_filesystem()
-                        ->create_directory("./be/ut_build_ASAN/test/file_path/3")
-                        .ok());
+    EXPECT_TRUE(io::global_local_filesystem()->create_directory(path + "1").ok());
+    EXPECT_TRUE(io::global_local_filesystem()->create_directory(path + "2").ok());
+    EXPECT_TRUE(io::global_local_filesystem()->create_directory(path + "3").ok());
 
-    auto st = save_string_file("./be/ut_build_ASAN/test/file_path/1/f1.txt", "just test");
+    auto st = save_string_file(path + "1/f1.txt", "just test");
     ASSERT_TRUE(st.ok()) << st;
-    st = save_string_file("./be/ut_build_ASAN/test/file_path/1/f2.txt", "just test");
+    st = save_string_file(path + "1/f2.txt", "just test");
     ASSERT_TRUE(st.ok()) << st;
-    st = save_string_file("./be/ut_build_ASAN/test/file_path/f3.txt", "just test");
+    st = save_string_file(path + "f3.txt", "just test");
     ASSERT_TRUE(st.ok()) << st;
 
     std::vector<io::FileInfo> files;

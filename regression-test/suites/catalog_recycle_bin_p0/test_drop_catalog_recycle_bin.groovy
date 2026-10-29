@@ -14,9 +14,22 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 suite("test_drop_catalog_recycle_bin") {
-    sql "CREATE DATABASE IF NOT EXISTS `test_drop_catalog_recycle_bin_db`"
+    sql "DROP DATABASE IF EXISTS `test_drop_catalog_recycle_bin_db` FORCE"
+    sql "CREATE DATABASE `test_drop_catalog_recycle_bin_db`"
+    def database = sql_return_maparray("SHOW PROC '/dbs'").find {
+        it["DbName"] == "test_drop_catalog_recycle_bin_db"
+    }
+    assertNotNull(database)
+    def databaseId = database["DbId"].toString()
+    // Names such as p111 also occur in other suites running against this FE.
+    def recycleEntries = { String name ->
+        sql("SHOW CATALOG RECYCLE BIN WHERE NAME = '${name}'").findAll {
+            it[2].toString() == databaseId
+        }
+    }
     sql "use `test_drop_catalog_recycle_bin_db`"
 
     sql """
@@ -66,22 +79,22 @@ suite("test_drop_catalog_recycle_bin") {
     sql "use `test_drop_catalog_recycle_bin_db`"
     sql "ALTER TABLE `test_drop_catalog_recycle_bin_db`.`test_drop_catalog_recycle_bin_tb1` DROP PARTITION p1000;"
 
-    def pre_res = sql """ SHOW CATALOG RECYCLE BIN WHERE NAME = "p1000" """
+    def pre_res = recycleEntries("p1000")
     assertTrue(pre_res.size() > 0)
     def partition_id = pre_res[0][4]
     sql "DROP CATALOG RECYCLE BIN WHERE 'PartitionId' = ${partition_id};"
-    def cur_res = sql """ SHOW CATALOG RECYCLE BIN WHERE NAME = "p1000" """
+    def cur_res = recycleEntries("p1000")
     assertTrue(pre_res.size() - cur_res.size() == 1)
 
     // test drop table not in catalog recycle bin
     sql "use `test_drop_catalog_recycle_bin_db`"
     sql "ALTER TABLE `test_drop_catalog_recycle_bin_db`.`test_drop_catalog_recycle_bin_tb1` DROP PARTITION p111;"
 
-    def pre_pt_res = sql """ SHOW CATALOG RECYCLE BIN WHERE NAME = "p111" """
+    def pre_pt_res = recycleEntries("p111")
     assertTrue(pre_pt_res.size() > 0)
     def table_id = pre_res[0][3]
     sql "DROP CATALOG RECYCLE BIN WHERE 'TableId' = ${table_id};"
-    def cur_pt_res = sql """ SHOW CATALOG RECYCLE BIN WHERE NAME = "p111" """
+    def cur_pt_res = recycleEntries("p111")
     assertTrue(pre_pt_res.size() - cur_pt_res.size() == 1)
 
     // test drop table in catalog recycle bin
@@ -89,47 +102,47 @@ suite("test_drop_catalog_recycle_bin") {
     sql "ALTER TABLE `test_drop_catalog_recycle_bin_db`.`test_drop_catalog_recycle_bin_tb1` DROP PARTITION p222;"
     sql "DROP TABLE `test_drop_catalog_recycle_bin_db`.`test_drop_catalog_recycle_bin_tb1`;"
 
-    def pre_tb_res = sql """ SHOW CATALOG RECYCLE BIN WHERE NAME = "test_drop_catalog_recycle_bin_tb1" """
+    def pre_tb_res = recycleEntries("test_drop_catalog_recycle_bin_tb1")
     assertTrue(pre_tb_res.size() > 0)
-    pre_pt_res = sql """ SHOW CATALOG RECYCLE BIN WHERE NAME = "p222" """
+    pre_pt_res = recycleEntries("p222")
     assertTrue(pre_pt_res.size() > 0)
     table_id = pre_res[0][3]
     sql "DROP CATALOG RECYCLE BIN WHERE 'TableId' = ${table_id};"
-    def cur_tb_res = sql """ SHOW CATALOG RECYCLE BIN WHERE NAME = "test_drop_catalog_recycle_bin_tb1" """
+    def cur_tb_res = recycleEntries("test_drop_catalog_recycle_bin_tb1")
     assertTrue(pre_tb_res.size() - cur_tb_res.size() == 1)
-    cur_pt_res = sql """ SHOW CATALOG RECYCLE BIN WHERE NAME = "p111" """
+    cur_pt_res = recycleEntries("p222")
     assertTrue(pre_pt_res.size() - cur_pt_res.size() == 1)
 
     // test drop db not in catalog recycle bin
     sql "ALTER TABLE `test_drop_catalog_recycle_bin_db`.`test_drop_catalog_recycle_bin_tb2` DROP PARTITION p111;"
 
-    def pre_db_res = sql """ SHOW CATALOG RECYCLE BIN WHERE NAME = "test_drop_catalog_recycle_bin_db" """
+    def pre_db_res = recycleEntries("test_drop_catalog_recycle_bin_db")
     assertTrue(pre_db_res.size() == 0)
-    pre_tb_res = sql """ SHOW CATALOG RECYCLE BIN WHERE NAME = "test_drop_catalog_recycle_bin_tb2" """
+    pre_tb_res = recycleEntries("test_drop_catalog_recycle_bin_tb2")
     assertTrue(pre_tb_res.size() == 0)
-    pre_pt_res = sql """ SHOW CATALOG RECYCLE BIN WHERE NAME = "p111" """
+    pre_pt_res = recycleEntries("p111")
     assertTrue(pre_pt_res.size() > 0)
     def db_id = pre_res[0][2]
     sql "DROP CATALOG RECYCLE BIN WHERE 'DbId' = ${db_id};"
-    cur_pt_res = sql """ SHOW CATALOG RECYCLE BIN WHERE NAME = "p222" """
+    cur_pt_res = recycleEntries("p111")
     assertTrue(pre_pt_res.size() - cur_pt_res.size() == 1)
 
     // test drop db in catalog recycle bin
     sql "ALTER TABLE `test_drop_catalog_recycle_bin_db`.`test_drop_catalog_recycle_bin_tb2` DROP PARTITION p1000;"
     sql """ DROP DATABASE `test_drop_catalog_recycle_bin_db` """
 
-    pre_db_res = sql """ SHOW CATALOG RECYCLE BIN WHERE NAME = "test_drop_catalog_recycle_bin_db" """
+    pre_db_res = recycleEntries("test_drop_catalog_recycle_bin_db")
     assertTrue(pre_db_res.size() > 0)
-    pre_tb_res = sql """ SHOW CATALOG RECYCLE BIN WHERE NAME = "test_drop_catalog_recycle_bin_tb2" """
+    pre_tb_res = recycleEntries("test_drop_catalog_recycle_bin_tb2")
     assertTrue(pre_tb_res.size() > 0)
-    pre_pt_res = sql """ SHOW CATALOG RECYCLE BIN WHERE NAME = "p1000" """
+    pre_pt_res = recycleEntries("p1000")
     assertTrue(pre_pt_res.size() > 0)
     db_id = pre_res[0][2]
     sql "DROP CATALOG RECYCLE BIN WHERE 'DbId' = ${db_id};"
-    def cur_db_res = sql """ SHOW CATALOG RECYCLE BIN WHERE NAME = "test_drop_catalog_recycle_bin_db" """
+    def cur_db_res = recycleEntries("test_drop_catalog_recycle_bin_db")
     assertTrue(pre_db_res.size() - cur_db_res.size() == 1)
-    cur_tb_res = sql """ SHOW CATALOG RECYCLE BIN WHERE NAME = "test_drop_catalog_recycle_bin_tb2" """
+    cur_tb_res = recycleEntries("test_drop_catalog_recycle_bin_tb2")
     assertTrue(pre_tb_res.size() - cur_tb_res.size() == 1)
-    cur_pt_res = sql """ SHOW CATALOG RECYCLE BIN WHERE NAME = "p1000" """
+    cur_pt_res = recycleEntries("p1000")
     assertTrue(pre_pt_res.size() - cur_pt_res.size() == 1)
 }

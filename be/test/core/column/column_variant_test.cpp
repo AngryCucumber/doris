@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
+
 #include "core/column/column_variant.h"
 
 #include <gmock/gmock-more-matchers.h>
@@ -1494,8 +1496,12 @@ TEST_F(ColumnVariantTest, resize) {
             EXPECT_EQ(source_column->size(), add_count);
         }
     };
-    test_func(column_variant, 0);
-    test_func(column_variant, 10);
+    // Preserve the shared JSON fixture for subsequent tests in this suite.
+    const auto original_size = column_variant->size();
+    auto source_column = column_variant->clone();
+    test_func(source_column, 0);
+    test_func(source_column, 10);
+    EXPECT_EQ(column_variant->size(), original_size);
 }
 
 // ================= variant specific interface =================
@@ -1741,23 +1747,32 @@ TEST_F(ColumnVariantTest, create_root) {
             EXPECT_TRUE(root->data.get_least_common_type()->equals(*type));
         }
 
-        // Test case 3: Create root on existing column
+        // Test case 3: An existing scalar root is preserved by create_root (create if missing).
         {
             auto col = source_column->clone();
             auto obj = assert_cast<ColumnVariant*>(col.get());
             auto original_root = obj->get_subcolumns().get_root();
-            EXPECT_TRUE(original_root != nullptr);
+            ASSERT_TRUE(original_root != nullptr);
+            ASSERT_TRUE(original_root->is_scalar());
+            ASSERT_FALSE(obj->is_null_root());
+            auto original_type = original_root->data.get_least_common_type();
 
-            // Create root with new type
             auto type = DataTypeFactory::instance().create_data_type(
                     FieldType::OLAP_FIELD_TYPE_STRING, 0, 0);
             auto column = type->create_column();
-            EXPECT_ANY_THROW(obj->create_root(type, std::move(column)));
+            EXPECT_NO_THROW(obj->create_root(type, std::move(column)));
 
-            // Verify root is replaced with new type
             const auto& new_root = obj->get_subcolumns().get_root();
-            EXPECT_TRUE(new_root != nullptr);
-            EXPECT_EQ(new_root, original_root);
+            ASSERT_EQ(new_root, original_root);
+            EXPECT_TRUE(new_root->data.get_least_common_type()->equals(*original_type));
+            ASSERT_EQ(obj->size(), src_size);
+            for (size_t row = 0; row < src_size; ++row) {
+                Field expected;
+                Field actual;
+                source_column->get(row, expected);
+                obj->get(row, actual);
+                EXPECT_EQ(actual, expected) << "row " << row;
+            }
         }
 
         // Test case 4: Create root and verify data operations

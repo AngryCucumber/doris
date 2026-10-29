@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
+
 #include <arrow/array/builder_base.h>
 #include <gtest/gtest.h>
 
@@ -79,11 +81,19 @@ TEST(QuantileStateSerdeTest, writeColumnToPb) {
     PValues as_pv = PValues();
     st = quantile_state_serde->write_column_to_pb(*except_column, as_pv, 0, except_column->size());
     EXPECT_TRUE(st.ok()) << st.to_string();
-    EXPECT_EQ(pv.bytes_value_size(), as_pv.bytes_value_size());
-    // check column value
+    ASSERT_EQ(column_quantile_state->size(), except_column->size());
+    ASSERT_EQ(pv.bytes_value_size(), as_pv.bytes_value_size());
+    // Compare canonical state bytes, not the object padding exposed by get_data_at.
     for (size_t j = 0; j < column_quantile_state->size(); ++j) {
-        EXPECT_EQ(column_quantile_state->get_data_at(j), except_column->get_data_at(j));
+        const auto& expected = column_quantile_state->get_element(j);
+        const auto& actual = except_column->get_element(j);
+        std::string expected_bytes(expected.get_serialized_size(), '\0');
+        std::string actual_bytes(actual.get_serialized_size(), '\0');
+        expected.serialize(reinterpret_cast<uint8_t*>(expected_bytes.data()));
+        actual.serialize(reinterpret_cast<uint8_t*>(actual_bytes.data()));
+        EXPECT_EQ(expected_bytes, actual_bytes);
     }
+    EXPECT_EQ(except_column->get_element(1).get_value_by_percentile(0.5), 123);
     std::cout << "test write/read_column_to_pb" << std::endl;
 }
 

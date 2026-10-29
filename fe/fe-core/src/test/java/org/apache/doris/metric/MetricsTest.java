@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.metric;
 
@@ -74,7 +75,7 @@ public class MetricsTest {
             value.append(0).append(Version.DORIS_BUILD_VERSION_HOTFIX);
         }
 
-        String expectedSample = "doris_fe_version{version=\"" + Version.DORIS_BUILD_VERSION
+        String expectedSample = "doris_fe_version{version=\"" + Version.DORIS_PRODUCT_VERSION
                 + "\", major=\"" + Version.DORIS_BUILD_VERSION_MAJOR
                 + "\", minor=\"" + Version.DORIS_BUILD_VERSION_MINOR
                 + "\", patch=\"" + Version.DORIS_BUILD_VERSION_PATCH

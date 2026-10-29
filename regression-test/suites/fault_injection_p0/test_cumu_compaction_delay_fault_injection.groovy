@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 import org.codehaus.groovy.runtime.IOGroovyMethods
 
@@ -29,6 +30,10 @@ suite("test_cumu_compaction_delay_fault_injection","nonConcurrent") {
         logger.info("Skip test_cumu_compaction_delay_fault_injection because backend count is " + backendId_to_backendIP.size())
         return
     }
+
+    // Local compaction pools are per BE. Place each table on every BE so the
+    // three submitted tables compete for the same pool on each backend.
+    def testReplicationNum = isCloudMode() ? 1 : backendId_to_backendIP.size()
 
     backend_id = backendId_to_backendIP.keySet()[0]
 
@@ -104,7 +109,7 @@ suite("test_cumu_compaction_delay_fault_injection","nonConcurrent") {
         DISTRIBUTED BY HASH(k)
         BUCKETS 1
         properties(
-            "replication_num" = "1",
+            "replication_num" = "${testReplicationNum}",
             "disable_auto_compaction" = "true")
         """
     sql """ INSERT INTO ${tableName1a1} VALUES (0,0)"""
@@ -122,7 +127,7 @@ suite("test_cumu_compaction_delay_fault_injection","nonConcurrent") {
         DISTRIBUTED BY HASH(k)
         BUCKETS 1
         properties(
-            "replication_num" = "1",
+            "replication_num" = "${testReplicationNum}",
             "disable_auto_compaction" = "true")
         """
     sql """ INSERT INTO ${tableName1a2} VALUES (0,0)"""
@@ -146,7 +151,7 @@ suite("test_cumu_compaction_delay_fault_injection","nonConcurrent") {
         DISTRIBUTED BY HASH(k)
         BUCKETS 1
         properties(
-            "replication_num" = "1",
+            "replication_num" = "${testReplicationNum}",
             "disable_auto_compaction" = "true")
         """
     sql """ INSERT INTO ${tableName1b1} VALUES (0,0)"""
@@ -164,7 +169,7 @@ suite("test_cumu_compaction_delay_fault_injection","nonConcurrent") {
         DISTRIBUTED BY HASH(k)
         BUCKETS 1
         properties(
-            "replication_num" = "1",
+            "replication_num" = "${testReplicationNum}",
             "disable_auto_compaction" = "true")
         """
     sql """ INSERT INTO ${tableName1b2} VALUES (0,0),(0,1),(0,2)"""
@@ -188,7 +193,7 @@ suite("test_cumu_compaction_delay_fault_injection","nonConcurrent") {
         DISTRIBUTED BY HASH(k)
         BUCKETS 1
         properties(
-            "replication_num" = "1",
+            "replication_num" = "${testReplicationNum}",
             "disable_auto_compaction" = "true")
         """
     sql """ INSERT INTO ${tableName1c1} VALUES (0,0),(0,1),(0,2)"""
@@ -206,7 +211,7 @@ suite("test_cumu_compaction_delay_fault_injection","nonConcurrent") {
         DISTRIBUTED BY HASH(k)
         BUCKETS 1
         properties(
-            "replication_num" = "1",
+            "replication_num" = "${testReplicationNum}",
             "disable_auto_compaction" = "true")
         """
     sql """ INSERT INTO ${tableName1c2} VALUES (0,0),(0,1),(0,2)"""
@@ -279,7 +284,7 @@ suite("test_cumu_compaction_delay_fault_injection","nonConcurrent") {
         DISTRIBUTED BY HASH(k)
         BUCKETS 1
         properties(
-            "replication_num" = "1",
+            "replication_num" = "${testReplicationNum}",
             "disable_auto_compaction" = "true")
         """
     sql """ INSERT INTO ${tableName2a1} VALUES (0,0),(0,1),(0,2)"""
@@ -297,7 +302,7 @@ suite("test_cumu_compaction_delay_fault_injection","nonConcurrent") {
         DISTRIBUTED BY HASH(k)
         BUCKETS 1
         properties(
-            "replication_num" = "1",
+            "replication_num" = "${testReplicationNum}",
             "disable_auto_compaction" = "true")
         """
     sql """ INSERT INTO ${tableName2a2} VALUES (0,0),(0,1),(0,2)"""
@@ -315,7 +320,7 @@ suite("test_cumu_compaction_delay_fault_injection","nonConcurrent") {
         DISTRIBUTED BY HASH(k)
         BUCKETS 1
         properties(
-            "replication_num" = "1",
+            "replication_num" = "${testReplicationNum}",
             "disable_auto_compaction" = "true")
         """
     sql """ INSERT INTO ${tableName2a3} VALUES (0,0),(0,1),(0,2)"""
@@ -341,7 +346,7 @@ suite("test_cumu_compaction_delay_fault_injection","nonConcurrent") {
         DISTRIBUTED BY HASH(k)
         BUCKETS 1
         properties(
-            "replication_num" = "1",
+            "replication_num" = "${testReplicationNum}",
             "disable_auto_compaction" = "true")
         """
     sql """ INSERT INTO ${tableName2b1} VALUES (0,0)"""
@@ -359,7 +364,7 @@ suite("test_cumu_compaction_delay_fault_injection","nonConcurrent") {
         DISTRIBUTED BY HASH(k)
         BUCKETS 1
         properties(
-            "replication_num" = "1",
+            "replication_num" = "${testReplicationNum}",
             "disable_auto_compaction" = "true")
         """
     sql """ INSERT INTO ${tableName2b2} VALUES (0,0),(0,1),(0,2)"""
@@ -377,7 +382,7 @@ suite("test_cumu_compaction_delay_fault_injection","nonConcurrent") {
         DISTRIBUTED BY HASH(k)
         BUCKETS 1
         properties(
-            "replication_num" = "1",
+            "replication_num" = "${testReplicationNum}",
             "disable_auto_compaction" = "true")
         """
     sql """ INSERT INTO ${tableName2b3} VALUES (0,0),(0,1),(0,2)"""
@@ -403,7 +408,7 @@ suite("test_cumu_compaction_delay_fault_injection","nonConcurrent") {
         DISTRIBUTED BY HASH(k)
         BUCKETS 1
         properties(
-            "replication_num" = "1",
+            "replication_num" = "${testReplicationNum}",
             "disable_auto_compaction" = "true")
         """
     sql """ INSERT INTO ${tableName2c1} VALUES (0,0),(0,1),(0,2)"""
@@ -421,7 +426,7 @@ suite("test_cumu_compaction_delay_fault_injection","nonConcurrent") {
         DISTRIBUTED BY HASH(k)
         BUCKETS 1
         properties(
-            "replication_num" = "1",
+            "replication_num" = "${testReplicationNum}",
             "disable_auto_compaction" = "true")
         """
     sql """ INSERT INTO ${tableName2c2} VALUES (0,0),(0,1),(0,2)"""
@@ -439,7 +444,7 @@ suite("test_cumu_compaction_delay_fault_injection","nonConcurrent") {
         DISTRIBUTED BY HASH(k)
         BUCKETS 1
         properties(
-            "replication_num" = "1",
+            "replication_num" = "${testReplicationNum}",
             "disable_auto_compaction" = "true")
         """
     sql """ INSERT INTO ${tableName2c3} VALUES (0,0)"""
@@ -465,7 +470,7 @@ suite("test_cumu_compaction_delay_fault_injection","nonConcurrent") {
         DISTRIBUTED BY HASH(k)
         BUCKETS 1
         properties(
-            "replication_num" = "1",
+            "replication_num" = "${testReplicationNum}",
             "disable_auto_compaction" = "true")
         """
     sql """ INSERT INTO ${tableName2d1} VALUES (0,0)"""
@@ -483,7 +488,7 @@ suite("test_cumu_compaction_delay_fault_injection","nonConcurrent") {
         DISTRIBUTED BY HASH(k)
         BUCKETS 1
         properties(
-            "replication_num" = "1",
+            "replication_num" = "${testReplicationNum}",
             "disable_auto_compaction" = "true")
         """
     sql """ INSERT INTO ${tableName2d2} VALUES (0,0)"""
@@ -501,7 +506,7 @@ suite("test_cumu_compaction_delay_fault_injection","nonConcurrent") {
         DISTRIBUTED BY HASH(k)
         BUCKETS 1
         properties(
-            "replication_num" = "1",
+            "replication_num" = "${testReplicationNum}",
             "disable_auto_compaction" = "true")
         """
     sql """ INSERT INTO ${tableName2d3} VALUES (0,0)"""

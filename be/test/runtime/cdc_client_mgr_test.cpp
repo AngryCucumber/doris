@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
+
 #include "runtime/cdc_client_mgr.h"
 
 #include <gen_cpp/internal_service.pb.h>
@@ -40,6 +42,10 @@ namespace doris {
 class CdcClientMgrTest : public testing::Test {
 public:
     void SetUp() override {
+        // Starting a CDC client installs a process-wide child reaper. Preserve the
+        // handler so later death tests can wait for their own child processes.
+        _sigchld_saved = sigaction(SIGCHLD, nullptr, &_original_sigchld) == 0;
+        ASSERT_TRUE(_sigchld_saved);
         // Save original environment variables
         _original_doris_home = getenv("DORIS_HOME");
         _original_log_dir = getenv("LOG_DIR");
@@ -76,6 +82,9 @@ public:
     }
 
     void TearDown() override {
+        if (_sigchld_saved) {
+            EXPECT_EQ(0, sigaction(SIGCHLD, &_original_sigchld, nullptr));
+        }
         // Restore original environment variables
         if (_original_doris_home) {
             setenv("DORIS_HOME", _original_doris_home, 1);
@@ -104,6 +113,8 @@ public:
     }
 
 protected:
+    struct sigaction _original_sigchld {};
+    bool _sigchld_saved = false;
     std::string _doris_home;
     std::string _log_dir;
     std::string _lib_dir;

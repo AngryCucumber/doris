@@ -16,6 +16,8 @@ package mv.dml.external
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
+
 suite("dml_query_has_external_table") {
     String enabled = context.config.otherConfigs.get("enableJdbcTest")
     logger.info("enabled: " + enabled)
@@ -101,13 +103,13 @@ suite("dml_query_has_external_table") {
         sql "set enable_materialized_view_rewrite=false";
         // enable dml rewrite by mv
         sql "set enable_dml_materialized_view_rewrite=true";
-        sql "set enable_dml_materialized_view_rewrite_when_base_table_data_unawareness=false";
+        sql "set enable_dml_materialized_view_rewrite_when_base_table_unawareness=false";
 
         mv_not_part_in( """
             insert into insert_target_olap_table 
             ${insert_into_async_query_external}""", insert_into_async_mv_name_external)
 
-        sql "set enable_dml_materialized_view_rewrite_when_base_table_data_unawareness=true";
+        sql "set enable_dml_materialized_view_rewrite_when_base_table_unawareness=true";
         mv_rewrite_success_without_check_chosen("""
             insert into insert_target_olap_table 
             ${insert_into_async_query_external}

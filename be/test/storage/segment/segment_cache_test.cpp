@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #include <gen_cpp/AgentService_types.h>
 #include <gen_cpp/Descriptors_types.h>
@@ -228,11 +229,20 @@ public:
     SegmentCacheTest() = default;
     ~SegmentCacheTest() = default;
     static void SetUpTestSuite() {
+        _old_enable_file_cache = config::enable_file_cache;
+        // This fixture installs the segment cache, but no disk FileCacheFactory.
+        config::enable_file_cache = false;
         config::min_file_descriptor_number = 100;
         set_up();
     }
 
-    static void TearDownTestSuite() { tear_down(); }
+    static void TearDownTestSuite() {
+        tear_down();
+        config::enable_file_cache = _old_enable_file_cache;
+    }
+
+private:
+    inline static bool _old_enable_file_cache = false;
 };
 
 TEST_F(SegmentCacheTest, vec_sequence_col) {

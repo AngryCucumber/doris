@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
+
 #include <faiss/IndexHNSW.h>
 #include <faiss/IndexIVFFlat.h>
 #include <gmock/gmock.h>
@@ -1073,7 +1075,9 @@ TEST_F(VectorSearchTest, InnerProductRangeSearchBasic) {
 
         // Perform Doris range search
         HNSWSearchParameters doris_params;
-        doris_params.ef_search = 100;
+        // An exact result-count comparison needs a budget covering all vectors.
+        // A smaller HNSW search budget may legitimately miss matching neighbors.
+        doris_params.ef_search = n;
         doris_params.is_le_or_lt = false; // For inner product, we want values >= radius
         auto roaring = std::make_unique<roaring::Roaring>();
         for (int i = 0; i < n; ++i) {

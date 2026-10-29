@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.catalog;
 
@@ -113,7 +114,10 @@ public class DataProperty implements GsonPostProcessable {
     }
 
     public void setStorageMedium(TStorageMedium medium) {
-        this.storageMedium = medium;
+        if (this.storageMedium != medium) {
+            this.storageMedium = medium;
+            PartitionInfo.invalidateStorageMediumMap();
+        }
     }
 
     @Override

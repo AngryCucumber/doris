@@ -35,25 +35,220 @@ This inventory describes distribution changes, not a claim that all changes are 
   nested NULL arrays, NULL dates/booleans, timestamp fractions at precisions
   0–6 and MassDB recognition under a Turkish default locale.
 
-Validation for this migration:
+Validation for this migration (2026-10-28/29; local evidence retained):
 
-- FE main/test compilation and 36 selected tests passed: `ReportHandlerTest`,
-  `SystemInfoServiceTest`, `JdbcMySQLClientTest`, `GroupCommitManagerTest`,
-  `GroupCommitManagerBackendSelectionTest` and `DatabaseTransactionMgrTest`.
-- JDBC scanner compilation and 28 tests passed: `MySQLJdbcArrayTest`,
-  `JdbcTimestampSemanticsTest`, `JdbcTimestampBindTest` and `BaseJdbcExecutorTest`.
-- All Java modules passed `mvn checkstyle:check`. The 35 product/release Python
-  tests, UI production build, `check:notices`, browser `test:legal`, source-header
-  checks, shell syntax checks and `git diff --check` passed.
-- Nine migrated BE/test translation units passed Clang syntax checks, including
-  search, compaction, metadata-tool initialization, HTTP version display and
-  heartbeat changes. Checks used 0.24.0 Thrift-generated sources/headers and the
-  checksum-verified timsort header required by the new baseline.
-- The host still has the older native dependency installation. FE verification
-  used a locally built Thrift 0.24.0 compiler instead of the installed 0.16.0.
-  Full BE unit-test linking was blocked by missing `libarrow_compute.a`; the
-  native dependency set must be rebuilt for 4.1.5 before full BE verification.
-  No rc415 distribution package or live-cluster regression result is claimed.
+- Candidate and pristine upstream FE/BE product builds passed with the same
+  JDK 17, Clang toolchain, Release configuration and SSE4.2 instruction mode.
+  Rebuilt or upgraded the native dependencies required by 4.1.5, including
+  Thrift 0.24.0, Arrow 24, simdutf, libunwind and the Rust readers.
+- FE validation reconciled 10,902 distinct cases: 10,824 passed and 78 skipped.
+  Exact numeric/JDBC values, nested arrays, timestamp precision, report queue
+  interruption and storage-medium cache invalidation have targeted coverage.
+  Controlled DNS cases passed for both candidate and upstream.
+- The complete Release BE inventory executed 11,276 cases. After fixture
+  corrections, 11,203 passed, 55 skipped and 18 failed. Seventeen failures
+  require debug assertions and pass in the ASAN build; the remaining Release
+  stack-trace failure reproduces with unchanged upstream tracing code and
+  passes in ASAN. The ASAN inventory reconciles 11,278 distinct cases: 11,221
+  passed and 57 skipped across the initial run, continuation and focused
+  retries. Preserve the initial abort and failure records; complete Variant
+  and CDC/ThreadPool suites pass after fixing their shared-state contamination.
+- Java Checkstyle, 36 product/release Python tests, the UI production build,
+  notice/browser checks and source-header checks passed. The regression
+  framework's 39 tests pass, including shared local fixture preparation,
+  export-directory cleanup and SSH argument handling.
+- Live tests passed for storage cooldown and metadata changes, synchronous
+  and asynchronous group-commit failover, publish failure cleanup, metadata
+  CLI/restart round trips and all four candidate compaction/index combinations.
+  The pristine horizontal/index-enabled compaction failure remains recorded.
+- The complete local SQL regression executed 6,602 suites: 6,378 passed and
+  224 failed in the initial run. After fixture corrections and isolated retries,
+  6,577 pass and 25 remain failed. Seven require object-store fixtures returning
+  HTTP 403; the other 18 have matching pristine-tag errors, results or capacity
+  limits. This is a reconciliation across runs, not an all-green full run.
+  Original failures and SQL goldens are retained.
+- The remaining baseline cases comprise eight HBO fixtures referring to the
+  absent `hbo_slow_query_threshold_ms` setting, one native AWS anonymous-read
+  timeout, three query/PLSQL result or error differences, four TPC-DS Q24 golden
+  mismatches, one DDL/counter verification suite, and the original 200-million-row
+  window case. The window fails at the same 16 GiB query limit in both products;
+  its original scale still needs a larger-memory host. Host-side S3 HEAD/GET
+  succeeds, so the native-client timeout is not classified as endpoint downtime.
+  HBO assertions after the missing setting remain unvalidated by those fixtures.
+- Pristine controls reproduce all 14 CREATE and 12 RECREATE/ALTER observations
+  and negative native writer counters after the original fault-injection suite.
+  Both products also reuse a cached built-in result after changing UDF preference
+  once SQL-cache eligibility is reached; fresh/cache-disabled UDF controls pass.
+  These baseline findings are recorded without changing production cache logic.
+- Two complete ABBA performance series ran on the same 32-CPU, 23-GiB host,
+  each using fresh 1-FE/3-BE clusters, five measured rounds per block and the
+  same checksum-verified TPC-H SF1 input. One series retained the optional
+  Release symbols; the other matched slim-package deployment without them.
+  Binaries, configuration templates and workloads were unchanged between series.
+  Every query result hash matches across all eight blocks. All write row counts,
+  distinct keys and amount totals match. Candidate compaction passes 80/80 cases;
+  pristine horizontal/index-enabled compaction fails 20/80 with the same index
+  error. Invalid baseline results are excluded from timing comparisons.
+
+Slim-deployment medians (ten measured samples per product; query total is the
+sum of 22 SQL elapsed times within each round):
+
+| Measurement | Pristine 4.1.5 | MassDB rc415 | Candidate change |
+| --- | ---: | ---: | ---: |
+| TPC-H SF1 query round | 1.5314 s | 1.5102 s | -1.39% |
+| 40,000 rows visible, Group Commit off | 6.7306 s | 6.7690 s | +0.57% |
+| 40,000 rows visible, synchronous Group Commit | 8.0995 s | 8.0415 s | -0.72% |
+| 40,000 rows visible, asynchronous Group Commit | 0.8976 s | 0.8834 s | -1.58% |
+| FE CPU per completed tablet report | 0.1460 CPU-s | 0.1534 CPU-s | +5.04% |
+| Completed tablet reports per second | 1.0295 | 0.9984 | -3.02% |
+
+- Neither series triggered the investigation rule of more than 10% and 10 ms
+  median latency growth in both order pairings. This is a triage threshold,
+  not proof of zero regression. Per-round samples, p95, variation, individual
+  query results and all observed changes remain available in the local records.
+  Report CPU per completion rises 1.82%/10.73% in the two slim pairings; total
+  FE CPU medians are equal at 5.055 CPU-seconds. Reports complete approximately
+  once per second under this workload, despite more frequent HTTP triggers.
+  Every BE completes reports in every round and end-of-round queues are zero.
+  This workload does not establish a production report-throughput capacity.
+- Slim-deployment simultaneous BE RSS peaks differ from upstream by -1.44% to
+  +2.04% across phases/order pairings; no FE or BE peak exceeds upstream by 10%
+  in both pairings. Loading the optional split symbols adds about 300-400 MiB
+  RSS per BE and indexes about 1.03 million symbols instead of 56 thousand.
+  Removing only those files from runtime lookup paths removes the fixed increase.
+  RSS includes shareable file mappings and is not exclusive physical memory.
+  Deploy matching symbols when detailed stack names justify this overhead.
+- Host paging was observed: the slim series records 1.26/4.68 MiB swap-in and
+  16.50/10.69 MiB swap-out during upstream/candidate phases. One-second process
+  samples show zero VmSwap for every tested FE/BE. These are shared-host
+  measurements with SF1 data, not a production sizing or tail-latency guarantee.
+- Full Cloud/FDB runtime validation and a complete rc415 release package remain
+  outstanding. The changed Cloud version metric has focused compile/link/runtime
+  coverage only. The original `2.0.5` branch is unchanged; this work is local to
+  `4.1.5` and has not been pushed.
+
+Detailed machine-local evidence is under `.build-records/rc415-full-validation/`:
+`fe-archive-reconciliation.json`, `be-release-aggregate.json`,
+`be-asan-inventory-reconciliation.json`,
+`sql-regression/candidate-suite-reconciliation.json`,
+`sql-regression/remaining-suite-classification.json`,
+`performance-comparison.json`, `performance-slim-comparison.json`, and
+`final-performance-summary.json`. Original failures are preserved alongside
+successful retries; the two performance series are never pooled together.
+
+## rc415 regression hardening (2026-10-28)
+
+- Restore the process-wide SIGCHLD handler after each CDC client unit test.
+  The upstream fixture otherwise leaves its child reaper installed, which can
+  consume a later GoogleTest death-test child and abort the complete ASAN run.
+  Preserve CDC production behavior and the existing death-test assertions.
+
+- Match the existing local-FE behavior when preparing Java UDF fixtures for
+  local BEs: verify the JAR exists and skip SSH/SCP to the same host and path.
+  Deduplicate remote BE hosts before copying, preserving remote preparation.
+  Generic fixture copies also use local paths for the current operating-system
+  user, preserve same-file copies and retain SSH for remote or different users.
+  Prepare and remove shared local export directories without requiring SSH;
+  deduplicate backend addresses without modifying the map's collection view.
+
+- Use the existing 4.1.5 base-table-unawareness session variable in the external
+  DML materialized-view fixture, retaining its enabled/disabled rewrite checks.
+
+- Exercise the BE workload queue with a table scan in its rejection fixture.
+  Upstream 4.1.5 can answer a simple COUNT from FE metadata without entering
+  that queue. Preserve the rejection assertion and production optimization.
+
+- Enable partition analysis globally and run the fixture through a new connection
+  so the planner inherits this global-only setting; restore the original default
+  afterward. Reset global
+  variables before resetting the session in UNSET tests so earlier suites do
+  not determine the expected default values.
+
+- Place each local cumulative-compaction delay fixture table on all participating
+  BEs. The concurrency limit is per BE; distributing single-replica tables across
+  different BEs cannot saturate the intended shared pool. Preserve cloud replica
+  settings and the existing rowset-count assertions. Run this case with the
+  upstream P0 large-task concurrency configuration enabled.
+
+- Declare commit fault-injection fixture variables locally so the framework
+  can execute its three-replica commit checks instead of rejecting global
+  variable assignments before the first load.
+
+- Scope catalog-recycle assertions to the fixture database ID, reset only
+  that database on retries and compare the same partition before/after each
+  deletion. Global partition names can otherwise select another suite's IDs
+  and delete unrelated test metadata during parallel regression runs.
+
+- Parse warehouse byte counts as 64-bit values in the SQL regression fixture,
+  so a full test cluster with more than 2 GiB of data does not overflow the
+  fixture's 32-bit parser. Retain the existing SQL and size assertions.
+
+- Give the HNSW inner-product range test a search budget covering its 500
+  vectors before comparing its result count with an exact index. Keep the
+  count tolerance and distance assertions unchanged; production ANN defaults
+  and algorithms are unchanged.
+
+- Correct the Variant fixture to honor the documented "create if missing"
+  root operation for an existing scalar root. Verify that its root, type and
+  all 1,756 row values remain unchanged. Run resize operations on a clone so
+  they do not replace the shared JSON fixture with ten default rows before
+  later cases execute; the production Variant implementation is unchanged.
+
+- Validate complex-column `get_data_at` pointers, extents and values, and compare
+  canonical quantile-state payloads after local protobuf round trips. These tests must
+  not compare object padding or owning pointers as serialized data.
+
+- Correct two upstream BE test fixtures: allow the TDigest input distribution
+  to produce zero while checking quantile bounds and monotonicity; declare the
+  ORC date slot as DATEV2 to match its serialized DATEV2 expressions and assert
+  the actual 1994 date offsets from the Unix epoch. Production algorithms are
+  unchanged by these fixture corrections.
+
+- `ReportHandler`: use non-interruptible insertion into the unbounded report
+  queue. An interrupted RPC thread must not leave a pending deduplication key
+  without a queue entry, which would prevent subsequent reports from being
+  consumed. Add a regression test that reproduces the interrupted enqueue.
+- `Env`, `PartitionInfo`, `DataProperty`, `Database` and `InternalCatalog`:
+  invalidate the storage-medium cache on partition/storage changes and catalog
+  membership changes. Bound reuse by the next SSD cooldown deadline as well as
+  the configured TTL. A metadata change during a scan or an expired partition
+  whose write lock times out prevents reuse of the incomplete snapshot.
+  Preserve the existing cooldown mutation and edit-log behavior.
+- `StorageMediumMapCacheTest`: cover metadata replacement, in-place storage
+  changes, table registration/removal, disabled caching, cooldown expiry,
+  write-lock timeout retry, changes during publication and concurrent report
+  workers sharing a single catalog scan.
+- `CompactionMixin`: replace input-profile counters when rebuilding basic
+  information after ordered compaction falls back to a normal merge. Add a
+  regression test for both the input totals and profile counters so a retry
+  cannot report twice the rows, segments or bytes.
+- `SymbolIndex`: recognize the split symbols installed by the Release build
+  under `lib/debug_info/<binary>.dbg`, preserving the existing `.debug` search
+  locations. Stripped service binaries otherwise return stack addresses without
+  the pipeline/operator names required by the live stack-trace API test.
+  This optional deployment increases BE RSS by about 300-400 MiB in the measured
+  build; the slim package excludes the separate debug files.
+- BE and Cloud version metrics: export the same MassDB product identifier as
+  FE metrics, HTTP responses and heartbeat messages. Preserve command-line
+  build identifiers and exact numeric/hash assertions in the metric tests.
+- `MetricsTest`: adapt the upstream version-metric assertion to the MassDB
+  product identifier already exported by `MetricRepo`, while retaining exact
+  checks for numeric build labels, short commit hash and metric value.
+- `meta_tool`: initialize the schema cache and column object pool before
+  deserializing tablet metadata in a standalone process. Add a CLI regression
+  test that loads a real schema into an isolated metadata directory and reads
+  it back in a separate process; an empty directory alone missed the crash.
+- `CollectionStatisticsTest`: initialize the mock literal's expression node
+  type. Reusing memory from a slot-reference mock otherwise makes the collector
+  cast a literal to `VSlotRef`, crashing the full unit suite even though the
+  isolated missing-slot test passes.
+- `LocalFileSystemTest`: create glob fixtures under the configured secure file
+  directory so the same traversal and matching assertions work with an
+  independent `CMAKE_BUILD_DIR`, including Release and ASAN test builds.
+- `SegmentCacheTest` and `TabletCooldownTest`: disable and restore the separate
+  disk file-cache option around fixtures that do not install a disk-cache
+  factory. Preserve segment loading, memory accounting, sequence-column and
+  remote-cooldown assertions while allowing reads and tablet cleanup to complete.
 
 ## Complete rc02 release builds (2026-09-09)
 

@@ -5132,10 +5132,22 @@ public class Env {
     private static class StorageMediumMapCache {
         final HashMap<Long, TStorageMedium> map;
         final long buildTimeMs;
+        final long metadataVersion;
+        final long nextCooldownTimeMs;
 
-        StorageMediumMapCache(HashMap<Long, TStorageMedium> map, long buildTimeMs) {
+        StorageMediumMapCache(HashMap<Long, TStorageMedium> map, long buildTimeMs,
+                long metadataVersion, long nextCooldownTimeMs) {
             this.map = map;
             this.buildTimeMs = buildTimeMs;
+            this.metadataVersion = metadataVersion;
+            this.nextCooldownTimeMs = nextCooldownTimeMs;
+        }
+
+        boolean isValid(long cacheValidMs) {
+            long now = System.currentTimeMillis();
+            return cacheValidMs > 0 && now >= buildTimeMs && now - buildTimeMs < cacheValidMs
+                    && now < nextCooldownTimeMs
+                    && metadataVersion == PartitionInfo.getStorageMediumMapVersion();
         }
     }
 
@@ -5145,8 +5157,7 @@ public class Env {
     public HashMap<Long, TStorageMedium> getPartitionIdToStorageMediumMap() {
         long cacheValidMs = Config.storage_medium_map_cache_second * 1000L;
         StorageMediumMapCache cache = storageMediumMapCache;
-        if (cacheValidMs > 0 && cache != null
-                && System.currentTimeMillis() - cache.buildTimeMs < cacheValidMs) {
+        if (cache != null && cache.isValid(cacheValidMs)) {
             return cache.map;
         }
 
@@ -5154,18 +5165,21 @@ public class Env {
         // rebuild and the others reuse the result instead of scanning the whole catalog concurrently.
         synchronized (storageMediumMapBuildLock) {
             cache = storageMediumMapCache;
-            if (cacheValidMs > 0 && cache != null
-                    && System.currentTimeMillis() - cache.buildTimeMs < cacheValidMs) {
+            if (cache != null && cache.isValid(cacheValidMs)) {
                 return cache.map;
             }
 
-            HashMap<Long, TStorageMedium> storageMediumMap = buildPartitionIdToStorageMediumMap();
-            storageMediumMapCache = new StorageMediumMapCache(storageMediumMap, System.currentTimeMillis());
-            return storageMediumMap;
+            cache = buildPartitionIdToStorageMediumMap();
+            storageMediumMapCache = cache;
+            return cache.map;
         }
     }
 
-    private HashMap<Long, TStorageMedium> buildPartitionIdToStorageMediumMap() {
+    private StorageMediumMapCache buildPartitionIdToStorageMediumMap() {
+        // Capture before scanning: a concurrent metadata change must also invalidate a
+        // snapshot that is still being built, even if it is published after that change.
+        long metadataVersion = PartitionInfo.getStorageMediumMapVersion();
+        long nextCooldownTimeMs = Long.MAX_VALUE;
         HashMap<Long, TStorageMedium> storageMediumMap = new HashMap<Long, TStorageMedium>();
 
         // record partition which need to change storage medium
@@ -5196,6 +5210,12 @@ public class Env {
                         DataProperty dataProperty = partitionInfo.getDataProperty(partition.getId());
                         Preconditions.checkNotNull(dataProperty,
                                 partition.getName() + ", pId:" + partitionId + ", db: " + dbId + ", tbl: " + tableId);
+                        if (dataProperty.getStorageMedium() == TStorageMedium.SSD
+                                && dataProperty.getCooldownTimeMs() < Long.MAX_VALUE) {
+                            // Expired entries also prevent reuse when the write lock cannot be acquired.
+                            nextCooldownTimeMs = Math.min(nextCooldownTimeMs,
+                                    dataProperty.getCooldownTimeMs() + 1);
+                        }
                         if (dataProperty.getStorageMedium() == TStorageMedium.SSD
                                 && dataProperty.getCooldownTimeMs() < currentTimeMs) {
                             // expire. change to HDD.
@@ -5274,7 +5294,8 @@ public class Env {
                 }
             } // end for tables
         } // end for dbs
-        return storageMediumMap;
+        return new StorageMediumMapCache(storageMediumMap, System.currentTimeMillis(),
+                metadataVersion, nextCooldownTimeMs);
     }
 
     public ConsistencyChecker getConsistencyChecker() {

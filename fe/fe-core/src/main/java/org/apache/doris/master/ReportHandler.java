@@ -290,8 +290,9 @@ public class ReportHandler extends Daemon {
             }
 
             reportTasks.put(backendReportType, reportTask);
-            // LinkedBlockingQueue is unbounded, so put() never blocks while holding the lock
-            getShardQueue(reportTask.beId).put(backendReportType);
+            // The queue is unbounded. Use the non-interruptible insertion so the map cannot
+            // retain a pending key that was never queued when this RPC thread is interrupted.
+            getShardQueue(reportTask.beId).add(backendReportType);
         }
     }
 

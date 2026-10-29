@@ -508,9 +508,9 @@ Status CompactionMixin::build_basic_info(bool is_ordered_compaction) {
         _input_row_num += rowset->num_rows();
         _input_num_segments += rowset->num_segments();
     }
-    COUNTER_UPDATE(_input_rowsets_data_size_counter, _input_rowsets_data_size);
-    COUNTER_UPDATE(_input_row_num_counter, _input_row_num);
-    COUNTER_UPDATE(_input_segments_num_counter, _input_num_segments);
+    COUNTER_SET(_input_rowsets_data_size_counter, _input_rowsets_data_size);
+    COUNTER_SET(_input_row_num_counter, _input_row_num);
+    COUNTER_SET(_input_segments_num_counter, _input_num_segments);
 
     TEST_SYNC_POINT_RETURN_WITH_VALUE("compaction::CompactionMixin::build_basic_info",
                                       Status::OK());

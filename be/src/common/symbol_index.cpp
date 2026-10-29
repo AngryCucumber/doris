@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 // This file is copied from
 // https://github.com/ClickHouse/ClickHouse/blob/master/src/Common/SymbolIndex.cpp
 // and modified by Doris
@@ -488,6 +489,9 @@ void collectSymbolsFromELF(const LoadedObject& loaded_object,
     std::filesystem::path local_debug_info_path =
             canonical_path.parent_path() / canonical_path.stem();
     local_debug_info_path += ".debug";
+    // Doris Release builds install split symbols under lib/debug_info/*.dbg.
+    std::filesystem::path packaged_debug_info_path = canonical_path.parent_path() / "debug_info" /
+                                                     (canonical_path.filename().string() + ".dbg");
     std::filesystem::path debug_info_path =
             std::filesystem::path("/usr/lib/debug") / canonical_path.relative_path();
     debug_info_path += ".debug";
@@ -504,6 +508,8 @@ void collectSymbolsFromELF(const LoadedObject& loaded_object,
 
     if (exists_not_empty(local_debug_info_path)) {
         object_name = local_debug_info_path;
+    } else if (exists_not_empty(packaged_debug_info_path)) {
+        object_name = packaged_debug_info_path;
     } else if (exists_not_empty(debug_info_path)) {
         object_name = debug_info_path;
     } else if (object_build_id.size() >= 2) {

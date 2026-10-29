@@ -14,12 +14,14 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #include "common/version_metrics.h"
 
 #include <bvar/bvar.h>
 #include <bvar/multi_dimension.h>
 #include <gen_cpp/cloud_version.h>
+#include <gen_cpp/version.h>
 #include <gflags/gflags.h>
 
 #include <cstdint>
@@ -58,7 +60,7 @@ void init_doris_cloud_version_metrics() {
                 "doris_cloud_version",
                 {"version", "major", "minor", "patch", "hotfix", "short_hash"});
         auto* metric = metrics.get_stats(std::list<std::string> {
-                DORIS_CLOUD_BUILD_VERSION, std::to_string(DORIS_CLOUD_BUILD_VERSION_MAJOR),
+                DORIS_PRODUCT_VERSION, std::to_string(DORIS_CLOUD_BUILD_VERSION_MAJOR),
                 std::to_string(DORIS_CLOUD_BUILD_VERSION_MINOR),
                 std::to_string(DORIS_CLOUD_BUILD_VERSION_PATCH),
                 std::to_string(DORIS_CLOUD_BUILD_VERSION_HOTFIX), DORIS_CLOUD_BUILD_SHORT_HASH});

@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #include "storage/compaction/cumulative_compaction.h"
 
@@ -25,6 +26,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <unordered_map>
 
 #include "common/status.h"
 #include "cpp/sync_point.h"
@@ -286,6 +288,52 @@ TEST_F(CumulativeCompactionTest, TestConsecutiveVersion) {
         EXPECT_EQ(missing_version[3].first, 12);
         EXPECT_EQ(missing_version[3].second, 12);
     }
+}
+
+TEST_F(CumulativeCompactionTest, TestBasicInfoAfterOrderedCompactionFallback) {
+    EngineOptions options;
+    StorageEngine storage_engine(options);
+    auto tablet_meta = std::make_shared<TabletMeta>(1, 2, 15673, 15674, 4, 5, TTabletSchema(), 6,
+                                                    std::unordered_map<uint32_t, uint32_t> {{7, 8}},
+                                                    UniqueId(9, 10), TTabletType::TABLET_TYPE_DISK,
+                                                    TCompressionType::LZ4F);
+    auto tablet = std::make_shared<Tablet>(storage_engine, tablet_meta, nullptr,
+                                           CUMULATIVE_SIZE_BASED_POLICY);
+    TestableCumulativeCompactionMixin compaction(storage_engine, tablet);
+    auto first = create_rowset({2, 2}, 2, false, 1100);
+    auto second = create_rowset({3, 3}, 3, false, 2200);
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+    first->rowset_meta()->set_num_rows(11);
+    first->rowset_meta()->set_data_disk_size(1000);
+    first->rowset_meta()->set_index_disk_size(100);
+    second->rowset_meta()->set_num_rows(22);
+    second->rowset_meta()->set_data_disk_size(2000);
+    second->rowset_meta()->set_index_disk_size(200);
+    compaction.set_input_rowsets({first, second});
+
+    auto* sp = SyncPoint::get_instance();
+    sp->enable_processing();
+    sp->set_call_back("compaction::CompactionMixin::build_basic_info", [](auto&& values) {
+        auto* result = try_any_cast<std::pair<Status, bool>*>(values.back());
+        result->second = true;
+    });
+    Defer cleanup {[&]() {
+        sp->clear_call_back("compaction::CompactionMixin::build_basic_info");
+        sp->disable_processing();
+    }};
+
+    // Ordered compaction can fall back to a normal merge after basic information was built.
+    ASSERT_TRUE(compaction.build_basic_info(true).ok());
+    ASSERT_TRUE(compaction.build_basic_info(false).ok());
+    EXPECT_EQ(33, compaction.input_row_num_value());
+    EXPECT_EQ(5, compaction.input_segments_num_value());
+    EXPECT_EQ(3000, compaction.input_rowsets_data_size());
+    EXPECT_EQ(300, compaction.input_rowsets_index_size());
+    EXPECT_EQ(3300, compaction.input_rowsets_total_size());
+    EXPECT_EQ(33, compaction.runtime_profile()->get_counter("input_row_num")->value());
+    EXPECT_EQ(5, compaction.runtime_profile()->get_counter("input_segments_num")->value());
+    EXPECT_EQ(3000, compaction.runtime_profile()->get_counter("input_rowsets_data_size")->value());
 }
 
 TEST_F(CumulativeCompactionTest, TestShouldDelayLargeTask) {

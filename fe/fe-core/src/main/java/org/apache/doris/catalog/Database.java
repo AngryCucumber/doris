@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.catalog;
 
@@ -474,6 +475,9 @@ public class Database extends MetaObject implements Writable, DatabaseIf<Table>,
             idToTable.put(olapTable.getId(), olapTable);
             nameToTable.put(olapTable.getName(), olapTable);
             lowerCaseToTableName.put(tableName.toLowerCase(), tableName);
+            if (olapTable.isManagedTable()) {
+                PartitionInfo.invalidateStorageMediumMap();
+            }
             if (olapTable instanceof MTMV) {
                 Env.getCurrentEnv().getMtmvService().registerMTMV((MTMV) olapTable, id);
             }
@@ -500,6 +504,9 @@ public class Database extends MetaObject implements Writable, DatabaseIf<Table>,
             this.nameToTable.remove(table.getName());
             this.lowerCaseToTableName.remove(table.getName().toLowerCase());
             this.idToTable.remove(table.getId());
+            if (table.isManagedTable()) {
+                PartitionInfo.invalidateStorageMediumMap();
+            }
             if (table.isTemporary()) {
                 Env.getCurrentEnv().unregisterTempTable(table);
             }

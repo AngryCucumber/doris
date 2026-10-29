@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
+
 #include "util/tdigest.h"
 
 #include <gtest/gtest-message.h>
@@ -190,9 +192,12 @@ TEST_F(TDigestTest, MoreThan2BValues) {
     EXPECT_GT(digest.totalWeight(), std::numeric_limits<int32_t>::max());
     std::vector<double> quantiles {0, 0.1, 0.5, 0.9, 1, reals(gen)};
     std::sort(quantiles.begin(), quantiles.end());
-    auto prev = std::numeric_limits<double>::min();
+    // min() is positive, but the input distribution may legally generate zero.
+    auto prev = std::numeric_limits<double>::lowest();
     for (double q : quantiles) {
         const double v = digest.quantile(q);
+        EXPECT_GE(v, 0.0) << "q = " << q;
+        EXPECT_LE(v, 1.0) << "q = " << q;
         EXPECT_GE(v, prev) << "q = " << q;
         prev = v;
     }

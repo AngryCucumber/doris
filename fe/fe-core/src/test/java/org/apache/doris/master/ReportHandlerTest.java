@@ -103,6 +103,28 @@ public class ReportHandlerTest {
     }
 
     @Test
+    public void testInterruptedEnqueueDoesNotLoseSubsequentReports() throws Exception {
+        ReportHandler handler = new ReportHandler();
+        Backend backend = addBackend(10002L);
+
+        Thread.currentThread().interrupt();
+        try {
+            handler.handleReport(buildTaskReport(backend, 1));
+        } finally {
+            Thread.interrupted();
+        }
+
+        TMasterResult result = handler.handleReport(buildTaskReport(backend, 2));
+        Assert.assertEquals(TStatusCode.OK, result.getStatus().getStatusCode());
+        int totalQueueSize = Deencapsulation.invoke(handler, "getTotalQueueSize");
+        Assert.assertEquals("the latest accepted report must remain consumable", 1, totalQueueSize);
+        List<BlockingQueue<?>> queues = Deencapsulation.getField(handler, "reportQueues");
+        Object takenTask = Deencapsulation.invoke(handler, "takeReportTask", (int) (backend.getId() % queues.size()));
+        long runningTasks = Deencapsulation.getField(takenTask, "runningTasks");
+        Assert.assertEquals(2L, runningTasks);
+    }
+
+    @Test
     public void testShardRoutingByBackendId() throws Exception {
         ReportHandler handler = new ReportHandler();
         List<BlockingQueue<?>> queues = Deencapsulation.getField(handler, "reportQueues");
