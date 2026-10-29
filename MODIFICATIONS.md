@@ -347,6 +347,19 @@ while the FE kept serving queries. Cloud mode runtime was not exercised.
   (`engines`). GPL packages and those without glibc 2.17 wheels are left out.
   Upstream license texts are fetched by sha256 for wheels that ship none, and
   the check lists the symbol versions each operating-system library must provide.
+- Bundle the runtime in release packages: `build-for-release.sh` runs
+  `build-python-runtime.py release`, which fetches exactly the committed
+  `locks/requirements-<arch>.lock`, builds, checks against the packaged
+  `python_server.py` and unpacks it as `be/lib/python-runtime`; reports go to
+  the audit archive. `--python-runtime-inputs` rebuilds offline from archived
+  inputs, `--no-python-runtime` skips it, `MASSDB_PYPI_INDEX_URL` selects a
+  mirror and `MASSDB_PYTHON_ARCHIVE` a local interpreter archive (sha256 still
+  checked). `build.sh` is unchanged.
+- `conf/be.conf` presets the bundled runtime (`python_env_mode = conda`,
+  `python_conda_root_path`, `PYTHONNOUSERSITE`) with
+  `enable_python_udf_support = false`; `bin/start_be.sh` drops `PYTHONHOME`
+  and `PYTHONPATH` inherited from the operator's shell before reading be.conf.
+  The package README points to the runtime's manifest and license texts.
 - Prototype only: package assembly, `be.conf`, `start_be.sh` and the legal
   inventory are unchanged, so product behavior is unchanged.
 

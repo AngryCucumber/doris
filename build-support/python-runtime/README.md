@@ -69,13 +69,35 @@ python3 build-support/python-runtime/check-python-runtime.py <构建目录>/mass
 - 只有源码包的依赖要写进 `pureSdists` 并精确锁定版本。构建出来的必须是 `none-any` 纯 Python wheel，否则失败。
 - wheel 里没带许可证正文的依赖，在 `licenseTexts` 里写上上游 URL 和 sha256，resolve 时下载并校验。
 
+## 随发布包构建
+
+`build-for-release.sh` 会在两次 `build.sh` 之后、组装安装包之前执行 `build-python-runtime.py release`。这一步依次做：
+1. 按仓库里的 `locks/requirements-<架构>.lock` 下载解释器和 wheel，逐个核对哈希；
+2. 离线构建；
+3. 用刚编译出的 `be/plugins/python_udf/python_server.py` 做完整检查，有 error 时发布失败；
+4. 解压到 `be/lib/python-runtime`。
+
+检查报告、MANIFEST 和 lock 会写进审计包的 `audit/python-runtime/`。
+
+- `MASSDB_PYPI_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/`：指定 PyPI 镜像。
+- 下载好的输入会保留在 `.build-records/build-release-*/python-runtime/inputs`。以后用
+  `--python-runtime-inputs <该目录>` 可以离线重建，前提是它和当前 lock 一致。
+- `--no-python-runtime`：不打包运行时，比如在还没有对应 lock 的架构上。
+
+`build.sh` 本身不下载也不构建运行时。
+
+升级依赖或修改 `python-runtime.json` 的分层后，要重新执行 `resolve`（不带 `--lock`），把新的 `requirements.lock`
+复制到 `locks/requirements-<架构>.lock` 后一起提交。单元测试会检查已提交的 lock 和配置是否一致。
+
 ## 安装到 BE
 
 ```bash
 tar -xzf massdb-python-runtime-<版本>-<架构>-<lock哈希>.tar.gz -C <BE目录>/lib
 ```
 
-在 `be.conf` 里加入以下配置，然后重启 BE（运行时根目录下的 `README.txt` 和 `MANIFEST.json` 里也有同样内容）：
+发布包里的 `be/conf/be.conf` 已经预置了下面这些配置，只是 `enable_python_udf_support` 默认是 `false`，改成 `true` 并重启 BE 即可。
+`start_be.sh` 启动时会清掉运维 shell 里的 `PYTHONHOME`、`PYTHONPATH`。手动安装时要自己加上以下配置
+（运行时根目录下的 `README.txt` 和 `MANIFEST.json` 里也有同样内容）：
 
 ```properties
 enable_python_udf_support = true
@@ -103,8 +125,7 @@ PYTHONNOUSERSITE = 1
 
 ## 原型还没做的
 
-- 还没接入 `prepare-product-notices.py --assemble-package`。第三方许可证清单也还没进入 `dist/licenses`、UI 版权页的组件清单
+- 安装包 README 会指向运行时自带的 `MANIFEST.json` 和 `LICENSES/`。但第三方组件还没进入 `dist/licenses`、UI 版权页的组件清单
   和 `dist/reviewed-binary-artifacts.json`。
-- `start_be.sh` 还没有 `unset PYTHONHOME PYTHONPATH`；`be.conf` 模板也还没加上面的配置（目前要手动加）。
 - x86_64 需要在 x86_64 主机上单独执行 resolve 和 build。
 - 解释器静态链接的组件（OpenSSL、SQLite 等）的许可证正文，要从 python-build-standalone 的 full 包补齐。

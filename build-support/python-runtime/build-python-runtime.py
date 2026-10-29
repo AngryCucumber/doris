@@ -8,9 +8,12 @@
 """Build the offline Python runtime used by MassDB SQL BE Python UDFs (prototype).
 
 resolve (online, once): fetch the pinned interpreter and every wheel of the selected layers and
-    write a hash-pinned lock. Keep the whole resolve directory: it is the only build input.
+    write a hash-pinned lock; with --lock, fetch exactly the wheels of a committed lock instead.
+    Keep the whole resolve directory: it is the only build input.
 build (offline): install exactly that lock into the relocatable interpreter, laid out as a
     ``python_env_mode = conda`` root, and pack a reproducible tarball to unpack under be/lib/.
+release: what build-for-release.sh runs - resolve --lock (or reuse archived inputs), build, run
+    check-python-runtime.py against the packaged python_server.py and unpack into the BE component.
 """
 
 import sys
@@ -35,6 +38,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -45,10 +49,21 @@ ARCHES = {"aarch64": "aarch64", "arm64": "aarch64", "x86_64": "x86_64", "amd64":
 TRAMPOLINE = "#!/bin/sh\n'''exec' \"$(dirname -- \"$(realpath -- \"$0\")\")/{python}\" \"$0\" \"$@\"\n' '''\n"
 LICENSE_FILE = re.compile(r"^(LICEN[CS]E|COPYING|NOTICE|AUTHORS)", re.I)
 PROXY_VARIABLES = ("http_proxy", "https_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")
+LOCK_HEADER = re.compile(r"^# python (\S+) (\S+); target glibc (\S+); layers (.+)$", re.M)
+LOCK_ENTRY = re.compile(r"^(\S+)==(\S+) \\\n +--hash=sha256:([0-9a-f]{64})$", re.M)
 
 
 def log(message):
     print(f"[python-runtime] {message}", flush=True)
+
+
+def download(url, target, timeout, hint):
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response, open(target, "wb") as stream:
+            shutil.copyfileobj(response, stream)
+    except (urllib.error.URLError, OSError) as error:
+        Path(target).unlink(missing_ok=True)
+        raise SystemExit(f"Cannot download {url}: {getattr(error, 'reason', error)}. {hint}")
 
 
 def digest(path):
@@ -146,8 +161,8 @@ def fetch_python(config, arch, downloads, local_archive=None):
         url = config["python"]["urlTemplate"].format(release=config["python"]["release"],
                                                      file=urllib.parse.quote(archive["file"]))
         log(f"download {url}")
-        with urllib.request.urlopen(url, timeout=120) as response, open(target, "wb") as stream:
-            shutil.copyfileobj(response, stream)
+        download(url, target, 120, "Pass a local copy of that archive with --python-archive "
+                 "(MASSDB_PYTHON_ARCHIVE for build-for-release.sh); its sha256 is still checked.")
     if digest(target) != archive["sha256"]:
         target.unlink()
         raise SystemExit(f"Interpreter archive checksum mismatch: {archive['file']}")
@@ -206,12 +221,22 @@ def fetch_license_texts(config, names, target):
             path = target / name / entry["file"]
             path.parent.mkdir(parents=True, exist_ok=True)
             log(f"download {entry['url']}")
-            with urllib.request.urlopen(entry["url"], timeout=60) as response:
-                path.write_bytes(response.read())
+            download(entry["url"], path, 60, "Check the network or proxy settings of the build host.")
             if digest(path) != entry["sha256"]:
                 raise SystemExit(f"License text checksum mismatch: {entry['url']}")
             fetched.setdefault(name, []).append({"file": entry["file"], "url": entry["url"], "sha256": entry["sha256"]})
     return fetched
+
+
+def parse_lock(path):
+    """Header facts and {name: (version, sha256)} of a lock written by resolve."""
+    text = Path(path).read_text(encoding="utf-8")
+    header = LOCK_HEADER.search(text)
+    if not header:
+        raise SystemExit(f"Not a lock written by build-python-runtime.py resolve: {path}")
+    meta = {"python": header[1], "arch": header[2], "glibc": header[3],
+            "layers": [layer.strip() for layer in header[4].split(",")]}
+    return meta, {canonical(name): (version, sha256) for name, version, sha256 in LOCK_ENTRY.findall(text)}
 
 
 def resolve(args):
@@ -233,17 +258,26 @@ def resolve(args):
     if version != config["python"]["version"]:
         raise SystemExit(f"Interpreter reports {version}, config pins {config['python']['version']}")
 
-    layers = select_layers(config, args.layers)
+    pins = None
+    if args.lock:
+        if args.layers or args.target_glibc:
+            raise SystemExit("--layers and --target-glibc come from the lock when --lock is given")
+        meta, pins = parse_lock(args.lock)
+        if (meta["python"], meta["arch"]) != (version, arch):
+            raise SystemExit(f"The lock is for Python {meta['python']} {meta['arch']}, not {version} {arch}")
+        layers, glibc = select_layers(config, ",".join(meta["layers"])), meta["glibc"]
+    else:
+        layers = select_layers(config, args.layers)
+        glibc = args.target_glibc or config["target"]["glibc"]
     requirements = [spec for layer in layers for spec in layer["requirements"]]
     index_url = args.index_url or config["indexUrl"]
-    glibc = args.target_glibc or config["target"]["glibc"]
     tags = platform_tags(arch, glibc)
     (out / "requirements.in").write_text(
         "# Generated by build-python-runtime.py resolve from python-runtime.json\n"
         f"# layers: {', '.join(layer['name'] for layer in layers)}\n" + "\n".join(requirements) + "\n",
         encoding="utf-8")
     pip = [python, "-I", "-m", "pip", "--disable-pip-version-check", "--cache-dir", work / "pip-cache"]
-    selected = {requirement_name(spec) for spec in requirements}
+    selected = set(pins) if pins is not None else {requirement_name(spec) for spec in requirements}
     built = []
     for spec in config.get("pureSdists", []):
         name = requirement_name(spec)
@@ -251,6 +285,8 @@ def resolve(args):
             continue
         if "==" not in spec:
             raise SystemExit(f"A pure-Python sdist must be pinned exactly: {spec}")
+        if pins is not None and pins[name][0] != spec.split("==", 1)[1]:
+            raise SystemExit(f"The lock pins {name} {pins[name][0]}, pureSdists says {spec}")
         before = set(wheelhouse.iterdir())
         # A fixed SOURCE_DATE_EPOCH (1980-01-01, the zip minimum) makes the built wheel byte-reproducible.
         run(pip + ["wheel", "--no-deps", "--no-binary", name, "--wheel-dir", wheelhouse,
@@ -264,16 +300,25 @@ def resolve(args):
                      "--index-url", index_url]
     for tag in tags:
         command += ["--platform", tag]
-    run(command + ["-r", out / "requirements.in"], env)
+    # With a lock, download exactly its files; pure-sdist wheels built above are found via --find-links.
+    run(command + (["--no-deps", "--require-hashes", "-r", args.lock] if pins is not None
+                   else ["-r", out / "requirements.in"]), env)
 
     wheels = wheel_entries(wheelhouse, built)
     texts = fetch_license_texts(config, {wheel["name"] for wheel in wheels}, out / "license-texts")
     lock = out / "requirements.lock"
-    lock.write_text(
-        "# MassDB SQL Python runtime lock, generated by build-python-runtime.py resolve\n"
-        f"# python {version} {arch}; target glibc {glibc}; layers {', '.join(layer['name'] for layer in layers)}\n"
-        + "".join(f"{wheel['name']}=={wheel['version']} \\\n    --hash=sha256:{wheel['sha256']}\n"
-                  for wheel in wheels), encoding="utf-8")
+    if pins is not None:
+        fetched = {wheel["name"]: (wheel["version"], wheel["sha256"]) for wheel in wheels}
+        if fetched != pins:
+            raise SystemExit("Fetched wheels differ from the lock: " + ", ".join(
+                sorted(name for name in set(fetched) | set(pins) if fetched.get(name) != pins.get(name))))
+        shutil.copyfile(args.lock, lock)
+    else:
+        lock.write_text(
+            "# MassDB SQL Python runtime lock, generated by build-python-runtime.py resolve\n"
+            f"# python {version} {arch}; target glibc {glibc}; layers {', '.join(layer['name'] for layer in layers)}\n"
+            + "".join(f"{wheel['name']}=={wheel['version']} \\\n    --hash=sha256:{wheel['sha256']}\n"
+                      for wheel in wheels), encoding="utf-8")
     commit, dirty = source_identity()
     shutil.copy2(args.config, out / "python-runtime.json")
     record = {
@@ -289,6 +334,7 @@ def resolve(args):
         "sourceCommit": commit,
         "sourceModified": dirty,
         "lockSha256": digest(lock),
+        "lockSource": "committed" if pins is not None else "resolved",
         "wheels": wheels,
         "licenseTexts": texts,
     }
@@ -523,6 +569,40 @@ def build(args):
     log(f"built {tarball} ({tarball.stat().st_size / 1048576:.1f} MiB); next: check-python-runtime.py {tarball}")
 
 
+def release(args):
+    """Fetch (or reuse), build, check and unpack the runtime into a BE component directory."""
+    lock, be_dir, work = args.lock.resolve(), args.be_dir.resolve(), args.work.resolve()
+    if not lock.is_file():
+        raise SystemExit(f"No committed lock for this architecture: {lock}. Run resolve on such a host and "
+                         "commit its requirements.lock there, or build the release without the Python runtime.")
+    server = be_dir / "plugins" / "python_udf" / "python_server.py"
+    if not (be_dir / "lib").is_dir() or not server.is_file():
+        raise SystemExit(f"Not a built BE component (lib/ and plugins/python_udf/python_server.py): {be_dir}")
+    target = be_dir / "lib" / load_config(args.config)["layout"]["rootName"]
+    if target.exists():
+        raise SystemExit(f"Refusing to replace an existing runtime: {target}")
+    if work.exists() and any(work.iterdir()):
+        raise SystemExit(f"Use a new or empty work directory: {work}")
+    if args.inputs:
+        inputs = args.inputs.resolve()
+        if (inputs / "requirements.lock").read_bytes() != lock.read_bytes():
+            raise SystemExit(f"{inputs} was not fetched from {lock}")
+    else:
+        inputs = work / "inputs"
+        resolve(argparse.Namespace(config=args.config, output=inputs, layers=None, index_url=args.index_url,
+                                   target_glibc=None, python_archive=args.python_archive, arch=None, lock=lock))
+    build(argparse.Namespace(inputs=inputs, output=work / "build"))
+    tarball = next((work / "build").glob("massdb-python-runtime-*.tar.gz"))
+    log(f"checking {tarball.name} against {server}")
+    subprocess.run([sys.executable, str(HERE / "check-python-runtime.py"), str(tarball), "--config", str(args.config),
+                    "--server-script", str(server), "--report", str(work / "check.json")], check=True)
+    with tarfile.open(tarball) as tar:
+        tar.extractall(be_dir / "lib", filter="data")
+    if not (target / "MANIFEST.json").is_file():
+        raise SystemExit(f"{tarball.name} did not unpack to {target}")
+    log(f"installed {tarball.name} as {target}; inputs for an offline rebuild: {inputs}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -534,12 +614,24 @@ def main():
     online.add_argument("--target-glibc", help="oldest glibc on target BEs, e.g. 2.28 (default: config)")
     online.add_argument("--python-archive", type=Path, help="use this local interpreter archive instead of downloading")
     online.add_argument("--arch", help="target architecture; must equal the build host")
+    online.add_argument("--lock", type=Path, help="fetch exactly this committed lock instead of resolving the layers")
     offline = commands.add_parser("build", help="install the lock offline and pack the runtime tarball")
     offline.add_argument("--inputs", type=Path, required=True, help="directory written by resolve")
     offline.add_argument("--output", type=Path, required=True, help="new build directory")
+    packaging = commands.add_parser("release", help="fetch from the committed lock, build, check, unpack into a BE")
+    packaging.add_argument("--config", type=Path, default=HERE / "python-runtime.json")
+    packaging.add_argument("--lock", type=Path,
+                           default=HERE / "locks" / f"requirements-{platform.machine().lower()}.lock",
+                           help="committed lock (default: locks/requirements-<host arch>.lock)")
+    packaging.add_argument("--be-dir", type=Path, required=True, help="built BE component (output of build.sh)")
+    packaging.add_argument("--work", type=Path, required=True, help="new work directory")
+    packaging.add_argument("--inputs", type=Path, help="archived resolve directory of the same lock (offline build)")
+    packaging.add_argument("--index-url", help="PyPI-compatible index or mirror (default: config indexUrl)")
+    packaging.add_argument("--python-archive", type=Path,
+                           help="local copy of the configured interpreter archive (sha256 is checked)")
     args = parser.parse_args()
     try:
-        resolve(args) if args.command == "resolve" else build(args)
+        {"resolve": resolve, "build": build, "release": release}[args.command](args)
     except subprocess.CalledProcessError as error:
         raise SystemExit(f"Command failed with exit code {error.returncode}: {' '.join(error.cmd)}")
 

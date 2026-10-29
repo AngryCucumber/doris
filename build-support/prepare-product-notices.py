@@ -563,6 +563,8 @@ def assemble_package(source, destination, audit, ui_dist, fe_directory=None, nat
         "The Apache 2.0 text below applies to the Apache-licensed portions.\n\n" +
         read_text(ROOT / "LICENSE.txt"), encoding="utf-8")
     (destination / "NOTICE.txt").write_text(inputs["files"]["NOTICE.txt"], encoding="utf-8")
+    python_runtime = destination / "be/lib/python-runtime/MANIFEST.json"
+    python_manifest = json.loads(read_text(python_runtime)) if python_runtime.is_file() else None
     (destination / "README.txt").write_text(
         f"{data['productVersion']}\n\n"
         "用途：内部安装验收版本，尚非正式对外发行。\n"
@@ -573,11 +575,17 @@ def assemble_package(source, destination, audit, ui_dist, fe_directory=None, nat
         "2. FE：bash fe/bin/start_fe.sh --daemon\n"
         "3. BE：bash be/bin/start_be.sh --daemon；在 FE 中注册 BE 后使用。\n"
         "4. 升级前备份并保留原有配置和持久化数据，不用安装包覆盖运行中的数据目录。\n"
-        "5. Cloud Meta Service 位于 ms/；Broker、Hive UDF 位于 extensions/，FDB 工具位于 tools/。\n\n"
+        "5. Cloud Meta Service 位于 ms/；Broker、Hive UDF 位于 extensions/，FDB 工具位于 tools/。\n"
+        + (f"6. Python UDF：内置 Python {python_manifest['python']['version']} 运行时位于 be/lib/python-runtime"
+           f"（目标系统 glibc ≥ {python_manifest['target']['glibc']}），把 be/conf/be.conf 中 enable_python_udf_support "
+           "改为 true 并重启 BE 即可使用，说明见 be/lib/python-runtime/README.txt。\n" if python_manifest else "")
+        + "\n"
         "版权与材料\n"
         "公司及上游归属见 NOTICE.txt；组件许可正文集中在 fe/legal/。\n"
         "公司专有许可范围见 fe/legal/LICENSE-MASSDB.txt；已有开源许可继续适用。\n"
         "MariaDB 对应源码及替换说明见 fe/legal/FE-SOURCE-ACCESS.txt。\n"
+        + ("Python 运行时的组件清单和许可证正文见 be/lib/python-runtime/MANIFEST.json 与 LICENSES/。\n"
+           if python_manifest else "") +
         "FE 登录前后均可打开版权与开源声明页。仅分发某一组件时须携带其适用声明及源码材料。\n"
         "调试符号和构建审阅记录单独保存，不是运行依赖。\n\n" +
         read_text(ROOT / "dist/RELEASE-NOTES.txt"), encoding="utf-8")

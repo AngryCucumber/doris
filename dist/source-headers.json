@@ -433,6 +433,14 @@
     "regression-test/suites/workload_manager_p0/test_curd_wlg.groovy": {
       "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "conf/be.conf": {
+      "originalHeaderSha256": "0128fa96946942192cb4f7888e056a74a13d2b39ca375aa985f2437dd6715cda",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "bin/start_be.sh": {
+      "originalHeaderSha256": "0128fa96946942192cb4f7888e056a74a13d2b39ca375aa985f2437dd6715cda",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
     }
   }
 }

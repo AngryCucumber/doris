@@ -15,6 +15,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 set -eo pipefail
 
@@ -82,6 +83,10 @@ DORIS_HOME="$(
     pwd
 )"
 export DORIS_HOME
+
+# Python UDF processes inherit the BE environment. Drop interpreter overrides from the operator's shell so
+# the bundled runtime runs as built; be.conf can still set them explicitly (exported below).
+unset PYTHONHOME PYTHONPATH
 
 # export env variables from be.conf
 #

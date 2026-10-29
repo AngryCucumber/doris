@@ -36,6 +36,14 @@ Usage: $0 --version version <options>
      --noavx2           build without avx2
      --tar              pack the output
      -j jobs            set Backend and Cloud build parallelism
+     --no-python-runtime
+                        do not bundle the Python UDF runtime (be/lib/python-runtime)
+     --python-runtime-inputs dir
+                        build the Python runtime offline from an archived resolve directory of
+                        build-support/python-runtime/locks/requirements-<arch>.lock
+  Environment:
+     MASSDB_PYPI_INDEX_URL  PyPI mirror for fetching the locked Python wheels
+     MASSDB_PYTHON_ARCHIVE  local copy of the pinned python-build-standalone archive (sha256 is checked)
 
   Programs and optional archives: output/
   Compressed internal records: .build-records/
@@ -55,6 +63,8 @@ if ! OPTS="$(getopt \
     -l 'noavx2' \
     -l 'tar' \
     -l 'version:' \
+    -l 'no-python-runtime' \
+    -l 'python-runtime-inputs:' \
     -l 'help' \
     -- "$@")"; then
     usage
@@ -66,6 +76,8 @@ _USE_AVX2=1
 TAR=0
 HELP=0
 VERSION=
+PYTHON_RUNTIME=1
+PYTHON_RUNTIME_INPUTS=
 BUILD_PARALLEL=()
 if [[ "$#" == 1 ]]; then
     _USE_AVX2=1
@@ -82,6 +94,14 @@ else
             ;;
         --version)
             VERSION="$2"
+            shift 2
+            ;;
+        --no-python-runtime)
+            PYTHON_RUNTIME=0
+            shift
+            ;;
+        --python-runtime-inputs)
+            PYTHON_RUNTIME_INPUTS="$2"
             shift 2
             ;;
         -j)
@@ -137,6 +157,7 @@ echo "Get params:
     VERSION         -- ${VERSION}
     USE_AVX2        -- ${_USE_AVX2}
     TAR             -- ${TAR}
+    PYTHON_RUNTIME  -- ${PYTHON_RUNTIME}
 "
 
 ARCH="$(uname -m)"
@@ -200,12 +221,35 @@ USE_AVX2="${_USE_AVX2}" bash "${ROOT}/build.sh" \
     --be --meta-tool --be-extension-ignore avro-scanner \
     "${BUILD_PARALLEL[@]}" --output "${COMPONENTS}"
 
+if [[ "${PYTHON_RUNTIME}" -eq 1 ]]; then
+    # Fetch the committed lock (or use archived inputs), build, check it against the packaged
+    # python_server.py and unpack it as be/lib/python-runtime.
+    python_runtime_args=(--be-dir "${COMPONENTS}/be" --work "${WORK}/python-runtime")
+    if [[ -n "${PYTHON_RUNTIME_INPUTS}" ]]; then
+        python_runtime_args+=(--inputs "${PYTHON_RUNTIME_INPUTS}")
+    fi
+    if [[ -n "${MASSDB_PYPI_INDEX_URL}" ]]; then
+        python_runtime_args+=(--index-url "${MASSDB_PYPI_INDEX_URL}")
+    fi
+    if [[ -n "${MASSDB_PYTHON_ARCHIVE}" ]]; then
+        python_runtime_args+=(--python-archive "${MASSDB_PYTHON_ARCHIVE}")
+    fi
+    "${MASSDB_NOTICE_PYTHON:-python3}" "${ROOT}/build-support/python-runtime/build-python-runtime.py" release \
+        "${python_runtime_args[@]}"
+fi
+
 echo "Begin to pack"
 mkdir -p "${COMPONENTS}/hive-udf/lib"
 cp -p "${ROOT}/fe/hive-udf/target/hive-udf.jar" "${COMPONENTS}/hive-udf/lib/"
 "${MASSDB_NOTICE_PYTHON:-python3}" "${ROOT}/build-support/prepare-product-notices.py" \
     --assemble-package "${COMPONENTS}" --destination "${WORK}/${PACKAGE}" \
     --audit-directory "${WORK}/audit" --ui-dist "${ROOT}/fe/fe-core/src/main/resources/static"
+if [[ "${PYTHON_RUNTIME}" -eq 1 ]]; then
+    mkdir -p "${WORK}/audit/python-runtime"
+    cp -p "${WORK}/python-runtime/check.json" "${WORK}/python-runtime/build"/*.tar.gz.sha256 \
+        "${COMPONENTS}/be/lib/python-runtime/MANIFEST.json" "${COMPONENTS}/be/lib/python-runtime/requirements.lock" \
+        "${WORK}/audit/python-runtime/"
+fi
 
 compress_directory() (
     local name="$1"
@@ -239,8 +283,13 @@ for name in "${PACKAGE}" "${PACKAGE}.tar.gz" "${PACKAGE}.tar.gz.sha256"; do
         fi
     fi
 done
-rm -rf -- "${COMPONENTS}" "${WORK}/audit"
+rm -rf -- "${COMPONENTS}" "${WORK}/audit" "${WORK}/python-runtime/build" "${WORK}/python-runtime/check.json"
+# Keep fetched Python runtime inputs (python-runtime/inputs) for offline rebuilds; drop an otherwise empty directory.
+rmdir --ignore-fail-on-non-empty "${WORK}/python-runtime" 2>/dev/null || true
 
 echo "Output dir: ${OUTPUT}"
 echo "Internal records and debug symbols: ${WORK}/audit.tar.gz"
+if [[ "${PYTHON_RUNTIME}" -eq 1 && -z "${PYTHON_RUNTIME_INPUTS}" ]]; then
+    echo "Python runtime inputs for offline rebuilds (--python-runtime-inputs): ${WORK}/python-runtime/inputs"
+fi
 exit 0

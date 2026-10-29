@@ -337,7 +337,7 @@ if [[ -n "${DORIS_OUTPUT}" ]]; then
 fi
 ''')
         checker = checkout / "fixture-checker"
-        checker.write_text(f"#!{sys.executable}\n" + '''import sys
+        checker.write_text(f"#!{sys.executable}\n" + '''import os, sys
 from pathlib import Path
 if '--assemble-package' in sys.argv:
     destination = Path(sys.argv[sys.argv.index('--destination') + 1])
@@ -346,6 +346,18 @@ if '--assemble-package' in sys.argv:
     (destination / 'README.txt').write_text('runtime fixture')
     (audit / 'symbols').mkdir(parents=True)
     (audit / 'symbols/runtime.dbg').write_bytes(b'recoverable symbols')
+elif sys.argv[1].endswith('python-runtime/build-python-runtime.py') and sys.argv[2] == 'release':
+    # What the real release step leaves behind: a checked build and the runtime unpacked into the BE.
+    with open(Path(os.environ['DORIS_HOME']) / 'python-runtime-calls.txt', 'a') as calls:
+        calls.write(' '.join(sys.argv[3:]) + '\\n')
+    work = Path(sys.argv[sys.argv.index('--work') + 1])
+    runtime = Path(sys.argv[sys.argv.index('--be-dir') + 1]) / 'lib/python-runtime'
+    (work / 'build').mkdir(parents=True)
+    (work / 'check.json').write_text('{"findings": []}')
+    (work / 'build/runtime.tar.gz.sha256').write_text('fixture checksum')
+    runtime.mkdir(parents=True)
+    (runtime / 'MANIFEST.json').write_text('{"fixture": true}')
+    (runtime / 'requirements.lock').write_text('fixture lock')
 ''')
         checker.chmod(0o755)
         return checkout, dict(os.environ, MASSDB_NOTICE_PYTHON=str(checker), MASSDB_TEST_FAIL_BUILD="0")
@@ -401,6 +413,12 @@ if '--assemble-package' in sys.argv:
                 self.assertEqual({path.name for path in work.iterdir()}, {"audit.tar.gz", "audit.tar.gz.sha256"})
                 with tarfile.open(work / "audit.tar.gz") as archive:
                     self.assertEqual(archive.extractfile("audit/symbols/runtime.dbg").read(), b"recoverable symbols")
+                    self.assertEqual(archive.extractfile("audit/python-runtime/MANIFEST.json").read(),
+                                     b'{"fixture": true}')
+                    self.assertEqual({Path(name).name for name in archive.getnames() if "/python-runtime/" in name},
+                                     {"check.json", "runtime.tar.gz.sha256", "MANIFEST.json", "requirements.lock"})
+                self.assertEqual((checkout / "python-runtime-calls.txt").read_text(),
+                                 f"--be-dir {work}/components/be --work {work}/python-runtime\n")
                 checksum = (work / "audit.tar.gz.sha256").read_text().split()[0]
                 self.assertEqual(checksum, notices.file_digest(work / "audit.tar.gz"))
 
@@ -413,6 +431,29 @@ if '--assemble-package' in sys.argv:
                 self.assertIn("Output already exists", blocked.stderr)
                 self.assertEqual(state.read_bytes(), b"preserve database")
                 self.assertEqual((checkout / "build-calls.txt").read_bytes(), calls)
+
+    def test_release_python_runtime_options(self):
+        checkout, env = self.release_layout_fixture("python-runtime-options")
+        inputs = self.root / "archived-python-inputs"
+        env["MASSDB_PYPI_INDEX_URL"] = "https://mirror.example/simple/"
+        env["MASSDB_PYTHON_ARCHIVE"] = "/archives/cpython.tar.gz"
+        result = subprocess.run(["bash", str(checkout / "build-for-release.sh"), "--version", "2.0.5-rc01",
+                                 "--python-runtime-inputs", str(inputs)], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        work, = (checkout / ".build-records").iterdir()
+        self.assertEqual((checkout / "python-runtime-calls.txt").read_text(),
+                         f"--be-dir {work}/components/be --work {work}/python-runtime --inputs {inputs} "
+                         "--index-url https://mirror.example/simple/ --python-archive /archives/cpython.tar.gz\n")
+        self.assertNotIn("inputs for offline rebuilds", result.stdout)
+
+        skipped, env = self.release_layout_fixture("python-runtime-skipped")
+        result = subprocess.run(["bash", str(skipped / "build-for-release.sh"), "--version", "2.0.5-rc01",
+                                 "--no-python-runtime"], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((skipped / "python-runtime-calls.txt").exists())
+        work, = (skipped / ".build-records").iterdir()
+        with tarfile.open(work / "audit.tar.gz") as archive:
+            self.assertFalse(any("python-runtime" in name for name in archive.getnames()))
 
     def test_release_build_failure_preserves_inputs_without_publishing(self):
         checkout, env = self.release_layout_fixture("failed-release")
