@@ -67,6 +67,12 @@ Validation for this migration (2026-10-28/29; local evidence retained):
   HTTP 403; the other 18 have matching pristine-tag errors, results or capacity
   limits. This is a reconciliation across runs, not an all-green full run.
   Original failures and SQL goldens are retained.
+- This local selection excludes P2/P3 groups and suites requiring unavailable
+  external systems, Docker orchestration, Cloud/vaults, large benchmark datasets
+  or restart orchestration. Selected workload-manager and failover cases were
+  exercised separately. The original command and exact exclusion manifest are
+  retained in `sql-regression/candidate-full-legacy-configured.json`; 6,602 is
+  the selected local inventory, not every suite in the upstream repository.
 - The remaining baseline cases comprise eight HBO fixtures referring to the
   absent `hbo_slow_query_threshold_ms` setting, one native AWS anonymous-read
   timeout, three query/PLSQL result or error differences, four TPC-DS Q24 golden
