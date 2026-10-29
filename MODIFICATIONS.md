@@ -350,6 +350,17 @@ while the FE kept serving queries. Cloud mode runtime was not exercised.
 - Prototype only: package assembly, `be.conf`, `start_be.sh` and the legal
   inventory are unchanged, so product behavior is unchanged.
 
+## UI lockfile for the 4.1.5 axios update (2026-10-29)
+
+- Regenerate the axios subtree of `ui/package-lock.json` for upstream's
+  `axios ^1.16.0` (#63983): the lock carried over from the 4.0.5-based 2.0.5
+  line still pinned axios 0.19.2, so `npm ci` and therefore `build.sh` /
+  `build-for-release.sh` failed on a clean host. Only axios and its
+  dependencies change (axios 1.21.0, follow-redirects 1.16.2, form-data,
+  proxy-from-env, https-proxy-agent and their dependencies); resolved URLs
+  stay on registry.npmjs.org. The UI source does not import axios, so the
+  bundled component inventory and legal pages are unchanged.
+
 ## Complete rc02 release builds (2026-09-09)
 
 - `build-for-release.sh`: explicitly select FE, BE, Cloud/MS, Broker and Hive UDF
