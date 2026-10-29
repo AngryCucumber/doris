@@ -46,14 +46,35 @@
         },
         {
             "name": "analytics",
-            "purpose": "Statistics and model inference inside UDAF/UDWF.",
-            "requirements": ["scipy", "scikit-learn", "statsmodels"]
+            "purpose": "Statistics, pandas accelerators and model inference inside UDAF/UDWF.",
+            "requirements": [
+                "scipy", "scikit-learn", "statsmodels", "numexpr", "bottleneck", "networkx", "sympy", "xgboost",
+                "lightgbm"
+            ]
+        },
+        {
+            "name": "extended",
+            "purpose": "Internal HTTP calls, HTML/XML, Chinese text and calendars, serialization, SM2/SM4 and other crypto, geo/IP/UA parsing, validation.",
+            "requirements": [
+                "requests", "beautifulsoup4", "lxml", "emoji", "anyascii", "OpenCC", "langdetect==1.0.9", "arrow",
+                "cnlunar", "chinesecalendar", "msgpack", "ujson", "simplejson", "protobuf", "gmssl", "pycryptodome",
+                "bcrypt", "PyJWT", "geopy", "pygeohash", "ua-parser", "user-agents", "tldextract", "netaddr",
+                "maxminddb", "geoip2", "pydantic", "jsonschema", "attrs", "more-itertools", "toolz", "cachetools",
+                "email-validator"
+            ]
+        },
+        {
+            "name": "engines",
+            "purpose": "Embedded dataframe/SQL engines for vectorized UDFs; the largest optional layer.",
+            "requirements": ["polars", "duckdb"]
         }
     ],
-    "defaultLayers": ["core", "common", "analytics"],
-    "pureSdists": ["jieba==0.42.1"],
+    "defaultLayers": ["core", "common", "analytics", "extended", "engines"],
+    "pureSdists": ["jieba==0.42.1", "langdetect==1.0.9"],
     "requiredImports": ["numpy", "pandas", "pyarrow", "pyarrow.flight", "pip"],
-    "importSkip": {},
+    "importSkip": {
+        "adbc_driver_duckdb": "duckdb's ADBC driver shim needs the optional adbc-driver-manager package; UDFs use the duckdb module"
+    },
     "licensePolicy": {
         "deny": [
             "\\bA?GPL(?:v?\\d|-\\d|\\b)(?!.*exception)",
@@ -86,7 +107,8 @@
             "\\bHPND\\b|Historical Permission Notice",
             "\\bBSL-1\\.0\\b|Boost Software License",
             "\\bZPL\\b|Zope Public License",
-            "\\bCNRI-Python\\b"
+            "\\bCNRI-Python\\b",
+            "\\bTCL\\b"
         ]
     },
     "licenseOverrides": {},
@@ -97,6 +119,54 @@
                 "url": "https://raw.githubusercontent.com/fxsjy/jieba/v0.42.1/LICENSE",
                 "sha256": "18ba0984839f85853b29fadaf992f7dba8fd0ca0fbeae34de2b8735222dc7a37",
                 "reason": "the jieba 0.42.1 sdist ships no license file (PKG-INFO: License: MIT)"
+            }
+        ],
+        "chinesecalendar": [
+            {
+                "file": "LICENSE",
+                "url": "https://raw.githubusercontent.com/LKI/chinese-calendar/1.11.0/LICENSE",
+                "sha256": "30666775fe057af3c56b5b9224869de21d27a17ed86eabe87f56b58b5fe02f9f",
+                "reason": "the wheel ships no license file (MIT)"
+            }
+        ],
+        "duckdb": [
+            {
+                "file": "LICENSE",
+                "url": "https://raw.githubusercontent.com/duckdb/duckdb/v1.2.2/LICENSE",
+                "sha256": "7e17fd31249fa875cb3b1c5e05c6c3e99b75509f6a2804ca176c217834de1dcb",
+                "reason": "the wheel ships no license file (MIT)"
+            }
+        ],
+        "gmssl": [
+            {
+                "file": "License",
+                "url": "https://raw.githubusercontent.com/py-gmssl/py-gmssl/6ad876fe33ceeba68076e1591e74d610395d5de8/License",
+                "sha256": "09cccf2e999537be2e9d65307220280182ef3915bdb94b109f32af1b8391d329",
+                "reason": "3.2.2 ships no license file and its metadata says BSD; the repository (now py-gmssl/py-gmssl) added this MIT License on 2022-08-31, after the v3.2.2 tag; legal review needed"
+            }
+        ],
+        "ua-parser-builtins": [
+            {
+                "file": "LICENSE",
+                "url": "https://raw.githubusercontent.com/ua-parser/uap-python/1.0.2/LICENSE",
+                "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+                "reason": "the wheel ships no license file; it is published from ua-parser/uap-python (Apache-2.0)"
+            }
+        ],
+        "user-agents": [
+            {
+                "file": "LICENSE.txt",
+                "url": "https://raw.githubusercontent.com/selwin/python-user-agents/v2.2.0/LICENSE.txt",
+                "sha256": "45ea8208e31d4a6ac0964f4e009b95f75ec4b74e4c62163428d7c56001bbb1c6",
+                "reason": "the wheel ships no license file (MIT)"
+            }
+        ],
+        "xgboost": [
+            {
+                "file": "LICENSE",
+                "url": "https://raw.githubusercontent.com/dmlc/xgboost/v3.0.5/LICENSE",
+                "sha256": "b96f9cead5f4ea4c0a217bd9d879427443a353598fb72694f2d8c4428b53a6af",
+                "reason": "the wheel ships no license file (Apache-2.0)"
             }
         ]
     }

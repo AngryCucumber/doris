@@ -513,7 +513,8 @@ def build(args):
         "envs/ 下只能放完整可用的环境，否则 BE 启动失败；升级 Python 补丁版本时新旧环境需并存到函数迁移完。\n"
         f"目标系统：glibc ≥ {record['targetGlibc']}；BE 静态链接了 libstdc++，本运行时则使用系统的 libstdc++"
         f"（GLIBCXX_{config['target'].get('glibcxx') or '?'}、CXXABI_{config['target'].get('cxxabi') or '?'} 及以上）、"
-        "libgcc_s 和 libz.so.1。\n"
+        "libgcc_s 和 libz.so.1" + ("；lightgbm 还需要 libgomp.so.1（含 GOMP_4.5）" if "lightgbm" in installed else "")
+        + "。\n"
         "组件和版本见 MANIFEST.json，许可证正文见 LICENSES/。\n", encoding="utf-8")
 
     tarball = out / f"massdb-python-runtime-{version}-{arch}-{record['lockSha256'][:8]}.tar.gz"

@@ -340,6 +340,13 @@ while the FE kept serving queries. Cloud mode runtime was not exercised.
   and CXXABI 1.3.7 enforced for the operating-system libstdc++ the runtime
   uses (the BE links libstdc++ statically). pyarrow is pinned to 20.0.0, the
   newest release with manylinux2014 aarch64 wheels.
+- Extend the default layers so common UDF needs work offline: pandas
+  accelerators, networkx, sympy, xgboost and lightgbm (`analytics`); HTTP,
+  HTML/XML, Chinese conversion and calendars, serialization, SM2/SM4 and other
+  crypto, geo/IP/UA parsing and validation (`extended`); polars and duckdb
+  (`engines`). GPL packages and those without glibc 2.17 wheels are left out.
+  Upstream license texts are fetched by sha256 for wheels that ship none, and
+  the check lists the symbol versions each operating-system library must provide.
 - Prototype only: package assembly, `be.conf`, `start_be.sh` and the legal
   inventory are unchanged, so product behavior is unchanged.
 

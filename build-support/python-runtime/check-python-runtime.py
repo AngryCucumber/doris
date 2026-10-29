@@ -248,7 +248,7 @@ def check_elf(root, arch, target, report):
         parsed[path.relative_to(root).as_posix()] = parse_elf(path)
     provided = {Path(name).name for name in parsed} | {info["soname"] for info in parsed.values() if info.get("soname")}
     wrong_machine, misaligned, unsupported, glibc_new = [], [], [], []
-    external = {}
+    external, external_versions = {}, {}
     maxima = {"GLIBC": None, "GLIBCXX": None, "CXXABI": None, "GCC": None}
     glibc_limit = version_tuple(target["glibc"])
     # libstdc++ exports both symbol families; an old libstdc++ can miss either (numpy needs CXXABI_1.3.9 first).
@@ -281,6 +281,7 @@ def check_elf(root, arch, target, report):
                 continue
             if library not in provided:
                 external.setdefault(library, []).append(name)
+                external_versions.setdefault(library, set()).update(info["versions"].get(library, ()))
     report.facts["elfFiles"] = len(parsed)
     report.facts["newestSymbolVersions"] = {key: ".".join(map(str, value)) for key, value in maxima.items() if value}
     report.facts["systemLibraries"] = sorted(external)
@@ -303,7 +304,8 @@ def check_elf(root, arch, target, report):
     unusual = {library: users for library, users in external.items() if library not in SYSTEM_LIBRARIES}
     if unusual:
         report.add("warning", "elf", "Libraries the target OS must provide besides glibc and libstdc++",
-                   [f"{library} (needed by {len(users)} files, e.g. {users[0]})" for library, users in unusual.items()])
+                   [f"{library} ({''.join(f'{name}, ' for name in sorted(external_versions[library]))}"
+                    f"needed by {len(users)} files, e.g. {users[0]})" for library, users in unusual.items()])
     newest_versions = report.facts["newestSymbolVersions"]
     report.add("info", "elf", f"Checked {len(parsed)} ELF files: newest "
                + ", ".join(f"{prefix}_{newest_versions.get(prefix, '-')}" for prefix in ("GLIBC", "GLIBCXX", "CXXABI"))

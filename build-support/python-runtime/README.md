@@ -9,7 +9,8 @@
 默认目标和 BE 一样，glibc ≥ 2.17：只使用 manylinux2014 的 wheel，检查时会强制核对 GLIBC_2.17、GLIBCXX_3.4.19
 和 CXXABI_1.3.7 这三个上限。
 BE 是静态链接 libstdc++ 的，本运行时则要用系统自带的这几个库：libstdc++（不低于 GCC 4.8.5，CentOS 7 满足）、
-libgcc_s 和 libz.so.1。
+libgcc_s 和 libz.so.1。lightgbm 还要用系统的 libgomp.so.1，并且要有 `GOMP_4.5`。CentOS 7 的 libgomp 4.8.5
+已经反向移植了 OpenMP 4.5，所以满足，但要确认目标机器装了 libgomp 包。检查脚本的 warning 会列出每个系统库需要的符号版本。
 
 代价是部分依赖要停在仍提供 manylinux2014 aarch64 wheel 的最后一个版本，比如 pyarrow 20.0.0（BE 用的是 Arrow 24）、
 numpy 2.2、scipy 1.16、scikit-learn 1.7。pyarrow 20 和 BE 的 Arrow 24 之间的数据往返已在 BE 上实测通过。
@@ -22,6 +23,27 @@ numpy 2.2、scipy 1.16、scikit-learn 1.7。pyarrow 20 和 BE 的 Arrow 24 之�
 | `build-python-runtime.py` | `resolve`：联网下载解释器和 wheel，生成带哈希的 lock；`build`：只用 resolve 的产物离线安装并打包 |
 | `check-python-runtime.py` | 检查 tarball 或解压后的目录，有 error 时退出码为 1 |
 | `test_python_runtime.py` | 两个脚本的单元测试（用合成的 ELF 和目录） |
+
+## 依赖分层
+
+| 层 | 内容 |
+|---|---|
+| core | `python_server.py` 必需的包：numpy、pandas、pyarrow |
+| common | 文本、时间、哈希、地理：jieba、pypinyin、rapidfuzz、regex、dateutil、pytz、tzdata、orjson、PyYAML、xxhash、mmh3、cryptography、phonenumbers、shapely、pyproj、h3 等 |
+| analytics | scipy、scikit-learn、statsmodels，pandas 加速包 numexpr、bottleneck，networkx、sympy，模型推理 xgboost、lightgbm |
+| extended | 内网 HTTP（requests）、HTML/XML（beautifulsoup4、lxml）、中文（OpenCC 繁简转换、cnlunar 农历、chinesecalendar 节假日）、langdetect、emoji、anyascii、序列化（msgpack、ujson、simplejson、protobuf）、国密 SM2/SM4（gmssl）和 pycryptodome、bcrypt、PyJWT、地理/IP/UA（geopy、pygeohash、ua-parser、user-agents、tldextract、netaddr、maxminddb、geoip2）、校验（pydantic、jsonschema、email-validator）和小工具 |
+| engines | 嵌入式引擎 polars、duckdb，体积最大，不需要时可以去掉 |
+
+使用注意：
+- geoip2 / maxminddb 只是读取库，IP 归属地数据库（例如 GeoLite2）要另外准备，不随包分发。
+- tldextract 在离线环境要写成 `tldextract.TLDExtract(suffix_list_urls=())`，这样只用它自带的公共后缀快照，不会尝试联网更新。
+- chinesecalendar 的节假日数据跟着包版本走，每年国务院发布新安排后要升级版本并重新构建。
+- SM3 用标准库 `hashlib.new('sm3', ...)` 即可（解释器内置 OpenSSL 3）；SM2/SM4 用 gmssl。
+- 没有收录的包：
+  - GPL 许可的 Unidecode、zhdate、lunardate，分别用 anyascii、cnlunar 代替。
+  - onnxruntime 没有 glibc 2.17 的 wheel。
+  - python-geohash 没有 wheel，用 pygeohash 代替。
+  - catboost 单个 wheel 就有 92 MB，需要时再单独加。
 
 ## 构建
 

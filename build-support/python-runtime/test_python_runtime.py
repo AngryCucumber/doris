@@ -168,8 +168,8 @@ class ElfCheckTest(unittest.TestCase):
     def test_glibcxx_limit_and_unusual_system_libraries(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            make_elf(root / "ext.so", 0x10000, ["libstdc++.so.6", "libz.so.1", "libbundled.so.1"],
-                     {"libstdc++.so.6": ["GLIBCXX_3.4.29"]})
+            make_elf(root / "ext.so", 0x10000, ["libstdc++.so.6", "libz.so.1", "libbundled.so.1", "libgomp.so.1"],
+                     {"libstdc++.so.6": ["GLIBCXX_3.4.29"], "libgomp.so.1": ["GOMP_4.5", "OMP_1.0"]})
             make_elf(root / "libbundled.so.1", 0x10000)
             (root / "lib").mkdir()
             make_elf(root / "lib/libpython3.12.so.1.0", 0x10000)
@@ -180,8 +180,10 @@ class ElfCheckTest(unittest.TestCase):
             self.assertIn("GLIBCXX_3.4.25", levels[("error", "elf")]["message"])
             self.assertEqual(levels[("warning", "elf")]["items"],
                              ["$ORIGIN/libgone.so (needed by 1 files, e.g. lib/libpython3.so)",
+                              "libgomp.so.1 (GOMP_4.5, OMP_1.0, needed by 1 files, e.g. ext.so)",
                               "libz.so.1 (needed by 1 files, e.g. ext.so)"])
-            self.assertEqual(report.facts["systemLibraries"], ["$ORIGIN/libgone.so", "libstdc++.so.6", "libz.so.1"])
+            self.assertEqual(report.facts["systemLibraries"],
+                             ["$ORIGIN/libgone.so", "libgomp.so.1", "libstdc++.so.6", "libz.so.1"])
 
     def test_cxxabi_limit_catches_what_glibcxx_alone_misses(self):
         """On CentOS 7 (libstdc++ 4.8.5) numpy 2.5 fails on CXXABI_1.3.9 while its GLIBCXX need is old enough."""
