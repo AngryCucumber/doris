@@ -23,6 +23,7 @@ import org.apache.doris.common.FeConstants;
 import org.apache.doris.httpv2.config.SpringLog4j2Config;
 import org.apache.doris.service.FrontendOptions;
 
+import com.google.common.annotations.VisibleForTesting;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -156,17 +157,7 @@ public class HttpServer extends SpringBootServletInitializer {
         properties.put("server.servlet.encoding.charset", "UTF-8");
         properties.put("server.servlet.encoding.enabled", true);
         properties.put("server.servlet.encoding.force", true);
-        // enable jetty config
-        properties.put("server.jetty.acceptors", this.acceptors);
-        properties.put("server.jetty.max-http-post-size", this.maxHttpPostSize);
-        properties.put("server.jetty.selectors", this.selectors);
-        properties.put("server.jetty.threadPool.maxThreads", this.maxThreads);
-        properties.put("server.jetty.threadPool.minThreads", this.minThreads);
-        properties.put("server.max-http-header-size", this.maxHttpHeaderSize);
-        // Worker thread pool is not set by default, set according to your needs
-        if (this.workers > 0) {
-            properties.put("server.jetty.workers", this.workers);
-        }
+        addJettyProperties(properties);
         // This is to disable the spring-boot-devtools restart feature.
         // To avoid some unexpected behavior.
         System.setProperty("spring.devtools.restart.enabled", "false");
@@ -190,6 +181,28 @@ public class HttpServer extends SpringBootServletInitializer {
                 // Disable the automatic shutdown hook registration, there is a shutdown hook in DorisFE.
                 .registerShutdownHook(false)
                 .run();
+    }
+
+    @VisibleForTesting
+    void addJettyProperties(Map<String, Object> properties) {
+        // enable jetty config, with the property names of Spring Boot 3
+        properties.put("server.jetty.threads.max", this.maxThreads);
+        properties.put("server.jetty.threads.min", this.minThreads);
+        // a non-positive value lets Jetty decide by the number of cpu cores
+        if (this.acceptors > 0) {
+            properties.put("server.jetty.threads.acceptors", this.acceptors);
+        }
+        if (this.selectors > 0) {
+            properties.put("server.jetty.threads.selectors", this.selectors);
+        }
+        // NOTE: Spring Boot 3 does not bind these two old names, so Jetty keeps its defaults (200KB form body,
+        // 8KB request header). Binding them would raise both limits a lot, which needs its own evaluation.
+        properties.put("server.jetty.max-http-post-size", this.maxHttpPostSize);
+        properties.put("server.max-http-header-size", this.maxHttpHeaderSize);
+        // Worker thread pool is not set by default, set according to your needs
+        if (this.workers > 0) {
+            properties.put("server.jetty.workers", this.workers);
+        }
     }
 
     /**

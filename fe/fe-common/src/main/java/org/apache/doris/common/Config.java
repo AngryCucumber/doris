@@ -490,7 +490,8 @@ public class Config extends ConfigBase {
             + "acceptor 负责接受新的连接，然后交给 selector 处理 HTTP 报文协议的解包，最后由 worker 处理请求。"
             + "前两个线程池采用非阻塞模型，并且一个线程可以处理很多 socket 的读写，所以线程池的数量少。"
             + "对于大多数项目，只需要 1-2 个 acceptor 线程，2 到 4 个就足够了。Worker 的数量取决于应用的 QPS 和 IO 事件的比例。"
-            + "越高 QPS，或者 IO 占比越高，等待的线程越多，需要的线程总数越多。",
+            + "越高 QPS，或者 IO 占比越高，等待的线程越多，需要的线程总数越多。"
+            + "小于等于 0 表示由 Jetty 根据 CPU 核数决定。",
             "The number of acceptor threads for Jetty. Jetty's thread architecture model is very simple, "
                     + "divided into three thread pools: acceptor, selector and worker. "
                     + "The acceptor is responsible for accepting new connections, "
@@ -502,10 +503,13 @@ public class Config extends ConfigBase {
                     + "only 1-2 acceptor threads are needed, 2 to 4 should be enough. "
                     + "The number of workers depends on the ratio of QPS and IO events of the application. "
                     + "The higher the QPS, or the higher the IO ratio, the more threads are waiting, "
-                    + "and the more threads are required."})
-    public static int jetty_server_acceptors = 2;
-    @ConfField(description = {"Jetty 的 selector 线程数。", "The number of selector threads for Jetty."})
-    public static int jetty_server_selectors = 4;
+                    + "and the more threads are required. "
+                    + "A non-positive value lets Jetty decide by the number of CPU cores."})
+    public static int jetty_server_acceptors = -1;
+    @ConfField(description = {"Jetty 的 selector 线程数。小于等于 0 表示由 Jetty 根据 CPU 核数决定。",
+            "The number of selector threads for Jetty. "
+                    + "A non-positive value lets Jetty decide by the number of CPU cores."})
+    public static int jetty_server_selectors = -1;
     @ConfField(description = {"Jetty 的 worker 线程数。0 表示使用默认线程池。",
             "The number of worker threads for Jetty. 0 means using the default thread pool."})
     public static int jetty_server_workers = 0;
