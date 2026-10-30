@@ -23,10 +23,13 @@ import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.Table;
 import org.apache.doris.common.Config;
 import org.apache.doris.common.FeMetaVersion;
+import org.apache.doris.common.Pair;
 import org.apache.doris.common.jmockit.Deencapsulation;
 import org.apache.doris.datasource.InternalCatalog;
+import org.apache.doris.load.EtlJobType;
 import org.apache.doris.meta.MetaContext;
 
+import com.google.common.collect.Maps;
 import mockit.Expectations;
 import mockit.Injectable;
 import mockit.Mocked;
@@ -230,6 +233,32 @@ public class LoadManagerTest {
             Config.label_keep_max_second = oldLabelKeepMaxSecond;
             Config.streaming_label_keep_max_second = oldStreamingLabelKeepMaxSecond;
         }
+    }
+
+    @Test
+    public void testGetLoadJobNum(@Mocked Env env, @Mocked InternalCatalog catalog,
+            @Injectable Database database, @Injectable Table table) throws Exception {
+        mockCatalog(env, catalog, database, table);
+        loadManager = new LoadManager(new LoadJobScheduler());
+        Assert.assertTrue(loadManager.getLoadJobNum().isEmpty());
+
+        loadManager.addLoadJob(new InsertLoadJob(1L, "pending1", 1L));
+        loadManager.addLoadJob(new InsertLoadJob(1L, "pending2", 2L));
+        loadManager.addLoadJob(new InsertLoadJob("finished", 1L, 1L, 1L, System.currentTimeMillis(), "", "", "",
+                userInfo, 3L));
+        loadManager.addLoadJob(new InsertLoadJob("cancelled", 1L, 1L, 1L, System.currentTimeMillis(), "failed",
+                "", "", userInfo, 4L));
+        LoadJob broker = new BrokerLoadJob();
+        Deencapsulation.setField(broker, "id", 5L);
+        Deencapsulation.setField(broker, "label", "broker");
+        loadManager.addLoadJob(broker);
+
+        Map<Pair<EtlJobType, JobState>, Long> expected = Maps.newHashMap();
+        expected.put(Pair.of(EtlJobType.INSERT, JobState.PENDING), 2L);
+        expected.put(Pair.of(EtlJobType.INSERT, JobState.FINISHED), 1L);
+        expected.put(Pair.of(EtlJobType.INSERT, JobState.CANCELLED), 1L);
+        expected.put(Pair.of(EtlJobType.BROKER, JobState.PENDING), 1L);
+        Assert.assertEquals(expected, loadManager.getLoadJobNum());
     }
 
     private void mockCatalog(Env env, InternalCatalog catalog, Database database, Table table) {
