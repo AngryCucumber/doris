@@ -185,6 +185,72 @@ public class LoadManagerTest {
         Assert.assertNotNull(dbIdToLabelToLoadJobs.get(1L).get("job2"));
     }
 
+    @Test
+    public void testRemoveAbandonedPendingInsertJob(@Mocked Env env, @Mocked InternalCatalog catalog,
+            @Injectable Database database, @Injectable Table table) throws Exception {
+        mockCatalog(env, catalog, database, table);
+        int oldLabelKeepMaxSecond = Config.label_keep_max_second;
+        int oldStreamingLabelKeepMaxSecond = Config.streaming_label_keep_max_second;
+        Config.label_keep_max_second = 3600;
+        Config.streaming_label_keep_max_second = 3600;
+        try {
+            long now = System.currentTimeMillis();
+            long beforeKeepTime = now - (Config.label_keep_max_second + 60) * 1000L;
+            loadManager = new LoadManager(new LoadJobScheduler());
+
+            // registered when planned, never finished, older than label_keep_max_second
+            LoadJob abandoned = new InsertLoadJob(1L, "abandoned", 10L);
+            Deencapsulation.setField(abandoned, "createTimestamp", beforeKeepTime);
+            // registered when planned and still running
+            LoadJob running = new InsertLoadJob(1L, "running", 11L);
+            // finished recently, although created long ago
+            LoadJob finished = new InsertLoadJob("finished", 1L, 1L, 1L, beforeKeepTime, "", "", "", userInfo, 12L);
+            // other job types are not touched even if they stay PENDING
+            LoadJob broker = new BrokerLoadJob();
+            Deencapsulation.setField(broker, "id", 13L);
+            Deencapsulation.setField(broker, "dbId", 1L);
+            Deencapsulation.setField(broker, "label", "broker");
+            Deencapsulation.setField(broker, "createTimestamp", beforeKeepTime);
+            for (LoadJob job : new LoadJob[] {abandoned, running, finished, broker}) {
+                loadManager.addLoadJob(job);
+            }
+
+            loadManager.removeOldLoadJob();
+
+            Map<Long, LoadJob> idToJobs = Deencapsulation.getField(loadManager, fieldName);
+            Map<Long, Map<String, List<LoadJob>>> dbIdToLabelToLoadJobs = Deencapsulation.getField(loadManager,
+                    "dbIdToLabelToLoadJobs");
+            Assert.assertNull(idToJobs.get(10L));
+            Assert.assertNull(dbIdToLabelToLoadJobs.get(1L).get("abandoned"));
+            Assert.assertEquals(3, idToJobs.size());
+            Assert.assertNotNull(idToJobs.get(11L));
+            Assert.assertNotNull(idToJobs.get(12L));
+            Assert.assertNotNull(idToJobs.get(13L));
+        } finally {
+            Config.label_keep_max_second = oldLabelKeepMaxSecond;
+            Config.streaming_label_keep_max_second = oldStreamingLabelKeepMaxSecond;
+        }
+    }
+
+    private void mockCatalog(Env env, InternalCatalog catalog, Database database, Table table) {
+        new Expectations() {
+            {
+                env.getInternalCatalog();
+                minTimes = 0;
+                result = catalog;
+                catalog.getDbNullable(anyLong);
+                minTimes = 0;
+                result = database;
+                database.getTableNullable(anyLong);
+                minTimes = 0;
+                result = table;
+                table.getName();
+                minTimes = 0;
+                result = "tablename";
+            }
+        };
+    }
+
     private File serializeToFile(LoadManager loadManager) throws Exception {
         File file = new File("./loadManagerTest");
         file.createNewFile();

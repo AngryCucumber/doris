@@ -2280,6 +2280,9 @@ public class StmtExecutor {
                 }
                 context.setGroupCommit(true);
             }
+            // FE only plans the http stream load here, BE executes and commits it, so nothing would ever
+            // finish an insert load job registered for it. Do not register one.
+            insert.setJobId(-1);
             OlapInsertExecutor insertExecutor = (OlapInsertExecutor) insert.initPlan(context, this);
             HttpStreamParams httpStreamParams = new HttpStreamParams();
             httpStreamParams.setTxnId(insertExecutor.getTxnId());

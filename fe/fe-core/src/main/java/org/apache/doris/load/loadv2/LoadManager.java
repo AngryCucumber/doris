@@ -76,6 +76,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
@@ -422,7 +423,33 @@ public class LoadManager implements Writable {
      **/
     public void removeOldLoadJob() {
         long currentTimeMs = System.currentTimeMillis();
-        removeLoadJobIf(job -> job.isExpired(currentTimeMs));
+        AtomicLong abandonedInsertJobNum = new AtomicLong();
+        removeLoadJobIf(job -> {
+            if (job.isExpired(currentTimeMs)) {
+                return true;
+            }
+            if (isAbandonedInsertJob(job, currentTimeMs)) {
+                abandonedInsertJobNum.incrementAndGet();
+                return true;
+            }
+            return false;
+        });
+        if (abandonedInsertJobNum.get() > 0) {
+            LOG.warn("removed {} insert load jobs that stayed PENDING for more than {} seconds",
+                    abandonedInsertJobNum.get(), Config.label_keep_max_second);
+        }
+    }
+
+    /**
+     * An insert load job is registered in PENDING state when the insert is planned, and only the executor that
+     * planned it moves it to FINISHED or CANCELLED. If that executor never finishes the job (for example the
+     * insert is empty, or beginning the transaction fails), the job stays PENDING forever: it is never expired
+     * and never journaled. Drop such jobs once they are older than label_keep_max_second.
+     */
+    private static boolean isAbandonedInsertJob(LoadJob job, long currentTimeMs) {
+        return job instanceof InsertLoadJob
+                && job.getState() == JobState.PENDING
+                && (currentTimeMs - job.getCreateTimestamp()) / 1000 > Config.label_keep_max_second;
     }
 
     /**
