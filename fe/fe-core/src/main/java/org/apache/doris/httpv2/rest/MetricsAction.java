@@ -58,7 +58,15 @@ public class MetricsAction extends RestBaseController {
         }
         response.setContentType("text/plain");
         try {
-            response.getWriter().write(MetricRepo.getMetric(visitor));
+            String metrics = MetricRepo.getMetric(visitor);
+            if (metrics == null) {
+                // another request is still computing the metrics and there is no earlier result to return
+                response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
+                response.setHeader("Retry-After", "1");
+                response.getWriter().write("metrics are being computed, retry later");
+                return;
+            }
+            response.getWriter().write(metrics);
         } catch (IOException e) {
             LOG.warn("", e);
         }

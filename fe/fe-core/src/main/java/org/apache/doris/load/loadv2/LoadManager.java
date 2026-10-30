@@ -399,9 +399,26 @@ public class LoadManager implements Writable {
      * Get load job num, used by metric.
      **/
     public Map<Pair<EtlJobType, JobState>, Long> getLoadJobNum() {
-        return idToLoadJob.values().stream().collect(Collectors.groupingBy(
-                loadJob -> Pair.of(loadJob.getJobType(), loadJob.getState()),
-                Collectors.counting()));
+        // count into an array instead of grouping by a Pair per job, this runs over all jobs on every metric request
+        EtlJobType[] jobTypes = EtlJobType.values();
+        JobState[] jobStates = JobState.values();
+        long[][] counts = new long[jobTypes.length][jobStates.length];
+        for (LoadJob loadJob : idToLoadJob.values()) {
+            EtlJobType jobType = loadJob.getJobType();
+            JobState jobState = loadJob.getState();
+            if (jobType != null && jobState != null) {
+                counts[jobType.ordinal()][jobState.ordinal()]++;
+            }
+        }
+        Map<Pair<EtlJobType, JobState>, Long> loadJobNum = new HashMap<>();
+        for (int i = 0; i < jobTypes.length; i++) {
+            for (int j = 0; j < jobStates.length; j++) {
+                if (counts[i][j] > 0) {
+                    loadJobNum.put(Pair.of(jobTypes[i], jobStates[j]), counts[i][j]);
+                }
+            }
+        }
+        return loadJobNum;
     }
 
     /**
