@@ -41,6 +41,8 @@ import java.util.Map;
 @ServletComponentScan
 public class HttpServer extends SpringBootServletInitializer {
     private static final Logger LOG = LogManager.getLogger(HttpServer.class);
+    // Spring Boot's default for server.jetty.threads.max, in effect while the old property names were ignored
+    private static final int SPRING_BOOT_DEFAULT_MAX_THREADS = 200;
     private ConfigurableApplicationContext applicationContext;
     private int port;
     private int httpsPort;
@@ -185,15 +187,40 @@ public class HttpServer extends SpringBootServletInitializer {
 
     @VisibleForTesting
     void addJettyProperties(Map<String, Object> properties) {
-        // enable jetty config, with the property names of Spring Boot 3
-        properties.put("server.jetty.threads.max", this.maxThreads);
-        properties.put("server.jetty.threads.min", this.minThreads);
-        // a non-positive value lets Jetty decide by the number of cpu cores
-        if (this.acceptors > 0) {
-            properties.put("server.jetty.threads.acceptors", this.acceptors);
+        addJettyProperties(properties, Runtime.getRuntime().availableProcessors());
+    }
+
+    @VisibleForTesting
+    void addJettyProperties(Map<String, Object> properties, int cores) {
+        // enable jetty config, with the property names of Spring Boot 3.
+        // These settings were ignored while the old property names were used, so a value Jetty cannot run with never
+        // mattered. Jetty refuses to start with such values and the FE would not start: use the defaults instead.
+        boolean usePool = this.minThreads >= 0 && this.maxThreads > 0 && this.minThreads <= this.maxThreads
+                && leasedThreads(-1, -1, this.maxThreads, cores) < this.maxThreads;
+        if (usePool) {
+            properties.put("server.jetty.threads.max", this.maxThreads);
+            properties.put("server.jetty.threads.min", this.minThreads);
+        } else {
+            LOG.warn("ignore jetty_threadPool_maxThreads = {} and jetty_threadPool_minThreads = {}: Jetty needs"
+                    + " 0 <= min <= max and max above the {} threads its connectors hold, use the defaults instead",
+                    this.maxThreads, this.minThreads, leasedThreads(-1, -1, this.maxThreads, cores));
         }
-        if (this.selectors > 0) {
-            properties.put("server.jetty.threads.selectors", this.selectors);
+        int poolMax = usePool ? this.maxThreads : SPRING_BOOT_DEFAULT_MAX_THREADS;
+        // a non-positive value lets Jetty decide by the number of cpu cores and the max thread count
+        if (this.acceptors > 0 || this.selectors > 0) {
+            int leased = leasedThreads(this.acceptors, this.selectors, poolMax, cores);
+            if (leased < poolMax) {
+                if (this.acceptors > 0) {
+                    properties.put("server.jetty.threads.acceptors", this.acceptors);
+                }
+                if (this.selectors > 0) {
+                    properties.put("server.jetty.threads.selectors", this.selectors);
+                }
+            } else {
+                LOG.warn("ignore jetty_server_acceptors = {} and jetty_server_selectors = {}: the connectors would hold"
+                        + " {} of the {} http server threads, let Jetty decide instead",
+                        this.acceptors, this.selectors, leased, poolMax);
+            }
         }
         // NOTE: Spring Boot 3 does not bind these two old names, so Jetty keeps its defaults (200KB form body,
         // 8KB request header). Binding them would raise both limits a lot, which needs its own evaluation.
@@ -203,6 +230,27 @@ public class HttpServer extends SpringBootServletInitializer {
         if (this.workers > 0) {
             properties.put("server.jetty.workers", this.workers);
         }
+    }
+
+    /**
+     * Threads Jetty leases out of the pool: acceptors and selectors of each connector and the reserved threads; it
+     * fails to start unless they are fewer than the max thread count. With https a plain http connector with Jetty's
+     * defaults is added as well, see {@link org.apache.doris.httpv2.config.WebServerFactoryCustomizerConfig}.
+     */
+    private int leasedThreads(int acceptors, int selectors, int maxThreads, int cores) {
+        // Jetty's defaults: 1 acceptor, selectors from SelectorManager.defaultSelectors() and reserved threads from
+        // ReservedThreadExecutor.reservedThreads()
+        int defaultSelectors = Math.max(1, Math.min(cores / 2, maxThreads / 16));
+        int reserved = Math.max(1, ceilToPowerOfTwo(Math.min(cores, maxThreads / 8)));
+        int leased = (acceptors > 0 ? acceptors : 1) + (selectors > 0 ? selectors : defaultSelectors) + reserved;
+        if (this.enableHttps) {
+            leased += 1 + defaultSelectors;
+        }
+        return leased;
+    }
+
+    private static int ceilToPowerOfTwo(int value) {
+        return value <= 1 ? 1 : Integer.highestOneBit(value - 1) << 1;
     }
 
     /**
