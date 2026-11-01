@@ -196,7 +196,7 @@ public class LoadManager implements Writable {
         if (loadJob.getLabel() != null) {
             // A job that can be found by id is in the queue of its label. Insert jobs are added without the
             // LoadManager lock, so a job is added to its label first and by id after that, and it leaves its label
-            // only after it left idToLoadJob, taken out of its label by whoever removed it by id (removeJobs(),
+            // only after it left idToLoadJob, taken out of its label by whoever removed it by id (removeFromLabel(),
             // removeCompletedJobs()). compute() runs atomically per database, so two jobs cannot each create the
             // label map of a database, and a job is not added to a label being dropped. The jobs of a label are a
             // concurrent queue: readers holding only the read lock iterate it while jobs are added, and adding stays
@@ -467,13 +467,43 @@ public class LoadManager implements Writable {
                     .sorted(Comparator.comparingLong(o -> o.finishTimestamp))
                     .limit(Math.max(0, idToLoadJob.size() - Config.label_num_threshold))
                     .collect(Collectors.toList());
+            List<LoadJob> notOldest = new ArrayList<>();
             for (LoadJob job : removedJobs) {
                 idToLoadJob.remove(job.getId());
+                removeFromLabel(job, notOldest);
             }
-            removeJobs(removedJobs);
+            removeFromLabels(notOldest);
         } finally {
             writeUnlock();
         }
+    }
+
+    /**
+     * Remove a job, just removed from idToLoadJob, from its label in the compute() of its database (see addLoadJob())
+     * if it is the oldest job of the label, like most removed jobs: the only job of its label, or the oldest one of
+     * a label whose history is removed oldest first. This is done right away, while the job is still in the CPU
+     * cache: going over a million removed jobs again afterwards took longer than removing them. A job that is not
+     * the oldest is added to notOldest, for removeFromLabels().
+     */
+    private void removeFromLabel(LoadJob job, List<LoadJob> notOldest) {
+        if (job instanceof BulkLoadJob) {
+            ((BulkLoadJob) job).recycleProgress();
+        }
+        dbIdToLabelToLoadJobs.computeIfPresent(job.getDbId(), (dbId, labelToLoadJobs) -> {
+            ConcurrentLinkedQueue<LoadJob> labelJobs = labelToLoadJobs.get(job.getLabel());
+            if (labelJobs == null) {
+                return labelToLoadJobs;
+            }
+            if (labelJobs.peek() != job) {
+                notOldest.add(job);
+                return labelToLoadJobs;
+            }
+            labelJobs.poll();
+            if (labelJobs.isEmpty()) {
+                labelToLoadJobs.remove(job.getLabel());
+            }
+            return labelToLoadJobs.isEmpty() ? null : labelToLoadJobs;
+        });
     }
 
     /**
@@ -481,12 +511,12 @@ public class LoadManager implements Writable {
      * compute(), see addLoadJob(). The jobs of a label are scanned once: removing them one by one would scan a label's
      * jobs once per job, which is quadratic for a label with a long history.
      */
-    private void removeJobs(Collection<LoadJob> jobs) {
+    private void removeFromLabels(Collection<LoadJob> jobs) {
+        if (jobs.isEmpty()) {
+            return;
+        }
         Map<Long, List<LoadJob>> dbIdToRemoved = new HashMap<>();
         for (LoadJob job : jobs) {
-            if (job instanceof BulkLoadJob) {
-                ((BulkLoadJob) job).recycleProgress();
-            }
             dbIdToRemoved.computeIfAbsent(job.getDbId(), dbId -> new ArrayList<>()).add(job);
         }
         for (Map.Entry<Long, List<LoadJob>> db : dbIdToRemoved.entrySet()) {
@@ -533,17 +563,17 @@ public class LoadManager implements Writable {
         StopWatch stopWatch = StopWatch.createStarted();
         writeLock();
         try {
-            List<LoadJob> removedJobs = new ArrayList<>();
+            List<LoadJob> notOldest = new ArrayList<>();
             Iterator<Map.Entry<Long, LoadJob>> iter = idToLoadJob.entrySet().iterator();
             while (iter.hasNext()) {
                 LoadJob job = iter.next().getValue();
                 if (pred.test(job)) {
                     iter.remove();
-                    removedJobs.add(job);
+                    removeFromLabel(job, notOldest);
+                    removeJobNum++;
                 }
             }
-            removeJobs(removedJobs);
-            removeJobNum = removedJobs.size();
+            removeFromLabels(notOldest);
         } finally {
             writeUnlock();
             stopWatch.stop();
