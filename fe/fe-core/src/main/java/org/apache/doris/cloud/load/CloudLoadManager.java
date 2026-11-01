@@ -52,7 +52,6 @@ import java.util.Collection;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -170,6 +169,10 @@ public class CloudLoadManager extends LoadManager {
         readLock();
         try {
             Map<String, List<LoadJob>> labelToLoadJobs = dbIdToLabelToLoadJobs.get(dbId);
+            if (labelToLoadJobs == null) {
+                // the cleaner removed the last jobs of the database after the check above
+                return loadJobInfos;
+            }
             List<LoadJob> loadJobList = Lists.newArrayList();
             if (Strings.isNullOrEmpty(labelValue)) {
                 loadJobList.addAll(
@@ -322,27 +325,26 @@ public class CloudLoadManager extends LoadManager {
         long copyJobNum = idToLoadJob.size();
         try {
             for (Map.Entry<Long, Set<String>> entry : dbToLabels.entrySet()) {
-                long dbId = entry.getKey();
-                if (!dbIdToLabelToLoadJobs.containsKey(dbId)) {
-                    continue;
-                }
-                Map<String, List<LoadJob>> labelToJob = dbIdToLabelToLoadJobs.get(dbId);
-                for (String label : entry.getValue()) {
-                    List<LoadJob> jobs = labelToJob.get(label);
-                    if (jobs == null) {
-                        continue;
+                // atomically per database, see LoadManager.addLoadJob
+                dbIdToLabelToLoadJobs.computeIfPresent(entry.getKey(), (dbId, labelToJob) -> {
+                    for (String label : entry.getValue()) {
+                        List<LoadJob> jobs = labelToJob.get(label);
+                        if (jobs == null) {
+                            continue;
+                        }
+                        // a snapshot, the list is copy-on-write and does not support Iterator.remove()
+                        for (LoadJob loadJob : jobs) {
+                            CopyJob job = (CopyJob) loadJob;
+                            jobs.remove(job);
+                            idToLoadJob.remove(job.getId());
+                            job.recycleProgress();
+                        }
+                        if (jobs.isEmpty()) {
+                            labelToJob.remove(label);
+                        }
                     }
-                    Iterator<LoadJob> iter = jobs.iterator();
-                    while (iter.hasNext()) {
-                        CopyJob job = (CopyJob) iter.next();
-                        iter.remove();
-                        idToLoadJob.remove(job.getId());
-                        job.recycleProgress();
-                    }
-                    if (jobs.isEmpty()) {
-                        labelToJob.remove(label);
-                    }
-                }
+                    return labelToJob;
+                });
             }
             LOG.info("remove copy jobs from {} to {}, cost={}ms", copyJobNum, idToLoadJob.size(),
                     System.currentTimeMillis() - start);
