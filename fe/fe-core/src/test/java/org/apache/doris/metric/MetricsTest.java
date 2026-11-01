@@ -384,6 +384,21 @@ public class MetricsTest {
         });
     }
 
+    @Test
+    public void testResultAgeIsNotTakenFromTheWallClock() {
+        runWithSlowMetric(0, 60000, 3000, () -> {
+            // a result that looks younger than possible, as a wall clock set back used to make it look, is not reused
+            MetricRepo.putMetricResult(PrometheusMetricVisitor.class,
+                    System.nanoTime() + TimeUnit.HOURS.toNanos(1), "old");
+            Assert.assertNotEquals("old", MetricRepo.getMetric(new PrometheusMetricVisitor()));
+        });
+        runWithSlowMetric(0, 0, 3000, () -> {
+            // without the cache a later request computes again
+            String firstResult = MetricRepo.getMetric(new PrometheusMetricVisitor());
+            Assert.assertNotSame(firstResult, MetricRepo.getMetric(new PrometheusMetricVisitor()));
+        });
+    }
+
     private static void sleepMs(long ms) {
         try {
             Thread.sleep(ms);

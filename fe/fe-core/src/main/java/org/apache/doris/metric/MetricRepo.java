@@ -68,6 +68,7 @@ import java.util.SortedMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -273,13 +274,18 @@ public final class MetricRepo {
     // slow requests to /metrics cannot pile up and hold all http server threads.
     private static final ReentrantLock METRIC_COMPUTE_LOCK = new ReentrantLock();
     private static final Map<Class<? extends MetricVisitor>, MetricResult> METRIC_RESULTS = new ConcurrentHashMap<>();
+    // number of computations started, a request can take the result of a computation that started after it came
+    private static final AtomicLong METRIC_COMPUTE_SEQ = new AtomicLong();
 
     private static class MetricResult {
-        private final long startTimeMs;
+        private final long seq;
+        // System.nanoTime(), so that setting the clock back cannot keep an old result
+        private final long startNanos;
         private final String content;
 
-        MetricResult(long startTimeMs, String content) {
-            this.startTimeMs = startTimeMs;
+        MetricResult(long seq, long startNanos, String content) {
+            this.seq = seq;
+            this.startNanos = startNanos;
             this.content = content;
         }
     }
@@ -1339,9 +1345,9 @@ public final class MetricRepo {
         }
 
         Class<? extends MetricVisitor> visitorClass = visitor.getClass();
-        long requestTimeMs = System.currentTimeMillis();
+        long arrivalSeq = METRIC_COMPUTE_SEQ.get();
         MetricResult result = METRIC_RESULTS.get(visitorClass);
-        if (isReusable(result, requestTimeMs)) {
+        if (isFresh(result)) {
             return result.content;
         }
 
@@ -1355,18 +1361,20 @@ public final class MetricRepo {
             result = METRIC_RESULTS.get(visitorClass);
             LOG.warn("waited {} ms for another metric computation, return {}", Config.metrics_lock_wait_ms,
                     result == null ? "nothing"
-                            : "the result computed " + (System.currentTimeMillis() - result.startTimeMs) + " ms ago");
+                            : "the result computed "
+                                    + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - result.startNanos) + " ms ago");
             return result == null ? null : result.content;
         }
         try {
-            // a concurrent request may have computed it while we were waiting
+            // a computation that started after this request came may have finished while it waited
             result = METRIC_RESULTS.get(visitorClass);
-            if (isReusable(result, requestTimeMs)) {
+            if (result != null && (result.seq > arrivalSeq || isFresh(result))) {
                 return result.content;
             }
-            long startTimeMs = System.currentTimeMillis();
+            long seq = METRIC_COMPUTE_SEQ.incrementAndGet();
+            long startNanos = System.nanoTime();
             String content = computeMetric(visitor);
-            METRIC_RESULTS.put(visitorClass, new MetricResult(startTimeMs, content));
+            METRIC_RESULTS.put(visitorClass, new MetricResult(seq, startNanos, content));
             return content;
         } finally {
             METRIC_COMPUTE_LOCK.unlock();
@@ -1378,9 +1386,17 @@ public final class MetricRepo {
         METRIC_RESULTS.clear();
     }
 
-    private static boolean isReusable(MetricResult result, long requestTimeMs) {
-        return result != null && (result.startTimeMs >= requestTimeMs
-                || requestTimeMs - result.startTimeMs < Config.metrics_result_cache_ms);
+    @VisibleForTesting
+    static void putMetricResult(Class<? extends MetricVisitor> visitorClass, long startNanos, String content) {
+        METRIC_RESULTS.put(visitorClass, new MetricResult(METRIC_COMPUTE_SEQ.get(), startNanos, content));
+    }
+
+    private static boolean isFresh(MetricResult result) {
+        if (result == null) {
+            return false;
+        }
+        long ageNanos = System.nanoTime() - result.startNanos;
+        return ageNanos >= 0 && ageNanos < TimeUnit.MILLISECONDS.toNanos(Config.metrics_result_cache_ms);
     }
 
     private static String computeMetric(MetricVisitor visitor) {
