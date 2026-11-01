@@ -68,6 +68,7 @@ import java.util.SortedMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
@@ -269,9 +270,10 @@ public final class MetricRepo {
             "metric-timer-pool", true);
     private static final MetricCalculator metricCalculator = new MetricCalculator();
 
-    // Visiting all metrics can be slow, e.g. with many load jobs. Computations are serialized by this lock, which
-    // waiters give up after metrics_lock_wait_ms, and the result is shared between concurrent requests, so that
-    // slow requests to /metrics cannot pile up and hold all http server threads.
+    // Visiting all metrics can be slow, e.g. with many load jobs. Computations are serialized by this lock and the
+    // result is shared: while one request computes, requests that find an earlier result return it at once and only
+    // requests without any result wait, at most metrics_lock_wait_ms, so that slow requests to /metrics cannot pile
+    // up and hold all http server threads.
     private static final ReentrantLock METRIC_COMPUTE_LOCK = new ReentrantLock();
     private static final Map<Class<? extends MetricVisitor>, MetricResult> METRIC_RESULTS = new ConcurrentHashMap<>();
     // number of computations started, a request can take the result of a computation that started after it came
@@ -282,6 +284,7 @@ public final class MetricRepo {
         // System.nanoTime(), so that setting the clock back cannot keep an old result
         private final long startNanos;
         private final String content;
+        private final AtomicBoolean staleLogged = new AtomicBoolean();
 
         MetricResult(long seq, long startNanos, String content) {
             this.seq = seq;
@@ -1335,9 +1338,9 @@ public final class MetricRepo {
     }
 
     /**
-     * Get all metrics in the format of the visitor. The result of a computation that started after this call, or
-     * that is younger than metrics_result_cache_ms, is reused. If another computation does not finish within
-     * metrics_lock_wait_ms, the last result is returned even if it is older, or null if there is none yet.
+     * Get all metrics in the format of the visitor. A result younger than metrics_result_cache_ms is reused. While
+     * another request computes the metrics, the last result is returned at once even if it is older; without any
+     * result the request waits up to metrics_lock_wait_ms for the computation and gets null after that.
      */
     public static String getMetric(MetricVisitor visitor) {
         if (!isInit) {
@@ -1353,17 +1356,14 @@ public final class MetricRepo {
 
         boolean locked = false;
         try {
-            locked = METRIC_COMPUTE_LOCK.tryLock(Math.max(0, Config.metrics_lock_wait_ms), TimeUnit.MILLISECONDS);
+            // with an earlier result at hand, do not hold an http server thread to wait for another computation
+            long waitMs = result == null ? Math.max(0, Config.metrics_lock_wait_ms) : 0;
+            locked = METRIC_COMPUTE_LOCK.tryLock(waitMs, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
         if (!locked) {
-            result = METRIC_RESULTS.get(visitorClass);
-            LOG.warn("waited {} ms for another metric computation, return {}", Config.metrics_lock_wait_ms,
-                    result == null ? "nothing"
-                            : "the result computed "
-                                    + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - result.startNanos) + " ms ago");
-            return result == null ? null : result.content;
+            return lastMetricResult(visitorClass);
         }
         try {
             // a computation that started after this request came may have finished while it waited
@@ -1379,6 +1379,21 @@ public final class MetricRepo {
         } finally {
             METRIC_COMPUTE_LOCK.unlock();
         }
+    }
+
+    private static String lastMetricResult(Class<? extends MetricVisitor> visitorClass) {
+        MetricResult result = METRIC_RESULTS.get(visitorClass);
+        if (result == null) {
+            LOG.warn("waited {} ms for another metric computation, there is no result to return",
+                    Config.metrics_lock_wait_ms);
+            return null;
+        }
+        // every request gets here while a slow computation runs, log once per result
+        if (result.staleLogged.compareAndSet(false, true)) {
+            LOG.warn("another request is computing the metrics, return the result computed {} ms ago",
+                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - result.startNanos));
+        }
+        return result.content;
     }
 
     @VisibleForTesting

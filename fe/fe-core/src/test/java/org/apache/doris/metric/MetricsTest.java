@@ -336,14 +336,53 @@ public class MetricsTest {
             String firstResult = first.join();
             Assert.assertTrue(firstResult.contains("jvm_gc"));
 
-            // with an earlier result: give up and return the earlier result
+            // with an earlier result: return it at once, do not wait for the running computation
             CompletableFuture<String> second = getMetricAsync();
             sleepMs(200);
             start = System.nanoTime();
             Assert.assertSame(firstResult, MetricRepo.getMetric(new PrometheusMetricVisitor()));
             waited = elapsedMs(start);
-            Assert.assertTrue("waited " + waited + " ms", waited >= 250 && waited < 1500);
+            Assert.assertTrue("waited " + waited + " ms", waited < 200);
             Assert.assertNotSame(firstResult, second.join());
+        });
+    }
+
+    @Test
+    public void testManyRequestsDuringSlowMetricReturnAtOnce() {
+        runWithSlowMetric(2000, 0, 3000, () -> {
+            DebugPointUtil.removeDebugPoint(SLOW_METRIC_DEBUG_POINT);
+            String firstResult = MetricRepo.getMetric(new PrometheusMetricVisitor());
+            DebugPointUtil.addDebugPointWithValue(SLOW_METRIC_DEBUG_POINT, 2000L);
+            CompletableFuture<String> slow = getMetricAsync();
+            sleepMs(200);
+            // like the scrapes that used to hold all http server threads while one computation ran
+            long start = System.nanoTime();
+            List<CompletableFuture<String>> requests = new ArrayList<>();
+            for (int i = 0; i < 50; i++) {
+                requests.add(getMetricAsync());
+            }
+            for (CompletableFuture<String> request : requests) {
+                Assert.assertSame(firstResult, request.join());
+            }
+            long elapsed = elapsedMs(start);
+            Assert.assertTrue("took " + elapsed + " ms", elapsed < 1000);
+            Assert.assertFalse(slow.isDone());
+            Assert.assertNotSame(firstResult, slow.join());
+        });
+    }
+
+    @Test
+    public void testResultAgeIsNotTakenFromTheWallClock() {
+        runWithSlowMetric(0, 60000, 3000, () -> {
+            // a result that looks younger than possible, as a wall clock set back used to make it look, is not reused
+            MetricRepo.putMetricResult(PrometheusMetricVisitor.class,
+                    System.nanoTime() + TimeUnit.HOURS.toNanos(1), "old");
+            Assert.assertNotEquals("old", MetricRepo.getMetric(new PrometheusMetricVisitor()));
+        });
+        runWithSlowMetric(0, 0, 3000, () -> {
+            // without the cache a later request computes again
+            String firstResult = MetricRepo.getMetric(new PrometheusMetricVisitor());
+            Assert.assertNotSame(firstResult, MetricRepo.getMetric(new PrometheusMetricVisitor()));
         });
     }
 
@@ -381,21 +420,6 @@ public class MetricsTest {
             String jsonResult = MetricRepo.getMetric(new JsonMetricVisitor());
             Assert.assertNotEquals(firstResult, jsonResult);
             Assert.assertSame(jsonResult, MetricRepo.getMetric(new JsonMetricVisitor()));
-        });
-    }
-
-    @Test
-    public void testResultAgeIsNotTakenFromTheWallClock() {
-        runWithSlowMetric(0, 60000, 3000, () -> {
-            // a result that looks younger than possible, as a wall clock set back used to make it look, is not reused
-            MetricRepo.putMetricResult(PrometheusMetricVisitor.class,
-                    System.nanoTime() + TimeUnit.HOURS.toNanos(1), "old");
-            Assert.assertNotEquals("old", MetricRepo.getMetric(new PrometheusMetricVisitor()));
-        });
-        runWithSlowMetric(0, 0, 3000, () -> {
-            // without the cache a later request computes again
-            String firstResult = MetricRepo.getMetric(new PrometheusMetricVisitor());
-            Assert.assertNotSame(firstResult, MetricRepo.getMetric(new PrometheusMetricVisitor()));
         });
     }
 
