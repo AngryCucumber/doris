@@ -26,10 +26,14 @@ import org.apache.doris.common.FeMetaVersion;
 import org.apache.doris.common.MetaNotFoundException;
 import org.apache.doris.common.Pair;
 import org.apache.doris.common.jmockit.Deencapsulation;
+import org.apache.doris.datasource.CatalogMgr;
 import org.apache.doris.datasource.InternalCatalog;
 import org.apache.doris.load.EtlJobType;
 import org.apache.doris.meta.MetaContext;
+import org.apache.doris.mysql.privilege.AccessControllerManager;
+import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.persist.EditLog;
+import org.apache.doris.qe.ConnectContext;
 
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
@@ -47,6 +51,7 @@ import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
@@ -435,6 +440,148 @@ public class LoadManagerTest {
             pool.shutdownNow();
             Config.label_keep_max_second = oldLabelKeepMaxSecond;
         }
+    }
+
+    @Test
+    public void testReadersWhileJobsAreAdded() throws Exception {
+        // SHOW LOAD and the procs iterate the label lists holding only the read lock, while insert jobs are added
+        // without any lock; many jobs under few labels make the lists long
+        LoadManager manager = new LoadManager(new LoadJobScheduler());
+        int writers = 4;
+        int jobsPerWriter = 3000;
+        AtomicBoolean done = new AtomicBoolean();
+        List<Throwable> errors = Collections.synchronizedList(Lists.newArrayList());
+        ExecutorService pool = Executors.newFixedThreadPool(writers + 4);
+        try {
+            List<Future<?>> readers = Lists.newArrayList();
+            for (int i = 0; i < 4; i++) {
+                readers.add(pool.submit(() -> {
+                    while (!done.get()) {
+                        try {
+                            manager.getLoadJobNum(JobState.PENDING, 1L);
+                        } catch (Throwable t) {
+                            errors.add(t);
+                            return;
+                        }
+                    }
+                }));
+            }
+            List<Future<?>> adders = Lists.newArrayList();
+            for (int w = 0; w < writers; w++) {
+                int firstId = w * jobsPerWriter;
+                adders.add(pool.submit(() -> {
+                    for (int i = 0; i < jobsPerWriter; i++) {
+                        manager.addLoadJob(new InsertLoadJob(1L, "label_" + (i % 5), firstId + i));
+                    }
+                }));
+            }
+            for (Future<?> adder : adders) {
+                adder.get(60, TimeUnit.SECONDS);
+            }
+            done.set(true);
+            for (Future<?> reader : readers) {
+                reader.get(60, TimeUnit.SECONDS);
+            }
+        } finally {
+            done.set(true);
+            pool.shutdownNow();
+        }
+        Assert.assertTrue("readers failed: " + errors, errors.isEmpty());
+        Assert.assertEquals(writers * jobsPerWriter, manager.getLoadJobNum(JobState.PENDING, 1L));
+    }
+
+    @Test
+    public void testCleanLabelWhileJobIsAdded(@Mocked Env env, @Mocked InternalCatalog catalog,
+            @Injectable Database database, @Mocked EditLog editLog) throws Exception {
+        new Expectations() {
+            {
+                Env.getCurrentEnv();
+                minTimes = 0;
+                result = env;
+                Env.getCurrentInternalCatalog();
+                minTimes = 0;
+                result = catalog;
+                env.getEditLog();
+                minTimes = 0;
+                result = editLog;
+                catalog.getDbOrDdlException(anyString);
+                minTimes = 0;
+                result = database;
+                database.getId();
+                minTimes = 0;
+                result = 1L;
+            }
+        };
+        // CLEAN LABEL drops the finished job of a label while a new job with the label is added: the new job
+        // must stay in the label index
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            for (int round = 0; round < 300; round++) {
+                LoadManager manager = new LoadManager(new LoadJobScheduler());
+                InsertLoadJob finished = new InsertLoadJob(1L, "label", 2L * round);
+                Deencapsulation.setField(finished, "state", JobState.FINISHED);
+                manager.addLoadJob(finished);
+                InsertLoadJob added = new InsertLoadJob(1L, "label", 2L * round + 1);
+                runTogether(pool, Lists.newArrayList(() -> {
+                    try {
+                        manager.cleanLabel("db", "label");
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                }, () -> manager.addLoadJob(added)));
+                Map<Long, Map<String, List<LoadJob>>> dbIdToLabelToLoadJobs = Deencapsulation.getField(manager,
+                        "dbIdToLabelToLoadJobs");
+                Assert.assertNotNull("round " + round, dbIdToLabelToLoadJobs.get(1L));
+                Assert.assertEquals("round " + round, Lists.newArrayList(added),
+                        dbIdToLabelToLoadJobs.get(1L).get("label"));
+                Assert.assertNull(manager.getLoadJob(2L * round));
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    public void testProcCountsJobsOfAllDatabases(@Mocked Env env, @Mocked CatalogMgr catalogMgr,
+            @Mocked AccessControllerManager accessManager, @Injectable Database db1, @Injectable Database db2)
+            throws Exception {
+        new Expectations() {
+            {
+                Env.getCurrentEnv();
+                minTimes = 0;
+                result = env;
+                env.getCatalogMgr();
+                minTimes = 0;
+                result = catalogMgr;
+                env.getAccessManager();
+                minTimes = 0;
+                result = accessManager;
+                catalogMgr.getDbNullable(1L);
+                minTimes = 0;
+                result = db1;
+                catalogMgr.getDbNullable(2L);
+                minTimes = 0;
+                result = db2;
+                catalogMgr.getDbNullable(3L);
+                minTimes = 0;
+                result = null;
+                db1.getFullName();
+                minTimes = 0;
+                result = "db1";
+                db2.getFullName();
+                minTimes = 0;
+                result = "db2";
+                accessManager.checkDbPriv((ConnectContext) any, anyString, anyString, (PrivPredicate) any);
+                minTimes = 0;
+                result = true;
+            }
+        };
+        LoadManager manager = new LoadManager(new LoadJobScheduler());
+        // the same label in two databases, and jobs of a database that was dropped meanwhile
+        manager.addLoadJob(new InsertLoadJob(1L, "same", 1L));
+        manager.addLoadJob(new InsertLoadJob(2L, "same", 2L));
+        manager.addLoadJob(new InsertLoadJob(3L, "other", 3L));
+        Assert.assertEquals(2, manager.getLoadJobNum(JobState.PENDING));
     }
 
     private void mockRecordFinished(Env env, InternalCatalog catalog, Database database, Table table,
