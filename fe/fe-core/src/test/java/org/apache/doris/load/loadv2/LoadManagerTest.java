@@ -23,16 +23,20 @@ import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.Table;
 import org.apache.doris.common.Config;
 import org.apache.doris.common.FeMetaVersion;
+import org.apache.doris.common.MetaNotFoundException;
 import org.apache.doris.common.Pair;
 import org.apache.doris.common.jmockit.Deencapsulation;
 import org.apache.doris.datasource.InternalCatalog;
 import org.apache.doris.load.EtlJobType;
 import org.apache.doris.meta.MetaContext;
+import org.apache.doris.persist.EditLog;
 
+import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import mockit.Expectations;
 import mockit.Injectable;
 import mockit.Mocked;
+import mockit.Verifications;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -45,6 +49,11 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 public class LoadManagerTest {
     private LoadManager loadManager;
@@ -254,6 +263,137 @@ public class LoadManagerTest {
         expected.put(Pair.of(EtlJobType.INSERT, JobState.CANCELLED), 1L);
         expected.put(Pair.of(EtlJobType.BROKER, JobState.PENDING), 1L);
         Assert.assertEquals(expected, loadManager.getLoadJobNum());
+    }
+
+    @Test
+    public void testCleanerWaitsForFinishingInsertJob(@Mocked Env env, @Mocked InternalCatalog catalog,
+            @Injectable Database database, @Injectable Table table, @Mocked EditLog editLog) throws Exception {
+        mockRecordFinished(env, catalog, database, table, editLog);
+        loadManager = new LoadManager(new LoadJobScheduler());
+        long createTimestamp = System.currentTimeMillis() - 3600 * 1000L;
+        CountDownLatch finishing = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        // an insert that ran longer than label_keep_max_second and is being finished when the cleaner runs
+        InsertLoadJob job = new InsertLoadJob(1L, "long_insert", 101L) {
+            @Override
+            public void setJobProperties(long transactionId, long tableId, long createTimestamp, String failMsg,
+                    String trackingUrl, String firstErrorMsg, UserIdentity userInfo) throws MetaNotFoundException {
+                finishing.countDown();
+                try {
+                    release.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+                super.setJobProperties(transactionId, tableId, createTimestamp, failMsg, trackingUrl, firstErrorMsg,
+                        userInfo);
+            }
+        };
+        Deencapsulation.setField(job, "createTimestamp", createTimestamp);
+        loadManager.addLoadJob(job);
+        int oldLabelKeepMaxSecond = Config.label_keep_max_second;
+        Config.label_keep_max_second = 60;
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> finish = pool.submit(() -> {
+                loadManager.recordFinishedLoadJob("long_insert", 99L, "db", 1L, EtlJobType.INSERT, createTimestamp,
+                        "", "", "", userInfo, 101L);
+                return null;
+            });
+            Assert.assertTrue(finishing.await(5, TimeUnit.SECONDS));
+            // the cleaner must not drop the job between its lookup and its update
+            Future<?> clean = pool.submit(() -> loadManager.removeOldLoadJob());
+            Thread.sleep(300);
+            Assert.assertFalse(clean.isDone());
+            release.countDown();
+            finish.get(5, TimeUnit.SECONDS);
+            clean.get(5, TimeUnit.SECONDS);
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+            Config.label_keep_max_second = oldLabelKeepMaxSecond;
+        }
+        Assert.assertEquals(JobState.FINISHED, job.getState());
+        Assert.assertSame(job, loadManager.getLoadJob(101L));
+        new Verifications() {
+            {
+                editLog.logCreateLoadJob(job);
+                times = 1;
+            }
+        };
+    }
+
+    @Test
+    public void testInsertJobDroppedByCleanerIsRecordedAgain(@Mocked Env env, @Mocked InternalCatalog catalog,
+            @Injectable Database database, @Injectable Table table, @Mocked EditLog editLog) throws Exception {
+        mockRecordFinished(env, catalog, database, table, editLog);
+        loadManager = new LoadManager(new LoadJobScheduler());
+        long createTimestamp = System.currentTimeMillis() - 3600 * 1000L;
+        InsertLoadJob job = new InsertLoadJob(1L, "long_insert", 102L);
+        Deencapsulation.setField(job, "createTimestamp", createTimestamp);
+        loadManager.addLoadJob(job);
+        int oldLabelKeepMaxSecond = Config.label_keep_max_second;
+        Config.label_keep_max_second = 60;
+        try {
+            loadManager.removeOldLoadJob();
+        } finally {
+            Config.label_keep_max_second = oldLabelKeepMaxSecond;
+        }
+        Assert.assertNull(loadManager.getLoadJob(102L));
+
+        // the insert finishes after the cleaner dropped its job: the job is created again and journaled
+        loadManager.recordFinishedLoadJob("long_insert", 99L, "db", 1L, EtlJobType.INSERT, createTimestamp,
+                "", "", "", userInfo, 102L);
+        LoadJob recorded = loadManager.getLoadJob(1000L);
+        Assert.assertNotNull(recorded);
+        Assert.assertEquals(JobState.FINISHED, recorded.getState());
+        Map<Long, Map<String, List<LoadJob>>> dbIdToLabelToLoadJobs = Deencapsulation.getField(loadManager,
+                "dbIdToLabelToLoadJobs");
+        Assert.assertEquals(1, dbIdToLabelToLoadJobs.get(1L).get("long_insert").size());
+        Assert.assertEquals(1, loadManager.queryLoadJobsByJobIds(Lists.newArrayList(102L, 1000L)).size());
+        new Verifications() {
+            {
+                editLog.logCreateLoadJob(recorded);
+                times = 1;
+            }
+        };
+    }
+
+    private void mockRecordFinished(Env env, InternalCatalog catalog, Database database, Table table,
+            EditLog editLog) throws Exception {
+        new Expectations() {
+            {
+                Env.getCurrentEnv();
+                minTimes = 0;
+                result = env;
+                Env.getCurrentInternalCatalog();
+                minTimes = 0;
+                result = catalog;
+                env.getEditLog();
+                minTimes = 0;
+                result = editLog;
+                env.getNextId();
+                minTimes = 0;
+                result = 1000L;
+                catalog.getDbOrMetaException(anyString);
+                minTimes = 0;
+                result = database;
+                catalog.getDbOrMetaException(anyLong);
+                minTimes = 0;
+                result = database;
+                database.getId();
+                minTimes = 0;
+                result = 1L;
+                database.getFullName();
+                minTimes = 0;
+                result = "db";
+                database.getTableOrMetaException(anyLong);
+                minTimes = 0;
+                result = table;
+                table.getName();
+                minTimes = 0;
+                result = "tbl";
+            }
+        };
     }
 
     private void mockCatalog(Env env, InternalCatalog catalog, Database database, Table table) {
