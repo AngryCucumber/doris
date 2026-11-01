@@ -54,6 +54,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class LoadManagerTest {
     private LoadManager loadManager;
@@ -356,6 +357,79 @@ public class LoadManagerTest {
                 times = 1;
             }
         };
+    }
+
+    // run the tasks on the pool threads at the same instant, return when all are done
+    private static void runTogether(ExecutorService pool, List<Runnable> tasks) throws Exception {
+        CountDownLatch ready = new CountDownLatch(tasks.size());
+        AtomicBoolean go = new AtomicBoolean();
+        List<Future<?>> futures = Lists.newArrayList();
+        for (Runnable task : tasks) {
+            futures.add(pool.submit(() -> {
+                ready.countDown();
+                while (!go.get()) {
+                    // spin, so that the tasks start together
+                }
+                task.run();
+            }));
+        }
+        ready.await(5, TimeUnit.SECONDS);
+        go.set(true);
+        for (Future<?> future : futures) {
+            future.get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    public void testJobsAddedTogetherAreAllInTheLabelIndex() throws Exception {
+        // the first insert jobs of a database registered at the same time by 8 sessions, which do not hold the
+        // LoadManager lock: none of them may be lost from the label index (SHOW LOAD reads it)
+        int threads = 8;
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        try {
+            for (int round = 0; round < 300; round++) {
+                LoadManager manager = new LoadManager(new LoadJobScheduler());
+                List<Runnable> tasks = Lists.newArrayList();
+                for (int i = 0; i < threads; i++) {
+                    InsertLoadJob job = new InsertLoadJob(1L, "label_" + i, round * threads + i);
+                    tasks.add(() -> manager.addLoadJob(job));
+                }
+                runTogether(pool, tasks);
+                Map<Long, Map<String, List<LoadJob>>> dbIdToLabelToLoadJobs = Deencapsulation.getField(manager,
+                        "dbIdToLabelToLoadJobs");
+                Assert.assertEquals("round " + round, threads, dbIdToLabelToLoadJobs.get(1L).size());
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    public void testJobAddedWhileCleanerEmptiesTheDatabase() throws Exception {
+        // the cleaner drops the last job of a database, and with it the label map of the database, while a new
+        // insert job of the database is registered: the new job must stay in the label index
+        int oldLabelKeepMaxSecond = Config.label_keep_max_second;
+        Config.label_keep_max_second = 60;
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            for (int round = 0; round < 300; round++) {
+                LoadManager manager = new LoadManager(new LoadJobScheduler());
+                InsertLoadJob abandoned = new InsertLoadJob(1L, "abandoned", 2L * round);
+                Deencapsulation.setField(abandoned, "createTimestamp", System.currentTimeMillis() - 3600 * 1000L);
+                manager.addLoadJob(abandoned);
+                InsertLoadJob added = new InsertLoadJob(1L, "added", 2L * round + 1);
+                runTogether(pool, Lists.newArrayList(manager::removeOldLoadJob, () -> manager.addLoadJob(added)));
+                Map<Long, Map<String, List<LoadJob>>> dbIdToLabelToLoadJobs = Deencapsulation.getField(manager,
+                        "dbIdToLabelToLoadJobs");
+                Assert.assertNotNull("round " + round, dbIdToLabelToLoadJobs.get(1L));
+                Assert.assertEquals("round " + round, Lists.newArrayList(added),
+                        dbIdToLabelToLoadJobs.get(1L).get("added"));
+                Assert.assertNull(dbIdToLabelToLoadJobs.get(1L).get("abandoned"));
+            }
+        } finally {
+            pool.shutdownNow();
+            Config.label_keep_max_second = oldLabelKeepMaxSecond;
+        }
     }
 
     private void mockRecordFinished(Env env, InternalCatalog catalog, Database database, Table table,

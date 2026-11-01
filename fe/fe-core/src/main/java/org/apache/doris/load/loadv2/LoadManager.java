@@ -192,15 +192,16 @@ public class LoadManager implements Writable {
         // Insert label may be null in txn mode, we add txn insert job after success.
         if (loadJob.getLabel() != null) {
             idToLoadJob.put(loadJob.getId(), loadJob);
-            long dbId = loadJob.getDbId();
-            if (!dbIdToLabelToLoadJobs.containsKey(dbId)) {
-                dbIdToLabelToLoadJobs.put(loadJob.getDbId(), new ConcurrentHashMap<>());
-            }
-            Map<String, List<LoadJob>> labelToLoadJobs = dbIdToLabelToLoadJobs.get(dbId);
-            if (!labelToLoadJobs.containsKey(loadJob.getLabel())) {
-                labelToLoadJobs.put(loadJob.getLabel(), new ArrayList<>());
-            }
-            labelToLoadJobs.get(loadJob.getLabel()).add(loadJob);
+            // Insert jobs are added without the LoadManager lock. compute() runs atomically per database, so two jobs
+            // cannot each create the label map of a database (one of them would be lost from the label index and from
+            // SHOW LOAD), and a job is not added to a map that jobRemovedTrigger is dropping.
+            dbIdToLabelToLoadJobs.compute(loadJob.getDbId(), (dbId, labelToLoadJobs) -> {
+                if (labelToLoadJobs == null) {
+                    labelToLoadJobs = new ConcurrentHashMap<>();
+                }
+                labelToLoadJobs.computeIfAbsent(loadJob.getLabel(), label -> new ArrayList<>()).add(loadJob);
+                return labelToLoadJobs;
+            });
         }
     }
 
@@ -498,21 +499,17 @@ public class LoadManager implements Writable {
         if (job instanceof BulkLoadJob) {
             ((BulkLoadJob) job).recycleProgress();
         }
-        Map<String, List<LoadJob>> map = dbIdToLabelToLoadJobs.get(job.getDbId());
-        if (map == null) {
-            return;
-        }
-        List<LoadJob> list = map.get(job.getLabel());
-        if (list == null) {
-            return;
-        }
-        list.remove(job);
-        if (list.isEmpty()) {
-            map.remove(job.getLabel());
-        }
-        if (map.isEmpty()) {
-            dbIdToLabelToLoadJobs.remove(job.getDbId());
-        }
+        // atomically per database, see addLoadJob
+        dbIdToLabelToLoadJobs.computeIfPresent(job.getDbId(), (dbId, labelToLoadJobs) -> {
+            List<LoadJob> jobs = labelToLoadJobs.get(job.getLabel());
+            if (jobs != null) {
+                jobs.remove(job);
+                if (jobs.isEmpty()) {
+                    labelToLoadJobs.remove(job.getLabel());
+                }
+            }
+            return labelToLoadJobs.isEmpty() ? null : labelToLoadJobs;
+        });
     }
 
     private void removeLoadJobIf(Predicate<LoadJob> pred) {
