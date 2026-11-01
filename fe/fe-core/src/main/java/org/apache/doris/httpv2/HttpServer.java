@@ -208,7 +208,7 @@ public class HttpServer extends SpringBootServletInitializer {
         int poolMax = usePool ? this.maxThreads : SPRING_BOOT_DEFAULT_MAX_THREADS;
         // a non-positive value lets Jetty decide by the number of cpu cores and the max thread count
         if (this.acceptors > 0 || this.selectors > 0) {
-            int leased = leasedThreads(this.acceptors, this.selectors, poolMax, cores);
+            long leased = leasedThreads(this.acceptors, this.selectors, poolMax, cores);
             if (leased < poolMax) {
                 if (this.acceptors > 0) {
                     properties.put("server.jetty.threads.acceptors", this.acceptors);
@@ -237,12 +237,14 @@ public class HttpServer extends SpringBootServletInitializer {
      * fails to start unless they are fewer than the max thread count. With https a plain http connector with Jetty's
      * defaults is added as well, see {@link org.apache.doris.httpv2.config.WebServerFactoryCustomizerConfig}.
      */
-    private int leasedThreads(int acceptors, int selectors, int maxThreads, int cores) {
+    private long leasedThreads(int acceptors, int selectors, int maxThreads, int cores) {
         // Jetty's defaults: 1 acceptor, selectors from SelectorManager.defaultSelectors() and reserved threads from
         // ReservedThreadExecutor.reservedThreads()
         int defaultSelectors = Math.max(1, Math.min(cores / 2, maxThreads / 16));
         int reserved = Math.max(1, ceilToPowerOfTwo(Math.min(cores, maxThreads / 8)));
-        int leased = (acceptors > 0 ? acceptors : 1) + (selectors > 0 ? selectors : defaultSelectors) + reserved;
+        // in long, huge values in fe.conf must not overflow to a small sum
+        long leased = (acceptors > 0 ? (long) acceptors : 1L) + (selectors > 0 ? selectors : defaultSelectors)
+                + reserved;
         if (this.enableHttps) {
             leased += 1 + defaultSelectors;
         }

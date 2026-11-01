@@ -112,6 +112,25 @@ public class HttpServerTest {
     }
 
     @Test
+    public void testHugeAcceptorsAndSelectorsDoNotOverflow() {
+        // the sum must not wrap around to a negative number and pass the check: Jetty would allocate arrays of
+        // that size and the FE would exit with OutOfMemoryError
+        int[][] cases = {{Integer.MAX_VALUE, 1}, {1, Integer.MAX_VALUE}, {Integer.MAX_VALUE, Integer.MAX_VALUE},
+                {1 << 30, 1 << 30}};
+        for (int[] c : cases) {
+            ServerProperties.Jetty.Threads threads = bind(newHttpServer(400, 20, c[0], c[1])).getJetty().getThreads();
+            Assert.assertEquals(Integer.valueOf(400), threads.getMax());
+            Assert.assertEquals(Integer.valueOf(-1), threads.getAcceptors());
+            Assert.assertEquals(Integer.valueOf(-1), threads.getSelectors());
+        }
+        // the same with the largest thread pool
+        ServerProperties.Jetty.Threads threads = bind(newHttpServer(Integer.MAX_VALUE, 20, Integer.MAX_VALUE, 1))
+                .getJetty().getThreads();
+        Assert.assertEquals(Integer.valueOf(Integer.MAX_VALUE), threads.getMax());
+        Assert.assertEquals(Integer.valueOf(-1), threads.getAcceptors());
+    }
+
+    @Test
     public void testHttpsConnectorIsCounted() {
         // the https connector holds 2 + 6 threads, the added plain http connector 1 + 1, plus 1 reserved: 11 of 10
         HttpServer https = newHttpServer(10, 5, 2, 6);
