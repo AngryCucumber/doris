@@ -66,10 +66,12 @@ import java.lang.reflect.Method;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
@@ -77,7 +79,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Predicate;
@@ -94,7 +96,8 @@ public class LoadManager implements Writable {
     private static final Logger LOG = LogManager.getLogger(LoadManager.class);
 
     protected Map<Long, LoadJob> idToLoadJob = Maps.newConcurrentMap();
-    protected Map<Long, Map<String, List<LoadJob>>> dbIdToLabelToLoadJobs = Maps.newConcurrentMap();
+    // Insert jobs are added to the label index without the LoadManager lock, see addLoadJob
+    protected Map<Long, Map<String, ConcurrentLinkedQueue<LoadJob>>> dbIdToLabelToLoadJobs = Maps.newConcurrentMap();
     protected LoadJobScheduler loadJobScheduler;
 
     private ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
@@ -196,13 +199,14 @@ public class LoadManager implements Writable {
             idToLoadJob.put(loadJob.getId(), loadJob);
             // Insert jobs are added without the LoadManager lock. compute() runs atomically per database, so two jobs
             // cannot each create the label map of a database (one of them would be lost from the label index and from
-            // SHOW LOAD), and a job is not added to a map that jobRemovedTrigger is dropping. The lists are
-            // copy-on-write: readers holding only the read lock iterate them while jobs are added.
+            // SHOW LOAD), and a job is not added to a map that removeFromLabelIndex is dropping. The jobs of a label
+            // are a concurrent queue: readers holding only the read lock iterate it while jobs are added, and adding
+            // stays O(1) also when a label collects many jobs (e.g. an INSERT retried with the same label).
             dbIdToLabelToLoadJobs.compute(loadJob.getDbId(), (dbId, labelToLoadJobs) -> {
                 if (labelToLoadJobs == null) {
                     labelToLoadJobs = new ConcurrentHashMap<>();
                 }
-                labelToLoadJobs.computeIfAbsent(loadJob.getLabel(), label -> new CopyOnWriteArrayList<>())
+                labelToLoadJobs.computeIfAbsent(loadJob.getLabel(), label -> new ConcurrentLinkedQueue<>())
                         .add(loadJob);
                 return labelToLoadJobs;
             });
@@ -298,7 +302,7 @@ public class LoadManager implements Writable {
         List<LoadJob> unfinishedLoadJob;
         readLock();
         try {
-            Map<String, List<LoadJob>> labelToLoadJobs = dbIdToLabelToLoadJobs.get(db.getId());
+            Map<String, ConcurrentLinkedQueue<LoadJob>> labelToLoadJobs = dbIdToLabelToLoadJobs.get(db.getId());
             if (labelToLoadJobs == null) {
                 throw new DdlException("Load job does not exist");
             }
@@ -375,7 +379,7 @@ public class LoadManager implements Writable {
     public int getLoadJobNum(JobState jobState, long dbId) {
         readLock();
         try {
-            Map<String, List<LoadJob>> labelToLoadJobs = dbIdToLabelToLoadJobs.get(dbId);
+            Map<String, ConcurrentLinkedQueue<LoadJob>> labelToLoadJobs = dbIdToLabelToLoadJobs.get(dbId);
             if (labelToLoadJobs == null) {
                 return 0;
             }
@@ -474,32 +478,75 @@ public class LoadManager implements Writable {
                     .filter(LoadJob::isCompleted)
                     .sorted(Comparator.comparingLong(o -> o.finishTimestamp))
                     .collect(Collectors.toCollection(ArrayDeque::new));
+            List<LoadJob> removedJobs = new ArrayList<>();
             while (!finishedJobs.isEmpty()
                     && idToLoadJob.size() > Config.label_num_threshold) {
                 LoadJob loadJob = finishedJobs.pollFirst();
                 idToLoadJob.remove(loadJob.getId());
-                jobRemovedTrigger(loadJob);
+                removedJobs.add(loadJob);
             }
+            jobsRemoved(removedJobs);
         } finally {
             writeUnlock();
         }
     }
 
-    private void jobRemovedTrigger(LoadJob job) {
-        if (job instanceof BulkLoadJob) {
-            ((BulkLoadJob) job).recycleProgress();
-        }
-        // atomically per database, see addLoadJob
-        dbIdToLabelToLoadJobs.computeIfPresent(job.getDbId(), (dbId, labelToLoadJobs) -> {
-            List<LoadJob> jobs = labelToLoadJobs.get(job.getLabel());
-            if (jobs != null) {
-                jobs.remove(job);
-                if (jobs.isEmpty()) {
-                    labelToLoadJobs.remove(job.getLabel());
-                }
+    private void jobsRemoved(Collection<LoadJob> jobs) {
+        for (LoadJob job : jobs) {
+            if (job instanceof BulkLoadJob) {
+                ((BulkLoadJob) job).recycleProgress();
             }
-            return labelToLoadJobs.isEmpty() ? null : labelToLoadJobs;
-        });
+        }
+        removeFromLabelIndex(jobs);
+    }
+
+    /**
+     * Remove the jobs from the label index with one pass over the jobs of each label: removing them one by one
+     * would scan a label's jobs once per job, which is quadratic for a label with a long history.
+     */
+    private void removeFromLabelIndex(Collection<LoadJob> jobs) {
+        Map<Long, List<LoadJob>> dbIdToRemoved = new HashMap<>();
+        for (LoadJob job : jobs) {
+            dbIdToRemoved.computeIfAbsent(job.getDbId(), dbId -> new ArrayList<>()).add(job);
+        }
+        for (Map.Entry<Long, List<LoadJob>> db : dbIdToRemoved.entrySet()) {
+            List<LoadJob> removedJobs = db.getValue();
+            // atomically per database, see addLoadJob
+            dbIdToLabelToLoadJobs.computeIfPresent(db.getKey(), (dbId, labelToLoadJobs) -> {
+                // the removed jobs still in the index, from the first one that needs a scan of its label on
+                Set<LoadJob> pending = null;
+                for (int i = 0; i < removedJobs.size(); i++) {
+                    LoadJob job = removedJobs.get(i);
+                    if (pending != null && !pending.contains(job)) {
+                        // removed together with an earlier job of its label
+                        continue;
+                    }
+                    ConcurrentLinkedQueue<LoadJob> labelJobs = labelToLoadJobs.get(job.getLabel());
+                    if (labelJobs != null) {
+                        if (labelJobs.peek() == job) {
+                            // the oldest job of its label, e.g. the only one; removals and adds of a database run
+                            // one at a time in compute(), so it is still the head
+                            labelJobs.poll();
+                        } else {
+                            if (pending == null) {
+                                pending = Collections.newSetFromMap(new IdentityHashMap<>(removedJobs.size() - i));
+                                pending.addAll(removedJobs.subList(i, removedJobs.size()));
+                            }
+                            // one pass over the label's jobs removes all of its removed jobs, and takes them out
+                            // of pending (Set.remove() is true for them)
+                            labelJobs.removeIf(pending::remove);
+                        }
+                        if (labelJobs.isEmpty()) {
+                            labelToLoadJobs.remove(job.getLabel());
+                        }
+                    }
+                    if (pending != null) {
+                        pending.remove(job);
+                    }
+                }
+                return labelToLoadJobs.isEmpty() ? null : labelToLoadJobs;
+            });
+        }
     }
 
     private void removeLoadJobIf(Predicate<LoadJob> pred) {
@@ -507,15 +554,17 @@ public class LoadManager implements Writable {
         StopWatch stopWatch = StopWatch.createStarted();
         writeLock();
         try {
+            List<LoadJob> removedJobs = new ArrayList<>();
             Iterator<Map.Entry<Long, LoadJob>> iter = idToLoadJob.entrySet().iterator();
             while (iter.hasNext()) {
                 LoadJob job = iter.next().getValue();
                 if (pred.test(job)) {
                     iter.remove();
-                    jobRemovedTrigger(job);
-                    removeJobNum++;
+                    removedJobs.add(job);
                 }
             }
+            jobsRemoved(removedJobs);
+            removeJobNum = removedJobs.size();
         } finally {
             writeUnlock();
             stopWatch.stop();
@@ -529,9 +578,9 @@ public class LoadManager implements Writable {
         readLock();
         try {
             if (dbIdToLabelToLoadJobs.containsKey(dbId)) {
-                Map<String, List<LoadJob>> labelToLoadJobs = dbIdToLabelToLoadJobs.get(dbId);
+                Map<String, ConcurrentLinkedQueue<LoadJob>> labelToLoadJobs = dbIdToLabelToLoadJobs.get(dbId);
                 if (labelToLoadJobs.containsKey(label)) {
-                    List<LoadJob> labelLoadJobs = labelToLoadJobs.get(label);
+                    Collection<LoadJob> labelLoadJobs = labelToLoadJobs.get(label);
                     for (LoadJob job : labelLoadJobs) {
                         try {
                             Method getOriginStmt = job.getClass().getMethod("getOriginStmt");
@@ -593,7 +642,7 @@ public class LoadManager implements Writable {
 
         readLock();
         try {
-            Map<String, List<LoadJob>> labelToLoadJobs = dbIdToLabelToLoadJobs.get(dbId);
+            Map<String, ConcurrentLinkedQueue<LoadJob>> labelToLoadJobs = dbIdToLabelToLoadJobs.get(dbId);
             if (labelToLoadJobs == null) {
                 // the cleaner removed the last jobs of the database after the check above
                 return loadJobInfos;
@@ -614,7 +663,7 @@ public class LoadManager implements Writable {
                     PatternMatcher matcher =
                             PatternMatcherWrapper.createMysqlPattern(labelValue,
                                     CaseSensibility.LABEL.getCaseSensibility());
-                    for (Map.Entry<String, List<LoadJob>> entry : labelToLoadJobs.entrySet()) {
+                    for (Map.Entry<String, ConcurrentLinkedQueue<LoadJob>> entry : labelToLoadJobs.entrySet()) {
                         if (matcher.match(entry.getKey())) {
                             loadJobList.addAll(entry.getValue());
                         }
@@ -718,9 +767,9 @@ public class LoadManager implements Writable {
      */
     private void checkLabelUsed(long dbId, String label) throws DdlException {
         if (dbIdToLabelToLoadJobs.containsKey(dbId)) {
-            Map<String, List<LoadJob>> labelToLoadJobs = dbIdToLabelToLoadJobs.get(dbId);
+            Map<String, ConcurrentLinkedQueue<LoadJob>> labelToLoadJobs = dbIdToLabelToLoadJobs.get(dbId);
             if (labelToLoadJobs.containsKey(label)) {
-                List<LoadJob> labelLoadJobs = labelToLoadJobs.get(label);
+                Collection<LoadJob> labelLoadJobs = labelToLoadJobs.get(label);
                 Optional<LoadJob> loadJobOptional = labelLoadJobs.stream()
                         .filter(entity -> entity.getState() != JobState.CANCELLED).findFirst();
                 if (loadJobOptional.isPresent()) {
@@ -759,15 +808,19 @@ public class LoadManager implements Writable {
             dbIdToLabelToLoadJobs.computeIfPresent(dbId, (id, labelToJob) -> {
                 if (Strings.isNullOrEmpty(label)) {
                     // clean all labels in this db
-                    for (List<LoadJob> jobs : labelToJob.values()) {
-                        counter.addAndGet(removeCompletedJobs(jobs));
+                    Iterator<ConcurrentLinkedQueue<LoadJob>> iter = labelToJob.values().iterator();
+                    while (iter.hasNext()) {
+                        ConcurrentLinkedQueue<LoadJob> jobs = iter.next();
+                        removeCompletedJobs(jobs, counter);
+                        if (jobs.isEmpty()) {
+                            iter.remove();
+                        }
                     }
-                    labelToJob.values().removeIf(List::isEmpty);
                 } else {
-                    List<LoadJob> jobs = labelToJob.get(label);
+                    ConcurrentLinkedQueue<LoadJob> jobs = labelToJob.get(label);
                     if (jobs != null) {
                         // stream load labelToJob is null
-                        counter.addAndGet(removeCompletedJobs(jobs));
+                        removeCompletedJobs(jobs, counter);
                         if (jobs.isEmpty()) {
                             labelToJob.remove(label);
                         }
@@ -790,29 +843,28 @@ public class LoadManager implements Writable {
                 counter.get(), dbId, label, isReplay);
     }
 
-    // remove the completed jobs of one label from the label index and idToLoadJob, return how many
-    private int removeCompletedJobs(List<LoadJob> jobs) {
-        int removed = 0;
-        // a snapshot, the list is copy-on-write
-        for (LoadJob job : jobs) {
+    // remove the completed jobs of a label from the label index and idToLoadJob in one pass over its jobs, counting
+    // them: removing them one by one would scan the label's jobs once per job
+    private void removeCompletedJobs(ConcurrentLinkedQueue<LoadJob> jobs, AtomicLong counter) {
+        // a job is removed from the queue right when it is chosen here
+        jobs.removeIf(job -> {
             if (!job.isCompleted()) {
-                continue;
+                return false;
             }
             if (job instanceof BulkLoadJob) {
                 ((BulkLoadJob) job).recycleProgress();
             }
-            jobs.remove(job);
             idToLoadJob.remove(job.getId());
-            ++removed;
-        }
-        return removed;
+            counter.incrementAndGet();
+            return true;
+        });
     }
 
     // jobs of all databases the current user may see, for the procs that show all of them; a database dropped while
     // its jobs are still kept is skipped
     private List<LoadJob> getLoadJobsOfVisibleDbs() {
         List<LoadJob> loadJobs = Lists.newArrayList();
-        for (Map.Entry<Long, Map<String, List<LoadJob>>> entry : dbIdToLabelToLoadJobs.entrySet()) {
+        for (Map.Entry<Long, Map<String, ConcurrentLinkedQueue<LoadJob>>> entry : dbIdToLabelToLoadJobs.entrySet()) {
             DatabaseIf db = Env.getCurrentEnv().getCatalogMgr().getDbNullable(entry.getKey());
             if (db == null || !Env.getCurrentEnv().getAccessManager().checkDbPriv(ConnectContext.get(),
                     InternalCatalog.INTERNAL_CATALOG_NAME, db.getFullName(), PrivPredicate.LOAD)) {
@@ -890,16 +942,16 @@ public class LoadManager implements Writable {
                 continue;
             }
             idToLoadJob.put(loadJob.getId(), loadJob);
-            Map<String, List<LoadJob>> map = dbIdToLabelToLoadJobs.get(loadJob.getDbId());
+            Map<String, ConcurrentLinkedQueue<LoadJob>> map = dbIdToLabelToLoadJobs.get(loadJob.getDbId());
             if (map == null) {
                 map = Maps.newConcurrentMap();
                 dbIdToLabelToLoadJobs.put(loadJob.getDbId(), map);
             }
 
-            List<LoadJob> jobs = map.get(loadJob.getLabel());
+            ConcurrentLinkedQueue<LoadJob> jobs = map.get(loadJob.getLabel());
             if (jobs == null) {
-                // copy-on-write like the lists created by addLoadJob
-                jobs = new CopyOnWriteArrayList<>();
+                // like the queues created by addLoadJob
+                jobs = new ConcurrentLinkedQueue<>();
                 map.put(loadJob.getLabel(), jobs);
             }
             jobs.add(loadJob);
