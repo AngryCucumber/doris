@@ -195,20 +195,21 @@ public class LoadManager implements Writable {
         // Insert label may be null in txn mode, we add txn insert job after success.
         if (loadJob.getLabel() != null) {
             // A job that can be found by id is in the queue of its label. Insert jobs are added without the
-            // LoadManager lock, so the job is added to its label first and then by id, both in the compute() of its
-            // database, which runs atomically per database: a cleaner that finds the job by id finds it in its label
-            // as well (removeJobs() takes it out of both before it returns). The jobs of a label are a concurrent
-            // queue: readers holding only the read lock iterate it while jobs are added, and adding stays O(1) also
-            // when a label collects many jobs (e.g. an INSERT retried with the same label).
+            // LoadManager lock, so a job is added to its label first and by id after that, and it leaves its label
+            // only after it left idToLoadJob, taken out of its label by whoever removed it by id (removeJobs(),
+            // removeCompletedJobs()). compute() runs atomically per database, so two jobs cannot each create the
+            // label map of a database, and a job is not added to a label being dropped. The jobs of a label are a
+            // concurrent queue: readers holding only the read lock iterate it while jobs are added, and adding stays
+            // O(1) also when a label collects many jobs (e.g. an INSERT retried with the same label).
             dbIdToLabelToLoadJobs.compute(loadJob.getDbId(), (dbId, labelToLoadJobs) -> {
                 if (labelToLoadJobs == null) {
                     labelToLoadJobs = new ConcurrentHashMap<>();
                 }
                 labelToLoadJobs.computeIfAbsent(loadJob.getLabel(), label -> new ConcurrentLinkedQueue<>())
                         .add(loadJob);
-                idToLoadJob.put(loadJob.getId(), loadJob);
                 return labelToLoadJobs;
             });
+            idToLoadJob.put(loadJob.getId(), loadJob);
         }
     }
 
@@ -476,9 +477,9 @@ public class LoadManager implements Writable {
     }
 
     /**
-     * Remove the jobs, already removed from idToLoadJob, from the label index, for each database in its compute(),
-     * see addLoadJob(). The jobs of a label are scanned once: removing them one by one would scan a label's jobs once
-     * per job, which is quadratic for a label with a long history.
+     * Remove the jobs, already removed from idToLoadJob by the caller, from the label index, for each database in its
+     * compute(), see addLoadJob(). The jobs of a label are scanned once: removing them one by one would scan a label's
+     * jobs once per job, which is quadratic for a label with a long history.
      */
     private void removeJobs(Collection<LoadJob> jobs) {
         Map<Long, List<LoadJob>> dbIdToRemoved = new HashMap<>();
@@ -821,18 +822,19 @@ public class LoadManager implements Writable {
                 counter.get(), dbId, label, isReplay);
     }
 
-    // remove the completed jobs of a label from the label index and idToLoadJob in one pass over its jobs, counting
+    // remove the completed jobs of a label from idToLoadJob and the label index in one pass over its jobs, counting
     // them: removing them one by one would scan the label's jobs once per job
     private void removeCompletedJobs(ConcurrentLinkedQueue<LoadJob> jobs, AtomicLong counter) {
         // a job is removed from the queue right when it is chosen here
         jobs.removeIf(job -> {
-            if (!job.isCompleted()) {
+            // a finished insert job that is not found by id yet is being added (see addLoadJob()): leave it, as if it
+            // was added after the clean, instead of leaving it found by id only
+            if (!job.isCompleted() || !idToLoadJob.remove(job.getId(), job)) {
                 return false;
             }
             if (job instanceof BulkLoadJob) {
                 ((BulkLoadJob) job).recycleProgress();
             }
-            idToLoadJob.remove(job.getId());
             counter.incrementAndGet();
             return true;
         });
