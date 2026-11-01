@@ -1413,15 +1413,19 @@ public class Config extends ConfigBase {
     @ConfField public static boolean enable_metric_calculator = true;
 
     @ConfField(mutable = true, description = {
-            "/metrics 的结果在这个时间（毫秒）内复用，避免多个采集方同时请求时重复计算。0 表示只复用并发请求的结果。",
+            "/metrics 的结果在这个时间（毫秒）内复用，避免多个采集方同时请求时重复计算。"
+                    + "0 表示每次都重新计算；另一个请求正在计算时，仍返回上一次的结果。",
             "The result of /metrics is reused within this time (in milliseconds), so that requests from several "
-                    + "collectors do not compute it again. 0 means only concurrent requests share a result."})
+                    + "collectors do not compute it again. 0 means every request computes it again, except that "
+                    + "the last result is returned while another request is computing."})
     public static long metrics_result_cache_ms = 5000;
 
     @ConfField(mutable = true, description = {
-            "/metrics 请求等待其他请求计算完成的最长时间（毫秒）。超时后返回上一次的结果，没有结果时返回 503。",
+            "还没有任何结果时，/metrics 请求等待其他请求计算完成的最长时间（毫秒），超时返回 503。"
+                    + "已有结果时不等待，直接返回上一次的结果。",
             "The max time in milliseconds a request to /metrics waits for another request that is computing the "
-                    + "metrics. After that the last result is returned, or 503 if there is none."})
+                    + "metrics when there is no result yet, 503 is returned after that. When there is an earlier "
+                    + "result, it is returned at once instead."})
     public static long metrics_lock_wait_ms = 3000;
 
     /**
