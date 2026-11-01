@@ -56,6 +56,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -168,7 +169,7 @@ public class CloudLoadManager extends LoadManager {
 
         readLock();
         try {
-            Map<String, List<LoadJob>> labelToLoadJobs = dbIdToLabelToLoadJobs.get(dbId);
+            Map<String, ConcurrentLinkedQueue<LoadJob>> labelToLoadJobs = dbIdToLabelToLoadJobs.get(dbId);
             if (labelToLoadJobs == null) {
                 // the cleaner removed the last jobs of the database after the check above
                 return loadJobInfos;
@@ -189,7 +190,7 @@ public class CloudLoadManager extends LoadManager {
                     PatternMatcher matcher =
                             PatternMatcherWrapper.createMysqlPattern(labelValue,
                                     CaseSensibility.LABEL.getCaseSensibility());
-                    for (Map.Entry<String, List<LoadJob>> entry : labelToLoadJobs.entrySet()) {
+                    for (Map.Entry<String, ConcurrentLinkedQueue<LoadJob>> entry : labelToLoadJobs.entrySet()) {
                         if (matcher.match(entry.getKey())) {
                             loadJobList.addAll(entry.getValue());
                         }
@@ -328,11 +329,11 @@ public class CloudLoadManager extends LoadManager {
                 // atomically per database, see LoadManager.addLoadJob
                 dbIdToLabelToLoadJobs.computeIfPresent(entry.getKey(), (dbId, labelToJob) -> {
                     for (String label : entry.getValue()) {
-                        List<LoadJob> jobs = labelToJob.get(label);
+                        ConcurrentLinkedQueue<LoadJob> jobs = labelToJob.get(label);
                         if (jobs == null) {
                             continue;
                         }
-                        // a snapshot, the list is copy-on-write and does not support Iterator.remove()
+                        // removing the job the loop is at, from the head of the queue
                         for (LoadJob loadJob : jobs) {
                             CopyJob job = (CopyJob) loadJob;
                             jobs.remove(job);

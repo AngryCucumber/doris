@@ -29,8 +29,8 @@ import mockit.Mocked;
 import org.junit.Assert;
 import org.junit.Test;
 
-import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 public class CloudLoadManagerTest {
 
@@ -59,8 +59,8 @@ public class CloudLoadManagerTest {
             }
             // removes the completed copy jobs of the table beyond the newest 2; the label lists are copy-on-write
             manager.removeOldLoadJob();
-            Map<Long, Map<String, List<LoadJob>>> dbIdToLabelToLoadJobs = Deencapsulation.getField(manager,
-                    "dbIdToLabelToLoadJobs");
+            Map<Long, Map<String, ConcurrentLinkedQueue<LoadJob>>> dbIdToLabelToLoadJobs =
+                    Deencapsulation.getField(manager, "dbIdToLabelToLoadJobs");
             Assert.assertEquals(Sets.newHashSet("copy_2", "copy_3"), dbIdToLabelToLoadJobs.get(1L).keySet());
             Assert.assertNull(manager.getLoadJob(0L));
             Assert.assertNull(manager.getLoadJob(1L));

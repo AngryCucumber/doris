@@ -54,6 +54,7 @@ import java.io.FileOutputStream;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -194,8 +195,8 @@ public class LoadManagerTest {
         Config.label_num_threshold = 1;
         loadManager.removeOverLimitLoadJob();
         Map<Long, LoadJob> idToJobs = Deencapsulation.getField(loadManager, fieldName);
-        Map<Long, Map<String, List<LoadJob>>> dbIdToLabelToLoadJobs = Deencapsulation.getField(loadManager,
-                "dbIdToLabelToLoadJobs");
+        Map<Long, Map<String, ConcurrentLinkedQueue<LoadJob>>> dbIdToLabelToLoadJobs =
+                Deencapsulation.getField(loadManager, "dbIdToLabelToLoadJobs");
         Assert.assertEquals(1, idToJobs.size());
         Assert.assertEquals(1, dbIdToLabelToLoadJobs.size());
         LoadJob loadJob = idToJobs.get(job2.getId());
@@ -236,8 +237,8 @@ public class LoadManagerTest {
             loadManager.removeOldLoadJob();
 
             Map<Long, LoadJob> idToJobs = Deencapsulation.getField(loadManager, fieldName);
-            Map<Long, Map<String, List<LoadJob>>> dbIdToLabelToLoadJobs = Deencapsulation.getField(loadManager,
-                    "dbIdToLabelToLoadJobs");
+            Map<Long, Map<String, ConcurrentLinkedQueue<LoadJob>>> dbIdToLabelToLoadJobs =
+                    Deencapsulation.getField(loadManager, "dbIdToLabelToLoadJobs");
             Assert.assertNull(idToJobs.get(10L));
             Assert.assertNull(dbIdToLabelToLoadJobs.get(1L).get("abandoned"));
             Assert.assertEquals(3, idToJobs.size());
@@ -357,8 +358,8 @@ public class LoadManagerTest {
         LoadJob recorded = loadManager.getLoadJob(1000L);
         Assert.assertNotNull(recorded);
         Assert.assertEquals(JobState.FINISHED, recorded.getState());
-        Map<Long, Map<String, List<LoadJob>>> dbIdToLabelToLoadJobs = Deencapsulation.getField(loadManager,
-                "dbIdToLabelToLoadJobs");
+        Map<Long, Map<String, ConcurrentLinkedQueue<LoadJob>>> dbIdToLabelToLoadJobs =
+                Deencapsulation.getField(loadManager, "dbIdToLabelToLoadJobs");
         Assert.assertEquals(1, dbIdToLabelToLoadJobs.get(1L).get("long_insert").size());
         Assert.assertEquals(1, loadManager.queryLoadJobsByJobIds(Lists.newArrayList(102L, 1000L)).size());
         new Verifications() {
@@ -405,8 +406,8 @@ public class LoadManagerTest {
                     tasks.add(() -> manager.addLoadJob(job));
                 }
                 runTogether(pool, tasks);
-                Map<Long, Map<String, List<LoadJob>>> dbIdToLabelToLoadJobs = Deencapsulation.getField(manager,
-                        "dbIdToLabelToLoadJobs");
+                Map<Long, Map<String, ConcurrentLinkedQueue<LoadJob>>> dbIdToLabelToLoadJobs =
+                        Deencapsulation.getField(manager, "dbIdToLabelToLoadJobs");
                 Assert.assertEquals("round " + round, threads, dbIdToLabelToLoadJobs.get(1L).size());
             }
         } finally {
@@ -429,11 +430,11 @@ public class LoadManagerTest {
                 manager.addLoadJob(abandoned);
                 InsertLoadJob added = new InsertLoadJob(1L, "added", 2L * round + 1);
                 runTogether(pool, Lists.newArrayList(manager::removeOldLoadJob, () -> manager.addLoadJob(added)));
-                Map<Long, Map<String, List<LoadJob>>> dbIdToLabelToLoadJobs = Deencapsulation.getField(manager,
-                        "dbIdToLabelToLoadJobs");
+                Map<Long, Map<String, ConcurrentLinkedQueue<LoadJob>>> dbIdToLabelToLoadJobs =
+                        Deencapsulation.getField(manager, "dbIdToLabelToLoadJobs");
                 Assert.assertNotNull("round " + round, dbIdToLabelToLoadJobs.get(1L));
                 Assert.assertEquals("round " + round, Lists.newArrayList(added),
-                        dbIdToLabelToLoadJobs.get(1L).get("added"));
+                        Lists.newArrayList(dbIdToLabelToLoadJobs.get(1L).get("added")));
                 Assert.assertNull(dbIdToLabelToLoadJobs.get(1L).get("abandoned"));
             }
         } finally {
@@ -491,6 +492,49 @@ public class LoadManagerTest {
     }
 
     @Test
+    public void testRemoveManyJobsOfOneLabel() throws Exception {
+        // a label with a long history, e.g. an INSERT retried many times with the same label: the cleaner removes
+        // the expired jobs of the label in one pass and keeps the others
+        int oldStreamingLabelKeepMaxSecond = Config.streaming_label_keep_max_second;
+        int oldLabelNumThreshold = Config.label_num_threshold;
+        Config.streaming_label_keep_max_second = 3600;
+        try {
+            LoadManager manager = new LoadManager(new LoadJobScheduler());
+            long now = System.currentTimeMillis();
+            for (int i = 0; i < 20000; i++) {
+                InsertLoadJob job = new InsertLoadJob(1L, "retried", i);
+                Deencapsulation.setField(job, "state", JobState.CANCELLED);
+                // even ids finished two hours ago, odd ids just now
+                Deencapsulation.setField(job, "finishTimestamp", i % 2 == 0 ? now - 7200 * 1000L : now + i);
+                manager.addLoadJob(job);
+            }
+            InsertLoadJob running = new InsertLoadJob(1L, "retried", 20000);
+            manager.addLoadJob(running);
+
+            manager.removeOldLoadJob();
+            Map<Long, Map<String, ConcurrentLinkedQueue<LoadJob>>> dbIdToLabelToLoadJobs =
+                    Deencapsulation.getField(manager, "dbIdToLabelToLoadJobs");
+            Assert.assertEquals(10001, dbIdToLabelToLoadJobs.get(1L).get("retried").size());
+            Assert.assertEquals(10000, manager.getLoadJobNum(JobState.CANCELLED, 1L));
+            Assert.assertNull(manager.getLoadJob(0L));
+            Assert.assertNotNull(manager.getLoadJob(1L));
+
+            // the label_num_threshold trim removes the oldest finished jobs, never the running one
+            Config.label_num_threshold = 100;
+            manager.removeOverLimitLoadJob();
+            ConcurrentLinkedQueue<LoadJob> jobs = dbIdToLabelToLoadJobs.get(1L).get("retried");
+            Assert.assertEquals(100, jobs.size());
+            Assert.assertTrue(jobs.contains(running));
+            // 99 finished jobs are left: the newest, ids 19803 to 19999
+            Assert.assertNull(manager.getLoadJob(19801L));
+            Assert.assertNotNull(manager.getLoadJob(19803L));
+        } finally {
+            Config.streaming_label_keep_max_second = oldStreamingLabelKeepMaxSecond;
+            Config.label_num_threshold = oldLabelNumThreshold;
+        }
+    }
+
+    @Test
     public void testCleanLabelWhileJobIsAdded(@Mocked Env env, @Mocked InternalCatalog catalog,
             @Injectable Database database, @Mocked EditLog editLog) throws Exception {
         new Expectations() {
@@ -529,11 +573,11 @@ public class LoadManagerTest {
                         throw new RuntimeException(e);
                     }
                 }, () -> manager.addLoadJob(added)));
-                Map<Long, Map<String, List<LoadJob>>> dbIdToLabelToLoadJobs = Deencapsulation.getField(manager,
-                        "dbIdToLabelToLoadJobs");
+                Map<Long, Map<String, ConcurrentLinkedQueue<LoadJob>>> dbIdToLabelToLoadJobs =
+                        Deencapsulation.getField(manager, "dbIdToLabelToLoadJobs");
                 Assert.assertNotNull("round " + round, dbIdToLabelToLoadJobs.get(1L));
                 Assert.assertEquals("round " + round, Lists.newArrayList(added),
-                        dbIdToLabelToLoadJobs.get(1L).get("label"));
+                        Lists.newArrayList(dbIdToLabelToLoadJobs.get(1L).get("label")));
                 Assert.assertNull(manager.getLoadJob(2L * round));
             }
         } finally {
