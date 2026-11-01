@@ -23,6 +23,7 @@ import org.apache.doris.catalog.Database;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.Table;
 import org.apache.doris.catalog.TableIf;
+import org.apache.doris.common.Config;
 import org.apache.doris.common.MetaNotFoundException;
 import org.apache.doris.load.EtlJobType;
 import org.apache.doris.load.FailMsg;
@@ -48,6 +49,10 @@ public class InsertLoadJob extends LoadJob {
     @SerializedName("tid")
     private long tableId;
 
+    // Set by the label cleaner when it drops the job while it is still PENDING, see dropIfAbandoned(); read and
+    // written under the job's write lock, like the state change in finishUnlessDropped(). Not persisted.
+    private boolean dropped;
+
     // only for log replay
     public InsertLoadJob() {
         super(EtlJobType.INSERT);
@@ -69,6 +74,52 @@ public class InsertLoadJob extends LoadJob {
                          UserIdentity userInfo, Long jobId) throws MetaNotFoundException {
         super(EtlJobType.INSERT, dbId, label, jobId);
         setJobProperties(transactionId, tableId, createTimestamp, failMsg, trackingUrl, firstErrorMsg, userInfo);
+    }
+
+    /**
+     * Mark the job dropped if it stayed PENDING for more than label_keep_max_second: the executor that planned it
+     * never finished it (for example the insert was empty, or beginning the transaction failed). Called by the label
+     * cleaner, which then removes the job. An executor finishing the job at the same time either finishes it first,
+     * and the job is kept, or finds it dropped and records a new job, see LoadManager.recordFinishedLoadJob().
+     */
+    public boolean dropIfAbandoned(long currentTimeMs) {
+        // almost no job is, decide those without the lock: a job only ever leaves PENDING
+        if (!isAbandoned(currentTimeMs)) {
+            return false;
+        }
+        writeLock();
+        try {
+            if (!isAbandoned(currentTimeMs)) {
+                return false;
+            }
+            dropped = true;
+            return true;
+        } finally {
+            writeUnlock();
+        }
+    }
+
+    private boolean isAbandoned(long currentTimeMs) {
+        return state == JobState.PENDING && (currentTimeMs - createTimestamp) / 1000 > Config.label_keep_max_second;
+    }
+
+    /**
+     * Finish the job with these properties, unless the label cleaner dropped it, see dropIfAbandoned().
+     *
+     * @return false if the job was dropped and not changed
+     */
+    public boolean finishUnlessDropped(long transactionId, long tableId, long createTimestamp, String failMsg,
+            String trackingUrl, String firstErrorMsg, UserIdentity userInfo) throws MetaNotFoundException {
+        writeLock();
+        try {
+            if (dropped) {
+                return false;
+            }
+            setJobProperties(transactionId, tableId, createTimestamp, failMsg, trackingUrl, firstErrorMsg, userInfo);
+            return true;
+        } finally {
+            writeUnlock();
+        }
     }
 
     public void setJobProperties(long transactionId, long tableId, long createTimestamp,
