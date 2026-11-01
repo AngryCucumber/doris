@@ -223,23 +223,18 @@ public class LoadManager implements Writable {
         // get db id
         Database db = Env.getCurrentInternalCatalog().getDbOrMetaException(dbName);
 
-        LoadJob loadJob;
-        // The label cleaner drops insert jobs that stayed PENDING too long while holding the write lock, so find and
-        // finish the job under the same lock: either the cleaner has dropped it already and it is created again
-        // below, or it is no longer PENDING when the cleaner looks at it.
-        writeLock();
-        try {
-            loadJob = idToLoadJob.get(jobId);
-            if (loadJob != null && LOG.isDebugEnabled()) {
-                LOG.debug("recordFinishedLoadJob: reuse existing load job, jobId={}, label={}, dbId={}, jobType={}",
-                        jobId, label, db.getId(), jobType);
-            }
-            if (loadJob instanceof InsertLoadJob) {
-                ((InsertLoadJob) loadJob).setJobProperties(transactionId, tableId, createTimestamp,
-                        failMsg, trackingUrl, firstErrorMsg, userInfo);
-            }
-        } finally {
-            writeUnlock();
+        // The label cleaner drops insert jobs that stayed PENDING too long. The job's own lock decides between that
+        // and finishing it here (see InsertLoadJob.dropIfAbandoned), not the LoadManager lock, so finishing an insert
+        // does not wait for SHOW LOAD or a cleaner run over all jobs.
+        LoadJob loadJob = idToLoadJob.get(jobId);
+        if (loadJob != null && LOG.isDebugEnabled()) {
+            LOG.debug("recordFinishedLoadJob: reuse existing load job, jobId={}, label={}, dbId={}, jobType={}",
+                    jobId, label, db.getId(), jobType);
+        }
+        if (loadJob instanceof InsertLoadJob && !((InsertLoadJob) loadJob).finishUnlessDropped(transactionId, tableId,
+                createTimestamp, failMsg, trackingUrl, firstErrorMsg, userInfo)) {
+            // dropped by the cleaner, it is being removed: record a new job
+            loadJob = null;
         }
         if (loadJob == null) {
             // The jobId received here does not exist in idToLoadJob. This means the InsertLoadJob
@@ -254,19 +249,13 @@ public class LoadManager implements Writable {
                     jobId, jobType, label, db.getId());
             switch (jobType) {
                 case INSERT:
-                    // a new job gets a new id, which may write the edit log, so create it outside the lock
                     loadJob = new InsertLoadJob(label, transactionId, db.getId(), tableId, createTimestamp, failMsg,
                             trackingUrl, firstErrorMsg, userInfo);
                     break;
                 default:
                     return;
             }
-            writeLock();
-            try {
-                addLoadJob(loadJob);
-            } finally {
-                writeUnlock();
-            }
+            addLoadJob(loadJob);
         }
         // persistent
         Env.getCurrentEnv().getEditLog().logCreateLoadJob(loadJob);
@@ -472,9 +461,7 @@ public class LoadManager implements Writable {
      * and never journaled. Drop such jobs once they are older than label_keep_max_second.
      */
     private static boolean isAbandonedInsertJob(LoadJob job, long currentTimeMs) {
-        return job instanceof InsertLoadJob
-                && job.getState() == JobState.PENDING
-                && (currentTimeMs - job.getCreateTimestamp()) / 1000 > Config.label_keep_max_second;
+        return job instanceof InsertLoadJob && ((InsertLoadJob) job).dropIfAbandoned(currentTimeMs);
     }
 
     /**

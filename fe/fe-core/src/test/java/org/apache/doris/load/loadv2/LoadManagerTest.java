@@ -335,6 +335,30 @@ public class LoadManagerTest {
     }
 
     @Test
+    public void testFinishingInsertDoesNotWaitForReaders(@Mocked Env env, @Mocked InternalCatalog catalog,
+            @Injectable Database database, @Injectable Table table, @Mocked EditLog editLog) throws Exception {
+        mockRecordFinished(env, catalog, database, table, editLog);
+        loadManager = new LoadManager(new LoadJobScheduler());
+        InsertLoadJob job = new InsertLoadJob(1L, "running", 103L);
+        loadManager.addLoadJob(job);
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        // SHOW LOAD holds the read lock while it builds its rows, over all jobs of a database
+        loadManager.readLock();
+        try {
+            pool.submit(() -> {
+                loadManager.recordFinishedLoadJob("running", 99L, "db", 1L, EtlJobType.INSERT,
+                        System.currentTimeMillis(), "", "", "", userInfo, 103L);
+                return null;
+            }).get(5, TimeUnit.SECONDS);
+        } finally {
+            loadManager.readUnlock();
+            pool.shutdownNow();
+        }
+        Assert.assertEquals(JobState.FINISHED, job.getState());
+        Assert.assertSame(job, loadManager.getLoadJob(103L));
+    }
+
+    @Test
     public void testInsertJobDroppedByCleanerIsRecordedAgain(@Mocked Env env, @Mocked InternalCatalog catalog,
             @Injectable Database database, @Injectable Table table, @Mocked EditLog editLog) throws Exception {
         mockRecordFinished(env, catalog, database, table, editLog);
