@@ -215,9 +215,13 @@ public class LoadManager implements Writable {
         Database db = Env.getCurrentInternalCatalog().getDbOrMetaException(dbName);
 
         LoadJob loadJob;
-        if (idToLoadJob.containsKey(jobId)) {
+        // The label cleaner drops insert jobs that stayed PENDING too long while holding the write lock, so find and
+        // finish the job under the same lock: either the cleaner has dropped it already and it is created again
+        // below, or it is no longer PENDING when the cleaner looks at it.
+        writeLock();
+        try {
             loadJob = idToLoadJob.get(jobId);
-            if (LOG.isDebugEnabled()) {
+            if (loadJob != null && LOG.isDebugEnabled()) {
                 LOG.debug("recordFinishedLoadJob: reuse existing load job, jobId={}, label={}, dbId={}, jobType={}",
                         jobId, label, db.getId(), jobType);
             }
@@ -225,7 +229,10 @@ public class LoadManager implements Writable {
                 ((InsertLoadJob) loadJob).setJobProperties(transactionId, tableId, createTimestamp,
                         failMsg, trackingUrl, firstErrorMsg, userInfo);
             }
-        } else {
+        } finally {
+            writeUnlock();
+        }
+        if (loadJob == null) {
             // The jobId received here does not exist in idToLoadJob. This means the InsertLoadJob
             // that was registered during executor construction (and that accumulated BE-reported
             // load statistics via updateJobProgress) is NOT the one we are about to snapshot here.
@@ -238,13 +245,19 @@ public class LoadManager implements Writable {
                     jobId, jobType, label, db.getId());
             switch (jobType) {
                 case INSERT:
+                    // a new job gets a new id, which may write the edit log, so create it outside the lock
                     loadJob = new InsertLoadJob(label, transactionId, db.getId(), tableId, createTimestamp, failMsg,
                             trackingUrl, firstErrorMsg, userInfo);
                     break;
                 default:
                     return;
             }
-            addLoadJob(loadJob);
+            writeLock();
+            try {
+                addLoadJob(loadJob);
+            } finally {
+                writeUnlock();
+            }
         }
         // persistent
         Env.getCurrentEnv().getEditLog().logCreateLoadJob(loadJob);
@@ -702,8 +715,10 @@ public class LoadManager implements Writable {
         }
         List<LoadJob> jobs = new ArrayList<>();
         jobIds.forEach(id -> {
-            if (null != idToLoadJob.get(id)) {
-                jobs.add(idToLoadJob.get(id));
+            // look up once, the label cleaner may remove the job in between
+            LoadJob job = idToLoadJob.get(id);
+            if (job != null) {
+                jobs.add(job);
             }
         });
         return jobs;
