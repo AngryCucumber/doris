@@ -750,6 +750,58 @@ public class LoadManagerTest {
     }
 
     @Test
+    public void testCleanLabelWhileFinishedJobIsBeingAdded(@Mocked Env env) throws Exception {
+        // A finished insert job is recorded again (see recordFinishedLoadJob) while CLEAN LABEL cleans its label. The
+        // add is held right before the job becomes visible by id, or right after. CLEAN LABEL must not wait for the
+        // add, and must not leave the job found by id only: before, it leaves the job, after, it removes it.
+        for (boolean holdAfterPut : new boolean[] {false, true}) {
+            ExecutorService pool = Executors.newFixedThreadPool(2);
+            CountDownLatch held = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            try {
+                LoadManager manager = new LoadManager(new LoadJobScheduler());
+                Map<Long, LoadJob> idToLoadJob = new ConcurrentHashMap<Long, LoadJob>() {
+                    @Override
+                    public LoadJob put(Long id, LoadJob job) {
+                        if (!holdAfterPut) {
+                            hold();
+                        }
+                        LoadJob old = super.put(id, job);
+                        if (holdAfterPut) {
+                            hold();
+                        }
+                        return old;
+                    }
+
+                    private void hold() {
+                        held.countDown();
+                        try {
+                            release.await(5, TimeUnit.SECONDS);
+                        } catch (InterruptedException e) {
+                            throw new RuntimeException(e);
+                        }
+                    }
+                };
+                Deencapsulation.setField(manager, "idToLoadJob", idToLoadJob);
+                InsertLoadJob job = new InsertLoadJob(1L, "label", 7L);
+                Deencapsulation.setField(job, "state", JobState.FINISHED);
+                Future<?> add = pool.submit(() -> manager.addLoadJob(job));
+                Assert.assertTrue(held.await(5, TimeUnit.SECONDS));
+                pool.submit(() -> manager.replayCleanLabel(new CleanLabelOperationLog(1L, "label")))
+                        .get(5, TimeUnit.SECONDS);
+                release.countDown();
+                add.get(5, TimeUnit.SECONDS);
+                String context = "held " + (holdAfterPut ? "after" : "before") + " the put";
+                assertIndexesConsistent(manager, context);
+                Assert.assertEquals(context, holdAfterPut ? null : job, manager.getLoadJob(7L));
+            } finally {
+                release.countDown();
+                pool.shutdownNow();
+            }
+        }
+    }
+
+    @Test
     public void testIndexesStayConsistentUnderConcurrentChanges(@Mocked Env env, @Mocked InternalCatalog catalog,
             @Injectable Database database, @Injectable Table table, @Mocked EditLog editLog) throws Exception {
         // every way the two indexes change, at the same time: registering pending insert jobs, finishing them or
