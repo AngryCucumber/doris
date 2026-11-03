@@ -404,6 +404,32 @@ while the FE kept serving queries. Cloud mode runtime was not exercised.
 - Add `WalTableReplayIntervalTest` to `wal_manager_test.cpp` and
   `master.massdb.MasterImplClearTransactionTaskTest`.
 
+## Group commit WALs whose blocks disagree on a column type (2026-11-03)
+
+- WALs from a 4.1.0 environment hold blocks that disagree on a column's type:
+  an all-NULL IPV6 block before INT blocks, a VARCHAR block before DOUBLE
+  blocks. 4.1.0 and 4.0.5 fail every replay of such a WAL with a Bad cast. 2.1.5
+  reads WALs with the FileScannerV2 reader, which took the file schema and the
+  file-to-table cast from the first block only: a later block went through a
+  cast for another type, and a string block before numeric or date blocks
+  crashed the BE (SIGSEGV) on every start.
+- `format_v2::wal::WalReader` declares the table type for a scalar column whose
+  first block differs from it (the WAL's column ids are the table's) and keeps
+  the first block's schema otherwise; ARRAY, MAP, STRUCT and VARIANT columns keep
+  their block metadata. Every block's column whose type differs from the
+  declared one, up to nullability, is converted before it is handed on.
+- `convert_wal_column` (in the legacy `load/group_commit/wal/wal_reader`, which
+  `enable_file_scanner_v2 = false` uses and which converts the same way) turns
+  an all-NULL column into NULLs of the target type, which is also the only way
+  for a type no CAST accepts, and casts any other column with the CAST function
+  and the strictness the file scan uses for its file-to-table cast. A failed cast
+  fails the replay with the WAL, block, column and both types named; it never
+  writes NULLs in place of values, and it is an INTERNAL_ERROR, not a
+  DATA_QUALITY_ERROR, for which `WalTable` would delete the WAL with the rows
+  of its other blocks: the WAL is kept and retried. Blocks whose types agree are
+  handed on as before, without a copy.
+- Add mixed-type cases to `format_v2/wal/wal_reader_test.cpp`.
+
 ## Complete rc02 release builds (2026-09-09)
 
 - `build-for-release.sh`: explicitly select FE, BE, Cloud/MS, Broker and Hive UDF

@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #pragma once
 
@@ -54,9 +55,13 @@ private:
     Status _ensure_schema_loaded() const;
     Status _validate_block_version(const PBlock& pblock) const;
     Status _init_schema_from_block(const PBlock* pblock) const;
-    Status _materialize_requested_columns(Block* source_block, Block* file_block) const;
+    // Moves the requested columns of a block into the file block, converting a column whose type
+    // differs from the file schema type (block_index is for error messages).
+    Status _materialize_requested_columns(Block* source_block, Block* file_block,
+                                          int64_t block_index) const;
 
     const std::vector<ColumnDefinition> _projected_columns;
+    RuntimeState* _state = nullptr;
     std::shared_ptr<doris::WalFileReader> _wal_reader;
     std::string _wal_path;
     uint32_t _version = 0;
@@ -67,6 +72,8 @@ private:
     mutable bool _first_block_consumed = false;
     mutable bool _schema_inited = false;
     bool _reader_eof = false;
+    // ordinal of the next block, for error messages
+    int64_t _block_index = 0;
 };
 
 } // namespace doris::format::wal

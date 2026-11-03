@@ -113,6 +113,15 @@ A failed replay now aborts its transaction at once instead of leaving it open un
 the next attempt. Reports of clear transaction tasks are no longer logged as
 warnings in fe.warn.log.
 
+Group commit WAL replay: a WAL whose blocks disagree on a column's type, such as WALs
+written by 4.1.0 with a VARCHAR block before DOUBLE blocks or an all-NULL IPV6 block
+before INT blocks, is replayed with every block converted to the table column's type.
+Before, a string block before numeric or date blocks crashed the BE on every start, and
+other combinations failed every replay. A block that cannot be converted fails the
+replay with the block, the column and both types in the error, and the WAL is kept for
+the operator to set aside or repair. Before upgrading a BE
+that holds WALs from an older version, check its WAL directory for such files.
+
 rc415 更新：源码基线升级至 Apache Doris 4.1.5-release；保留 MassDB 品牌、
 JDBC 数组精度、报告去重与并行处理、存储介质缓存、compaction 防护、
 Group Commit 超时与元数据工具初始化修复。已有上游修复使用 4.1.5 的实现。
@@ -135,4 +144,9 @@ Group Commit WAL 重放：一直无法重放的 WAL 始终按 group_commit_repla
 （默认 1800 秒）重试。此前整数溢出使其在 BE 登记约 25 天后变为每 5 秒重放一次，每次都让 FE
 向所有 BE 发送清理事务任务。重放失败时立即中止本次事务，不再留到下一次重放时才中止。
 清理事务任务的回报不再以 WARN 写入 fe.warn.log。
+Group Commit WAL 重放：同一个 WAL 中各块的列类型不一致时（如 4.1.0 写出的、字符串块在前 DOUBLE
+块在后，或全空的 IPV6 块在前 INT 块在后），重放时把每一块转换为表列的类型。此前字符串块在前、
+数值或日期块在后的 WAL 会使 BE 每次启动都崩溃，其他组合每次重放都失败。无法转换的块使重放失败，
+报错中写明块序号、列和两种类型，WAL 保留，由运维隔离或修复。升级仍留有旧版本 WAL 的 BE 之前，
+请检查其 WAL 目录。
 历史二进制审查记录仅适用于原审查包，不代表 rc415 已完成构建或验证。

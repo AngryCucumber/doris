@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #include "format_v2/wal/wal_reader.h"
 
@@ -33,6 +34,7 @@
 #include "format_v2/materialized_reader_util.h"
 #include "load/group_commit/wal/wal_file_reader.h"
 #include "load/group_commit/wal/wal_manager.h"
+#include "load/group_commit/wal/wal_reader.h"
 #include "runtime/exec_env.h"
 #include "runtime/runtime_state.h"
 
@@ -80,6 +82,18 @@ ColumnDefinition build_wal_column_definition(const PColumnMeta& meta, int32_t lo
     return field;
 }
 
+bool is_nested_or_variant(const DataTypePtr& type) {
+    switch (remove_nullable(type)->get_primitive_type()) {
+    case TYPE_ARRAY:
+    case TYPE_MAP:
+    case TYPE_STRUCT:
+    case TYPE_VARIANT:
+        return true;
+    default:
+        return false;
+    }
+}
+
 } // namespace
 
 Status parse_wal_column_ids(const std::string& encoded, std::vector<int32_t>* column_ids) {
@@ -119,6 +133,7 @@ Status WalReader::init(RuntimeState* state) {
         state->exec_env()->wal_mgr() == nullptr) {
         return Status::InvalidArgument("WAL v2 reader requires a runtime WAL manager");
     }
+    _state = state;
     RETURN_IF_ERROR(state->exec_env()->wal_mgr()->get_wal_path(state->wal_id(), _wal_path));
     _wal_reader = std::make_shared<doris::WalFileReader>(_wal_path);
     RETURN_IF_ERROR(_wal_reader->init());
@@ -149,6 +164,7 @@ Status WalReader::open(std::shared_ptr<FileScanRequest> request) {
     RETURN_IF_ERROR(FileReader::open(std::move(request)));
     _first_block_consumed = false;
     _eof = false;
+    _block_index = 0;
     return Status::OK();
 }
 
@@ -186,6 +202,7 @@ Status WalReader::get_block(Block* file_block, size_t* rows, bool* eof) {
         RETURN_IF_ERROR(status);
     }
     RETURN_IF_ERROR(_validate_block_version(pblock));
+    const int64_t block_index = _block_index++;
 
     Block source_block;
     size_t uncompressed_size = 0;
@@ -195,7 +212,7 @@ Status WalReader::get_block(Block* file_block, size_t* rows, bool* eof) {
         return Status::Corruption("WAL block has {} columns but header declares {}",
                                   source_block.columns(), _column_ids.size());
     }
-    RETURN_IF_ERROR(_materialize_requested_columns(&source_block, file_block));
+    RETURN_IF_ERROR(_materialize_requested_columns(&source_block, file_block, block_index));
     *rows = file_block->rows();
     _record_scan_rows(cast_set<int64_t>(*rows));
     RETURN_IF_ERROR(
@@ -259,6 +276,20 @@ Status WalReader::_init_schema_from_block(const PBlock* pblock) const {
             // mapper can validate ARRAY/MAP/STRUCT projections instead of seeing an empty shell.
             field = build_wal_column_definition(meta, cast_set<int32_t>(idx));
             field.identifier = Field::create_field<TYPE_INT>(_column_ids[idx]);
+            // The blocks of one WAL can disagree on a scalar column's type, so the first block does
+            // not describe the file; the WAL's column ids are the table's, and every block is
+            // converted to that table type (_materialize_requested_columns). Only when the first
+            // block differs from it: otherwise the schema stays exactly the first block's.
+            const auto projected =
+                    std::ranges::find_if(_projected_columns, [&](const auto& candidate) {
+                        return candidate.has_identifier_field_id() &&
+                               candidate.get_identifier_field_id() == _column_ids[idx];
+                    });
+            if (projected != _projected_columns.end() && !is_nested_or_variant(field.type) &&
+                !is_nested_or_variant(projected->type) &&
+                !wal_column_type_matches(field.type, projected->type)) {
+                field.type = make_nullable(projected->type);
+            }
         } else {
             const auto projected =
                     std::ranges::find_if(_projected_columns, [&](const auto& candidate) {
@@ -277,7 +308,8 @@ Status WalReader::_init_schema_from_block(const PBlock* pblock) const {
     return Status::OK();
 }
 
-Status WalReader::_materialize_requested_columns(Block* source_block, Block* file_block) const {
+Status WalReader::_materialize_requested_columns(Block* source_block, Block* file_block,
+                                                 int64_t block_index) const {
     DORIS_CHECK(source_block != nullptr);
     for (const auto& [file_column_id, block_position] : _request->local_positions) {
         const auto source_idx = file_column_id.value();
@@ -289,9 +321,27 @@ Status WalReader::_materialize_requested_columns(Block* source_block, Block* fil
                                          block_position.value());
         }
         const auto& target = file_block->get_by_position(block_position.value());
+        auto& source = source_block->get_by_position(source_idx);
         // Deserialized WAL columns have a single owner. Move that ownership into the output block
         // before mutate() so wide payloads do not trigger copy-on-write deep clones.
-        auto column = std::move(source_block->get_by_position(source_idx).column);
+        auto column = std::move(source.column);
+        if (!wal_column_type_matches(source.type, target.type)) {
+            // A block whose column type differs from the file schema: the mapper's cast for the
+            // file schema type must not read it (a string cast reading a DOUBLE column crashes)
+            ColumnPtr converted;
+            auto st = convert_wal_column(_state, {std::move(column), source.type, source.name},
+                                         target.type, &converted);
+            if (!st.ok()) {
+                // not DATA_QUALITY_ERROR: WalTable deletes a WAL that fails with it, and the other
+                // blocks hold rows that can be loaded; the WAL is kept and retried
+                return Status::InternalError(
+                        "WAL {} block {} column {} (unique id {}) has type {}, the file schema "
+                        "type is {}: {}",
+                        _wal_path, block_index, source.name, _column_ids[source_idx],
+                        source.type->get_name(), target.type->get_name(), st.to_string_no_stack());
+            }
+            column = std::move(converted);
+        }
         column = make_column_nullable_if_needed(std::move(column), target.type);
         file_block->replace_by_position(block_position.value(), IColumn::mutate(std::move(column)));
     }
