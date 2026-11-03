@@ -38,12 +38,18 @@ cryptography==50.0.2 \
     --hash=sha256:79def8d059362e7831389ed3be0ecdf58a89386e1271e35dd9f5af84e81bffd0
 dnspython==2.9.1 \
     --hash=sha256:7c81caf8de1ed57b8cfc7e0ad4f528a0b8ceace473c7eb946df195dc9def751f
+docopt==0.6.2 \
+    --hash=sha256:bc9e5f1cba0d05616c7e1159dda520fc11f3ffa6d0e6daaffd9964e6d77a5d26
 duckdb==1.2.2 \
     --hash=sha256:6aba3bc0acf4f8d52b94f7746c3b0007b78b517676d482dc516d63f48f967baf
+efficient-apriori==2.0.6 \
+    --hash=sha256:dad484bb1fb55966a4890f2dc8c7f51515ad3638b64b01580744435c1d46181b
 email-validator==2.3.0 \
     --hash=sha256:80f13f623413e6b197ae73bb10bf4eb0908faf509ad8362c5edeb0be7fd450b4
 emoji==2.16.0 \
     --hash=sha256:c4230d80640def9071599ff56b1b5950fe13a2a94c0da98c5deab12431b24330
+extratools==0.8.2.1 \
+    --hash=sha256:7dc703450c408d3649589fe35de763b01f8205febfb9f45395ddfe3e4dacad20
 filelock==4.2.4 \
     --hash=sha256:301241438c57936ef93f4243a94f2559022268bfcf9b375a9a72eb0f8db8358e
 frozenlist==1.8.0 \
@@ -112,6 +118,8 @@ polars==2.1.0 \
     --hash=sha256:63c50ce3533f5a03d17c3a2a24f1d0e0c7eda98fbde4268a3cba900d34060e67
 polars-runtime-32==2.1.0 \
     --hash=sha256:777228cc8bf9cda36dee85ba74d13a25974ad4caffc5da93e10b1da9d810ce2d
+prefixspan==0.5.2 \
+    --hash=sha256:30dcce32e93c7524358844c1799b8caaed5c33c67454c8cf558c09850990b72a
 propcache==0.5.4 \
     --hash=sha256:60a64cbccaa11b7760ce705a14ada17ba459e7ca9f23ba587eb013821032d7ef
 protobuf==7.36.2 \
@@ -156,6 +164,8 @@ rpds-py==2026.9.1 \
     --hash=sha256:2693b2728bbcc48d09a981a356954b0c47c53ff25b545856f28a889ea619f69a
 scikit-learn==1.7.0 \
     --hash=sha256:63017a5f9a74963d24aac7590287149a8d0f1a0799bbe7173c0d8ba1523293c0
+scikit-surprise==1.1.5 \
+    --hash=sha256:73f7fa6cc30f257e13e110b23379fa77ab50078cc49efc4cb9eb95ac87441433
 scipy==1.16.3 \
     --hash=sha256:0553371015692a898e1aa858fed67a3576c34edefa6b7ebdb4e9dde49ce5c203
 shapely==2.1.2 \
@@ -164,6 +174,8 @@ simplejson==4.2.0 \
     --hash=sha256:e8910997afb7bae918b1ccf766e106e37707c8f8b4c61ac6ce433c4c86c5848f
 six==1.17.0 \
     --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
+sortedcontainers==2.4.0 \
+    --hash=sha256:a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0
 soupsieve==3.0.4 \
     --hash=sha256:8412826614f9c632227067d0985aeb9f584bd15efc852955430e097a9fe7afbf
 statsmodels==0.14.6 \

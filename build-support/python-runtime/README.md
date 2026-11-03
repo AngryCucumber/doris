@@ -30,7 +30,7 @@ numpy 2.2、scipy 1.16、scikit-learn 1.7。pyarrow 20 和 BE 的 Arrow 24 之�
 |---|---|
 | core | `python_server.py` 必需的包：numpy、pandas、pyarrow |
 | common | 文本、时间、哈希、地理：jieba、pypinyin、rapidfuzz、regex、dateutil、pytz、tzdata、orjson、PyYAML、xxhash、mmh3、cryptography、phonenumbers、shapely、pyproj、h3 等 |
-| analytics | scipy、scikit-learn、statsmodels，pandas 加速包 numexpr、bottleneck，networkx、sympy，模型推理 xgboost、lightgbm |
+| analytics | scipy、scikit-learn、statsmodels，pandas 加速包 numexpr、bottleneck，networkx、sympy，模型推理 xgboost、lightgbm，关联规则 efficient-apriori，序列模式 prefixspan（依赖 extratools、docopt、sortedcontainers），评分推荐 scikit-surprise |
 | extended | 内网 HTTP（requests）、HTML/XML（beautifulsoup4、lxml）、中文（OpenCC 繁简转换、cnlunar 农历、chinesecalendar 节假日）、langdetect、emoji、anyascii、序列化（msgpack、ujson、simplejson、protobuf）、国密 SM2/SM4（gmssl）和 pycryptodome、bcrypt、PyJWT、地理/IP/UA（geopy、pygeohash、ua-parser、user-agents、tldextract、netaddr、maxminddb、geoip2）、校验（pydantic、jsonschema、email-validator）和小工具 |
 | engines | 嵌入式引擎 polars、duckdb，体积最大，不需要时可以去掉 |
 
@@ -42,6 +42,9 @@ numpy 2.2、scipy 1.16、scikit-learn 1.7。pyarrow 20 和 BE 的 Arrow 24 之�
 - 没有收录的包：
   - GPL 许可的 Unidecode、zhdate、lunardate，分别用 anyascii、cnlunar 代替。
   - onnxruntime 没有 glibc 2.17 的 wheel。
+  - gensim（Word2Vec）的 aarch64 wheel 标的是 glibc 2.24，其中 3 个模块还要 GLIBCXX_3.4.21；implicit（隐式反馈 ALS）
+    的 wheel 虽然标为 manylinux2014，但 bpr、lmf 模块实际要 GLIBC_2.27；myfm 等因子分解机包也没有 glibc 2.17 的 wheel。
+    需要这几种算法时，可以在 UDAF 里用 numpy/scipy 实现。
   - python-geohash 没有 wheel，用 pygeohash 代替。
   - catboost 单个 wheel 就有 92 MB，需要时再单独加。
 
@@ -88,6 +91,8 @@ python3 build-support/python-runtime/check-python-runtime.py <构建目录>/mass
 
 升级依赖或修改 `python-runtime.json` 的分层后，要重新执行 `resolve`（不带 `--lock`），把新的 `requirements.lock`
 复制到 `locks/requirements-<架构>.lock` 后一起提交。单元测试会检查已提交的 lock 和配置是否一致。
+如果只是新增包、不想顺带升级已锁定的包，resolve 时加上 `--keep-versions locks/requirements-<架构>.lock`：
+已有包沿用 lock 里的版本，只解析新增的包。
 
 ## 安装到 BE
 

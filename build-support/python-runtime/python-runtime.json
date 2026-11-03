@@ -46,10 +46,11 @@
         },
         {
             "name": "analytics",
-            "purpose": "Statistics, pandas accelerators and model inference inside UDAF/UDWF.",
+            "purpose": "Statistics, pandas accelerators, machine learning and model inference inside UDAF/UDWF; association rules (efficient-apriori), sequential patterns (prefixspan, with its sdist-only dependencies extratools and docopt) and rating-based recommendation (scikit-surprise).",
             "requirements": [
                 "scipy", "scikit-learn", "statsmodels", "numexpr", "bottleneck", "networkx", "sympy", "xgboost",
-                "lightgbm"
+                "lightgbm", "efficient-apriori", "prefixspan==0.5.2", "extratools==0.8.2.1", "docopt==0.6.2",
+                "scikit-surprise"
             ]
         },
         {
@@ -70,7 +71,7 @@
         }
     ],
     "defaultLayers": ["core", "common", "analytics", "extended", "engines"],
-    "pureSdists": ["jieba==0.42.1", "langdetect==1.0.9"],
+    "pureSdists": ["jieba==0.42.1", "langdetect==1.0.9", "prefixspan==0.5.2", "extratools==0.8.2.1", "docopt==0.6.2"],
     "requiredImports": ["numpy", "pandas", "pyarrow", "pyarrow.flight", "pip"],
     "importSkip": {
         "adbc_driver_duckdb": "duckdb's ADBC driver shim needs the optional adbc-driver-manager package; UDFs use the duckdb module"

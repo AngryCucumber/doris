@@ -347,6 +347,12 @@ while the FE kept serving queries. Cloud mode runtime was not exercised.
   (`engines`). GPL packages and those without glibc 2.17 wheels are left out.
   Upstream license texts are fetched by sha256 for wheels that ship none, and
   the check lists the symbol versions each operating-system library must provide.
+- Add association rules (efficient-apriori), sequential patterns (prefixspan,
+  with its sdist-only dependencies extratools and docopt) and rating-based
+  recommendation (scikit-surprise) to `analytics`. gensim, implicit and the
+  factorization-machine packages are left out because their aarch64 wheels need
+  a newer glibc or libstdc++ than 2.17 provides. `resolve --keep-versions <lock>`
+  keeps every version the lock pins and resolves only new packages.
 - Bundle the runtime in release packages: `build-for-release.sh` runs
   `build-python-runtime.py release`, which fetches exactly the committed
   `locks/requirements-<arch>.lock`, builds, checks against the packaged
