@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.load.loadv2;
 
@@ -23,13 +24,27 @@ import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.Table;
 import org.apache.doris.common.Config;
 import org.apache.doris.common.FeMetaVersion;
+import org.apache.doris.common.MetaNotFoundException;
+import org.apache.doris.common.Pair;
 import org.apache.doris.common.jmockit.Deencapsulation;
+import org.apache.doris.datasource.CatalogMgr;
 import org.apache.doris.datasource.InternalCatalog;
+import org.apache.doris.load.EtlJobType;
 import org.apache.doris.meta.MetaContext;
+import org.apache.doris.mysql.privilege.AccessControllerManager;
+import org.apache.doris.mysql.privilege.PrivPredicate;
+import org.apache.doris.persist.CleanLabelOperationLog;
+import org.apache.doris.persist.EditLog;
+import org.apache.doris.qe.ConnectContext;
 
+import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
+import com.google.common.collect.Sets;
+import mockit.Delegate;
 import mockit.Expectations;
 import mockit.Injectable;
 import mockit.Mocked;
+import mockit.Verifications;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -40,8 +55,20 @@ import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class LoadManagerTest {
     private LoadManager loadManager;
@@ -176,13 +203,770 @@ public class LoadManagerTest {
         Config.label_num_threshold = 1;
         loadManager.removeOverLimitLoadJob();
         Map<Long, LoadJob> idToJobs = Deencapsulation.getField(loadManager, fieldName);
-        Map<Long, Map<String, List<LoadJob>>> dbIdToLabelToLoadJobs = Deencapsulation.getField(loadManager,
-                "dbIdToLabelToLoadJobs");
+        Map<Long, Map<String, ConcurrentLinkedQueue<LoadJob>>> dbIdToLabelToLoadJobs =
+                Deencapsulation.getField(loadManager, "dbIdToLabelToLoadJobs");
         Assert.assertEquals(1, idToJobs.size());
         Assert.assertEquals(1, dbIdToLabelToLoadJobs.size());
         LoadJob loadJob = idToJobs.get(job2.getId());
         Assert.assertEquals("job2", loadJob.getLabel());
         Assert.assertNotNull(dbIdToLabelToLoadJobs.get(1L).get("job2"));
+    }
+
+    @Test
+    public void testRemoveAbandonedPendingInsertJob(@Mocked Env env, @Mocked InternalCatalog catalog,
+            @Injectable Database database, @Injectable Table table) throws Exception {
+        mockCatalog(env, catalog, database, table);
+        int oldLabelKeepMaxSecond = Config.label_keep_max_second;
+        int oldStreamingLabelKeepMaxSecond = Config.streaming_label_keep_max_second;
+        Config.label_keep_max_second = 3600;
+        Config.streaming_label_keep_max_second = 3600;
+        try {
+            long now = System.currentTimeMillis();
+            long beforeKeepTime = now - (Config.label_keep_max_second + 60) * 1000L;
+            loadManager = new LoadManager(new LoadJobScheduler());
+
+            // registered when planned, never finished, older than label_keep_max_second
+            LoadJob abandoned = new InsertLoadJob(1L, "abandoned", 10L);
+            Deencapsulation.setField(abandoned, "createTimestamp", beforeKeepTime);
+            // registered when planned and still running
+            LoadJob running = new InsertLoadJob(1L, "running", 11L);
+            // finished recently, although created long ago
+            LoadJob finished = new InsertLoadJob("finished", 1L, 1L, 1L, beforeKeepTime, "", "", "", userInfo, 12L);
+            // other job types are not touched even if they stay PENDING
+            LoadJob broker = new BrokerLoadJob();
+            Deencapsulation.setField(broker, "id", 13L);
+            Deencapsulation.setField(broker, "dbId", 1L);
+            Deencapsulation.setField(broker, "label", "broker");
+            Deencapsulation.setField(broker, "createTimestamp", beforeKeepTime);
+            for (LoadJob job : new LoadJob[] {abandoned, running, finished, broker}) {
+                loadManager.addLoadJob(job);
+            }
+
+            loadManager.removeOldLoadJob();
+
+            Map<Long, LoadJob> idToJobs = Deencapsulation.getField(loadManager, fieldName);
+            Map<Long, Map<String, ConcurrentLinkedQueue<LoadJob>>> dbIdToLabelToLoadJobs =
+                    Deencapsulation.getField(loadManager, "dbIdToLabelToLoadJobs");
+            Assert.assertNull(idToJobs.get(10L));
+            Assert.assertNull(dbIdToLabelToLoadJobs.get(1L).get("abandoned"));
+            Assert.assertEquals(3, idToJobs.size());
+            Assert.assertNotNull(idToJobs.get(11L));
+            Assert.assertNotNull(idToJobs.get(12L));
+            Assert.assertNotNull(idToJobs.get(13L));
+        } finally {
+            Config.label_keep_max_second = oldLabelKeepMaxSecond;
+            Config.streaming_label_keep_max_second = oldStreamingLabelKeepMaxSecond;
+        }
+    }
+
+    @Test
+    public void testGetLoadJobNum(@Mocked Env env, @Mocked InternalCatalog catalog,
+            @Injectable Database database, @Injectable Table table) throws Exception {
+        mockCatalog(env, catalog, database, table);
+        loadManager = new LoadManager(new LoadJobScheduler());
+        Assert.assertTrue(loadManager.getLoadJobNum().isEmpty());
+
+        loadManager.addLoadJob(new InsertLoadJob(1L, "pending1", 1L));
+        loadManager.addLoadJob(new InsertLoadJob(1L, "pending2", 2L));
+        loadManager.addLoadJob(new InsertLoadJob("finished", 1L, 1L, 1L, System.currentTimeMillis(), "", "", "",
+                userInfo, 3L));
+        loadManager.addLoadJob(new InsertLoadJob("cancelled", 1L, 1L, 1L, System.currentTimeMillis(), "failed",
+                "", "", userInfo, 4L));
+        LoadJob broker = new BrokerLoadJob();
+        Deencapsulation.setField(broker, "id", 5L);
+        Deencapsulation.setField(broker, "label", "broker");
+        loadManager.addLoadJob(broker);
+
+        Map<Pair<EtlJobType, JobState>, Long> expected = Maps.newHashMap();
+        expected.put(Pair.of(EtlJobType.INSERT, JobState.PENDING), 2L);
+        expected.put(Pair.of(EtlJobType.INSERT, JobState.FINISHED), 1L);
+        expected.put(Pair.of(EtlJobType.INSERT, JobState.CANCELLED), 1L);
+        expected.put(Pair.of(EtlJobType.BROKER, JobState.PENDING), 1L);
+        Assert.assertEquals(expected, loadManager.getLoadJobNum());
+    }
+
+    @Test
+    public void testCleanerKeepsInsertJobBeingFinished(@Mocked Env env, @Mocked InternalCatalog catalog,
+            @Injectable Database database, @Injectable Table table, @Mocked EditLog editLog) throws Exception {
+        mockRecordFinished(env, catalog, database, table, editLog);
+        loadManager = new LoadManager(new LoadJobScheduler());
+        long createTimestamp = System.currentTimeMillis() - 3600 * 1000L;
+        CountDownLatch finishing = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        // an insert that ran longer than label_keep_max_second and is being finished when the cleaner runs
+        InsertLoadJob job = new InsertLoadJob(1L, "long_insert", 101L) {
+            @Override
+            public void setJobProperties(long transactionId, long tableId, long createTimestamp, String failMsg,
+                    String trackingUrl, String firstErrorMsg, UserIdentity userInfo) throws MetaNotFoundException {
+                finishing.countDown();
+                try {
+                    release.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+                super.setJobProperties(transactionId, tableId, createTimestamp, failMsg, trackingUrl, firstErrorMsg,
+                        userInfo);
+            }
+        };
+        Deencapsulation.setField(job, "createTimestamp", createTimestamp);
+        loadManager.addLoadJob(job);
+        int oldLabelKeepMaxSecond = Config.label_keep_max_second;
+        Config.label_keep_max_second = 60;
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> finish = pool.submit(() -> {
+                loadManager.recordFinishedLoadJob("long_insert", 99L, "db", 1L, EtlJobType.INSERT, createTimestamp,
+                        "", "", "", userInfo, 101L);
+                return null;
+            });
+            Assert.assertTrue(finishing.await(5, TimeUnit.SECONDS));
+            // the job is still PENDING, but being finished: the cleaner neither waits for it nor drops it
+            pool.submit(() -> loadManager.removeOldLoadJob()).get(5, TimeUnit.SECONDS);
+            Assert.assertSame(job, loadManager.getLoadJob(101L));
+            release.countDown();
+            finish.get(5, TimeUnit.SECONDS);
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+            Config.label_keep_max_second = oldLabelKeepMaxSecond;
+        }
+        Assert.assertEquals(JobState.FINISHED, job.getState());
+        Assert.assertSame(job, loadManager.getLoadJob(101L));
+        new Verifications() {
+            {
+                editLog.logCreateLoadJob(job);
+                times = 1;
+            }
+        };
+    }
+
+    @Test
+    public void testFinishingInsertDoesNotWaitForReaders(@Mocked Env env, @Mocked InternalCatalog catalog,
+            @Injectable Database database, @Injectable Table table, @Mocked EditLog editLog) throws Exception {
+        mockRecordFinished(env, catalog, database, table, editLog);
+        loadManager = new LoadManager(new LoadJobScheduler());
+        InsertLoadJob job = new InsertLoadJob(1L, "running", 103L);
+        loadManager.addLoadJob(job);
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        // SHOW LOAD holds the read lock while it builds its rows, over all jobs of a database
+        loadManager.readLock();
+        try {
+            pool.submit(() -> {
+                loadManager.recordFinishedLoadJob("running", 99L, "db", 1L, EtlJobType.INSERT,
+                        System.currentTimeMillis(), "", "", "", userInfo, 103L);
+                return null;
+            }).get(5, TimeUnit.SECONDS);
+        } finally {
+            loadManager.readUnlock();
+            pool.shutdownNow();
+        }
+        Assert.assertEquals(JobState.FINISHED, job.getState());
+        Assert.assertSame(job, loadManager.getLoadJob(103L));
+    }
+
+    @Test
+    public void testInsertJobDroppedByCleanerIsRecordedAgain(@Mocked Env env, @Mocked InternalCatalog catalog,
+            @Injectable Database database, @Injectable Table table, @Mocked EditLog editLog) throws Exception {
+        mockRecordFinished(env, catalog, database, table, editLog);
+        loadManager = new LoadManager(new LoadJobScheduler());
+        long createTimestamp = System.currentTimeMillis() - 3600 * 1000L;
+        InsertLoadJob job = new InsertLoadJob(1L, "long_insert", 102L);
+        Deencapsulation.setField(job, "createTimestamp", createTimestamp);
+        loadManager.addLoadJob(job);
+        int oldLabelKeepMaxSecond = Config.label_keep_max_second;
+        Config.label_keep_max_second = 60;
+        try {
+            loadManager.removeOldLoadJob();
+        } finally {
+            Config.label_keep_max_second = oldLabelKeepMaxSecond;
+        }
+        Assert.assertNull(loadManager.getLoadJob(102L));
+
+        // the insert finishes after the cleaner dropped its job: the job is created again and journaled
+        loadManager.recordFinishedLoadJob("long_insert", 99L, "db", 1L, EtlJobType.INSERT, createTimestamp,
+                "", "", "", userInfo, 102L);
+        LoadJob recorded = loadManager.getLoadJob(1000L);
+        Assert.assertNotNull(recorded);
+        Assert.assertEquals(JobState.FINISHED, recorded.getState());
+        Map<Long, Map<String, ConcurrentLinkedQueue<LoadJob>>> dbIdToLabelToLoadJobs =
+                Deencapsulation.getField(loadManager, "dbIdToLabelToLoadJobs");
+        Assert.assertEquals(1, dbIdToLabelToLoadJobs.get(1L).get("long_insert").size());
+        Assert.assertEquals(1, loadManager.queryLoadJobsByJobIds(Lists.newArrayList(102L, 1000L)).size());
+        new Verifications() {
+            {
+                editLog.logCreateLoadJob(recorded);
+                times = 1;
+            }
+        };
+    }
+
+    // run the tasks on the pool threads at the same instant, return when all are done
+    private static void runTogether(ExecutorService pool, List<Runnable> tasks) throws Exception {
+        CountDownLatch ready = new CountDownLatch(tasks.size());
+        AtomicBoolean go = new AtomicBoolean();
+        List<Future<?>> futures = Lists.newArrayList();
+        for (Runnable task : tasks) {
+            futures.add(pool.submit(() -> {
+                ready.countDown();
+                while (!go.get()) {
+                    // spin, so that the tasks start together
+                }
+                task.run();
+            }));
+        }
+        ready.await(5, TimeUnit.SECONDS);
+        go.set(true);
+        for (Future<?> future : futures) {
+            future.get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    public void testJobsAddedTogetherAreAllInTheLabelIndex() throws Exception {
+        // the first insert jobs of a database registered at the same time by 8 sessions, which do not hold the
+        // LoadManager lock: none of them may be lost from the label index (SHOW LOAD reads it)
+        int threads = 8;
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        try {
+            for (int round = 0; round < 300; round++) {
+                LoadManager manager = new LoadManager(new LoadJobScheduler());
+                List<Runnable> tasks = Lists.newArrayList();
+                for (int i = 0; i < threads; i++) {
+                    InsertLoadJob job = new InsertLoadJob(1L, "label_" + i, round * threads + i);
+                    tasks.add(() -> manager.addLoadJob(job));
+                }
+                runTogether(pool, tasks);
+                Map<Long, Map<String, ConcurrentLinkedQueue<LoadJob>>> dbIdToLabelToLoadJobs =
+                        Deencapsulation.getField(manager, "dbIdToLabelToLoadJobs");
+                Assert.assertEquals("round " + round, threads, dbIdToLabelToLoadJobs.get(1L).size());
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    public void testJobAddedWhileCleanerEmptiesTheDatabase() throws Exception {
+        // the cleaner drops the last job of a database, and with it the label map of the database, while a new
+        // insert job of the database is registered: the new job must stay in the label index
+        int oldLabelKeepMaxSecond = Config.label_keep_max_second;
+        Config.label_keep_max_second = 60;
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            for (int round = 0; round < 300; round++) {
+                LoadManager manager = new LoadManager(new LoadJobScheduler());
+                InsertLoadJob abandoned = new InsertLoadJob(1L, "abandoned", 2L * round);
+                Deencapsulation.setField(abandoned, "createTimestamp", System.currentTimeMillis() - 3600 * 1000L);
+                manager.addLoadJob(abandoned);
+                InsertLoadJob added = new InsertLoadJob(1L, "added", 2L * round + 1);
+                runTogether(pool, Lists.newArrayList(manager::removeOldLoadJob, () -> manager.addLoadJob(added)));
+                Map<Long, Map<String, ConcurrentLinkedQueue<LoadJob>>> dbIdToLabelToLoadJobs =
+                        Deencapsulation.getField(manager, "dbIdToLabelToLoadJobs");
+                Assert.assertNotNull("round " + round, dbIdToLabelToLoadJobs.get(1L));
+                Assert.assertEquals("round " + round, Lists.newArrayList(added),
+                        Lists.newArrayList(dbIdToLabelToLoadJobs.get(1L).get("added")));
+                Assert.assertNull(dbIdToLabelToLoadJobs.get(1L).get("abandoned"));
+            }
+        } finally {
+            pool.shutdownNow();
+            Config.label_keep_max_second = oldLabelKeepMaxSecond;
+        }
+    }
+
+    @Test
+    public void testReadersWhileJobsAreAdded() throws Exception {
+        // SHOW LOAD and the procs iterate the label lists holding only the read lock, while insert jobs are added
+        // without any lock; many jobs under few labels make the lists long
+        LoadManager manager = new LoadManager(new LoadJobScheduler());
+        int writers = 4;
+        int jobsPerWriter = 3000;
+        AtomicBoolean done = new AtomicBoolean();
+        List<Throwable> errors = Collections.synchronizedList(Lists.newArrayList());
+        ExecutorService pool = Executors.newFixedThreadPool(writers + 4);
+        try {
+            List<Future<?>> readers = Lists.newArrayList();
+            for (int i = 0; i < 4; i++) {
+                readers.add(pool.submit(() -> {
+                    while (!done.get()) {
+                        try {
+                            manager.getLoadJobNum(JobState.PENDING, 1L);
+                        } catch (Throwable t) {
+                            errors.add(t);
+                            return;
+                        }
+                    }
+                }));
+            }
+            List<Future<?>> adders = Lists.newArrayList();
+            for (int w = 0; w < writers; w++) {
+                int firstId = w * jobsPerWriter;
+                adders.add(pool.submit(() -> {
+                    for (int i = 0; i < jobsPerWriter; i++) {
+                        manager.addLoadJob(new InsertLoadJob(1L, "label_" + (i % 5), firstId + i));
+                    }
+                }));
+            }
+            for (Future<?> adder : adders) {
+                adder.get(60, TimeUnit.SECONDS);
+            }
+            done.set(true);
+            for (Future<?> reader : readers) {
+                reader.get(60, TimeUnit.SECONDS);
+            }
+        } finally {
+            done.set(true);
+            pool.shutdownNow();
+        }
+        Assert.assertTrue("readers failed: " + errors, errors.isEmpty());
+        Assert.assertEquals(writers * jobsPerWriter, manager.getLoadJobNum(JobState.PENDING, 1L));
+    }
+
+    @Test
+    public void testRemoveManyJobsOfOneLabel() throws Exception {
+        // a label with a long history, e.g. an INSERT retried many times with the same label: the cleaner removes
+        // the expired jobs of the label in one pass and keeps the others
+        int oldStreamingLabelKeepMaxSecond = Config.streaming_label_keep_max_second;
+        int oldLabelNumThreshold = Config.label_num_threshold;
+        Config.streaming_label_keep_max_second = 3600;
+        try {
+            LoadManager manager = new LoadManager(new LoadJobScheduler());
+            long now = System.currentTimeMillis();
+            for (int i = 0; i < 20000; i++) {
+                InsertLoadJob job = new InsertLoadJob(1L, "retried", i);
+                Deencapsulation.setField(job, "state", JobState.CANCELLED);
+                // even ids finished two hours ago, odd ids just now
+                Deencapsulation.setField(job, "finishTimestamp", i % 2 == 0 ? now - 7200 * 1000L : now + i);
+                manager.addLoadJob(job);
+            }
+            InsertLoadJob running = new InsertLoadJob(1L, "retried", 20000);
+            manager.addLoadJob(running);
+
+            manager.removeOldLoadJob();
+            Map<Long, Map<String, ConcurrentLinkedQueue<LoadJob>>> dbIdToLabelToLoadJobs =
+                    Deencapsulation.getField(manager, "dbIdToLabelToLoadJobs");
+            Assert.assertEquals(10001, dbIdToLabelToLoadJobs.get(1L).get("retried").size());
+            Assert.assertEquals(10000, manager.getLoadJobNum(JobState.CANCELLED, 1L));
+            Assert.assertNull(manager.getLoadJob(0L));
+            Assert.assertNotNull(manager.getLoadJob(1L));
+
+            // the label_num_threshold trim removes the oldest finished jobs, never the running one
+            Config.label_num_threshold = 100;
+            manager.removeOverLimitLoadJob();
+            ConcurrentLinkedQueue<LoadJob> jobs = dbIdToLabelToLoadJobs.get(1L).get("retried");
+            Assert.assertEquals(100, jobs.size());
+            Assert.assertTrue(jobs.contains(running));
+            // 99 finished jobs are left: the newest, ids 19803 to 19999
+            Assert.assertNull(manager.getLoadJob(19801L));
+            Assert.assertNotNull(manager.getLoadJob(19803L));
+        } finally {
+            Config.streaming_label_keep_max_second = oldStreamingLabelKeepMaxSecond;
+            Config.label_num_threshold = oldLabelNumThreshold;
+        }
+    }
+
+    @Test
+    public void testCleanLabelWhileJobIsAdded(@Mocked Env env, @Mocked InternalCatalog catalog,
+            @Injectable Database database, @Mocked EditLog editLog) throws Exception {
+        new Expectations() {
+            {
+                Env.getCurrentEnv();
+                minTimes = 0;
+                result = env;
+                Env.getCurrentInternalCatalog();
+                minTimes = 0;
+                result = catalog;
+                env.getEditLog();
+                minTimes = 0;
+                result = editLog;
+                catalog.getDbOrDdlException(anyString);
+                minTimes = 0;
+                result = database;
+                database.getId();
+                minTimes = 0;
+                result = 1L;
+            }
+        };
+        // CLEAN LABEL drops the finished job of a label while a new job with the label is added: the new job
+        // must stay in the label index
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            for (int round = 0; round < 300; round++) {
+                LoadManager manager = new LoadManager(new LoadJobScheduler());
+                InsertLoadJob finished = new InsertLoadJob(1L, "label", 2L * round);
+                Deencapsulation.setField(finished, "state", JobState.FINISHED);
+                manager.addLoadJob(finished);
+                InsertLoadJob added = new InsertLoadJob(1L, "label", 2L * round + 1);
+                runTogether(pool, Lists.newArrayList(() -> {
+                    try {
+                        manager.cleanLabel("db", "label");
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                }, () -> manager.addLoadJob(added)));
+                Map<Long, Map<String, ConcurrentLinkedQueue<LoadJob>>> dbIdToLabelToLoadJobs =
+                        Deencapsulation.getField(manager, "dbIdToLabelToLoadJobs");
+                Assert.assertNotNull("round " + round, dbIdToLabelToLoadJobs.get(1L));
+                Assert.assertEquals("round " + round, Lists.newArrayList(added),
+                        Lists.newArrayList(dbIdToLabelToLoadJobs.get(1L).get("label")));
+                Assert.assertNull(manager.getLoadJob(2L * round));
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    public void testProcCountsJobsOfAllDatabases(@Mocked Env env, @Mocked CatalogMgr catalogMgr,
+            @Mocked AccessControllerManager accessManager, @Injectable Database db1, @Injectable Database db2)
+            throws Exception {
+        new Expectations() {
+            {
+                Env.getCurrentEnv();
+                minTimes = 0;
+                result = env;
+                env.getCatalogMgr();
+                minTimes = 0;
+                result = catalogMgr;
+                env.getAccessManager();
+                minTimes = 0;
+                result = accessManager;
+                catalogMgr.getDbNullable(1L);
+                minTimes = 0;
+                result = db1;
+                catalogMgr.getDbNullable(2L);
+                minTimes = 0;
+                result = db2;
+                catalogMgr.getDbNullable(3L);
+                minTimes = 0;
+                result = null;
+                db1.getFullName();
+                minTimes = 0;
+                result = "db1";
+                db2.getFullName();
+                minTimes = 0;
+                result = "db2";
+                accessManager.checkDbPriv((ConnectContext) any, anyString, anyString, (PrivPredicate) any);
+                minTimes = 0;
+                result = true;
+            }
+        };
+        LoadManager manager = new LoadManager(new LoadJobScheduler());
+        // the same label in two databases, and jobs of a database that was dropped meanwhile
+        manager.addLoadJob(new InsertLoadJob(1L, "same", 1L));
+        manager.addLoadJob(new InsertLoadJob(2L, "same", 2L));
+        manager.addLoadJob(new InsertLoadJob(3L, "other", 3L));
+        Assert.assertEquals(2, manager.getLoadJobNum(JobState.PENDING));
+    }
+
+    // the ids in idToLoadJob and in the label index must be the same, and each job must be in its own db and label
+    private static void assertIndexesConsistent(LoadManager manager, String context) {
+        Map<Long, LoadJob> idToLoadJob = Deencapsulation.getField(manager, "idToLoadJob");
+        Map<Long, Map<String, ConcurrentLinkedQueue<LoadJob>>> dbIdToLabelToLoadJobs =
+                Deencapsulation.getField(manager, "dbIdToLabelToLoadJobs");
+        Set<Long> labelIds = Sets.newHashSet();
+        for (Map.Entry<Long, Map<String, ConcurrentLinkedQueue<LoadJob>>> db : dbIdToLabelToLoadJobs.entrySet()) {
+            for (Map.Entry<String, ConcurrentLinkedQueue<LoadJob>> label : db.getValue().entrySet()) {
+                Assert.assertFalse(context + ": empty label " + label.getKey(), label.getValue().isEmpty());
+                for (LoadJob job : label.getValue()) {
+                    Assert.assertEquals(context, db.getKey().longValue(), job.getDbId());
+                    Assert.assertEquals(context, label.getKey(), job.getLabel());
+                    Assert.assertTrue(context + ": twice in the label index " + job.getId(), labelIds.add(job.getId()));
+                    Assert.assertSame(context, job, idToLoadJob.get(job.getId()));
+                }
+            }
+        }
+        Assert.assertEquals(context, idToLoadJob.keySet(), labelIds);
+    }
+
+    @Test
+    public void testRecordedAgainJobAndThresholdTrimKeepIndexesConsistent(@Mocked Env env,
+            @Mocked InternalCatalog catalog, @Injectable Database database, @Injectable Table table,
+            @Mocked EditLog editLog) throws Exception {
+        // An insert finishes after the cleaner dropped its job, so a new finished job (id 1000) is added, while the
+        // label_num_threshold trim runs. The add is held right after the job became visible by id: the trim must
+        // not remove it by id only, which left it in the label index for good (Codex audit, 2026-11-01).
+        mockRecordFinished(env, catalog, database, table, editLog);
+        int oldLabelKeepMaxSecond = Config.label_keep_max_second;
+        int oldLabelNumThreshold = Config.label_num_threshold;
+        Config.label_keep_max_second = 60;
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        CountDownLatch published = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try {
+            LoadManager manager = new LoadManager(new LoadJobScheduler());
+            InsertLoadJob abandoned = new InsertLoadJob(1L, "long_insert", 303L);
+            Deencapsulation.setField(abandoned, "createTimestamp", 0L);
+            manager.addLoadJob(abandoned);
+            manager.removeOldLoadJob();
+            Assert.assertNull(manager.getLoadJob(303L));
+            Map<Long, LoadJob> idToLoadJob = new ConcurrentHashMap<Long, LoadJob>() {
+                @Override
+                public LoadJob put(Long id, LoadJob job) {
+                    LoadJob old = super.put(id, job);
+                    if (id == 1000L && published.getCount() > 0) {
+                        published.countDown();
+                        try {
+                            release.await(5, TimeUnit.SECONDS);
+                        } catch (InterruptedException e) {
+                            throw new RuntimeException(e);
+                        }
+                    }
+                    return old;
+                }
+            };
+            Deencapsulation.setField(manager, "idToLoadJob", idToLoadJob);
+            Config.label_num_threshold = 0;
+            Future<?> finish = pool.submit(() -> {
+                manager.recordFinishedLoadJob("long_insert", 99L, "db", 1L, EtlJobType.INSERT, 0L, "", "", "",
+                        userInfo, 303L);
+                return null;
+            });
+            Assert.assertTrue(published.await(5, TimeUnit.SECONDS));
+            Future<?> trim = pool.submit(manager::removeOverLimitLoadJob);
+            Thread.sleep(200);
+            release.countDown();
+            finish.get(5, TimeUnit.SECONDS);
+            trim.get(5, TimeUnit.SECONDS);
+            assertIndexesConsistent(manager, "after the trim");
+            // and the regular cleaner removes whatever is left once it expired
+            Config.label_num_threshold = oldLabelNumThreshold;
+            for (LoadJob job : idToLoadJob.values()) {
+                Deencapsulation.setField(job, "finishTimestamp", 0L);
+            }
+            manager.removeOldLoadJob();
+            assertIndexesConsistent(manager, "after expiry");
+            Assert.assertTrue(idToLoadJob.isEmpty());
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+            Config.label_keep_max_second = oldLabelKeepMaxSecond;
+            Config.label_num_threshold = oldLabelNumThreshold;
+        }
+        new Verifications() {
+            {
+                editLog.logCreateLoadJob(withNotNull());
+                times = 1;
+            }
+        };
+    }
+
+    @Test
+    public void testCleanLabelWhileFinishedJobIsBeingAdded(@Mocked Env env) throws Exception {
+        // A finished insert job is recorded again (see recordFinishedLoadJob) while CLEAN LABEL cleans its label. The
+        // add is held right before the job becomes visible by id, or right after. CLEAN LABEL must not wait for the
+        // add, and must not leave the job found by id only: before, it leaves the job, after, it removes it.
+        for (boolean holdAfterPut : new boolean[] {false, true}) {
+            ExecutorService pool = Executors.newFixedThreadPool(2);
+            CountDownLatch held = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            try {
+                LoadManager manager = new LoadManager(new LoadJobScheduler());
+                Map<Long, LoadJob> idToLoadJob = new ConcurrentHashMap<Long, LoadJob>() {
+                    @Override
+                    public LoadJob put(Long id, LoadJob job) {
+                        if (!holdAfterPut) {
+                            hold();
+                        }
+                        LoadJob old = super.put(id, job);
+                        if (holdAfterPut) {
+                            hold();
+                        }
+                        return old;
+                    }
+
+                    private void hold() {
+                        held.countDown();
+                        try {
+                            release.await(5, TimeUnit.SECONDS);
+                        } catch (InterruptedException e) {
+                            throw new RuntimeException(e);
+                        }
+                    }
+                };
+                Deencapsulation.setField(manager, "idToLoadJob", idToLoadJob);
+                InsertLoadJob job = new InsertLoadJob(1L, "label", 7L);
+                Deencapsulation.setField(job, "state", JobState.FINISHED);
+                Future<?> add = pool.submit(() -> manager.addLoadJob(job));
+                Assert.assertTrue(held.await(5, TimeUnit.SECONDS));
+                pool.submit(() -> manager.replayCleanLabel(new CleanLabelOperationLog(1L, "label")))
+                        .get(5, TimeUnit.SECONDS);
+                release.countDown();
+                add.get(5, TimeUnit.SECONDS);
+                String context = "held " + (holdAfterPut ? "after" : "before") + " the put";
+                assertIndexesConsistent(manager, context);
+                Assert.assertEquals(context, holdAfterPut ? null : job, manager.getLoadJob(7L));
+            } finally {
+                release.countDown();
+                pool.shutdownNow();
+            }
+        }
+    }
+
+    @Test
+    public void testIndexesStayConsistentUnderConcurrentChanges(@Mocked Env env, @Mocked InternalCatalog catalog,
+            @Injectable Database database, @Injectable Table table, @Mocked EditLog editLog) throws Exception {
+        // every way the two indexes change, at the same time: registering pending insert jobs, finishing them or
+        // recording them again after the cleaner dropped them, expiry, abandoned jobs, label_num_threshold trim and
+        // CLEAN LABEL, over 2 databases and a few labels
+        AtomicLong nextId = new AtomicLong(1_000_000L);
+        new Expectations() {
+            {
+                Env.getCurrentEnv();
+                minTimes = 0;
+                result = env;
+                Env.getCurrentInternalCatalog();
+                minTimes = 0;
+                result = catalog;
+                env.getEditLog();
+                minTimes = 0;
+                result = editLog;
+                env.getNextId();
+                minTimes = 0;
+                result = new Delegate<Long>() {
+                    long getNextId() {
+                        return nextId.incrementAndGet();
+                    }
+                };
+                catalog.getDbOrMetaException(anyString);
+                minTimes = 0;
+                result = database;
+                catalog.getDbOrMetaException(anyLong);
+                minTimes = 0;
+                result = database;
+                database.getId();
+                minTimes = 0;
+                result = 1L;
+                database.getFullName();
+                minTimes = 0;
+                result = "db";
+                database.getTableOrMetaException(anyLong);
+                minTimes = 0;
+                result = table;
+                table.getName();
+                minTimes = 0;
+                result = "tbl";
+            }
+        };
+        int oldLabelKeepMaxSecond = Config.label_keep_max_second;
+        int oldStreamingLabelKeepMaxSecond = Config.streaming_label_keep_max_second;
+        int oldLabelNumThreshold = Config.label_num_threshold;
+        Config.label_keep_max_second = 1;
+        Config.streaming_label_keep_max_second = 1;
+        Config.label_num_threshold = 40;
+        LoadManager manager = new LoadManager(new LoadJobScheduler());
+        AtomicLong registered = new AtomicLong();
+        AtomicBoolean stop = new AtomicBoolean();
+        ExecutorService pool = Executors.newFixedThreadPool(6);
+        try {
+            List<Future<?>> workers = Lists.newArrayList();
+            for (int w = 0; w < 2; w++) {
+                long seed = w;
+                // register pending jobs, some of them created long ago, and finish (or record again) others
+                workers.add(pool.submit(() -> {
+                    Random random = new Random(seed);
+                    while (!stop.get()) {
+                        long id = registered.incrementAndGet();
+                        InsertLoadJob job = new InsertLoadJob(1L + random.nextInt(2), "label_" + random.nextInt(6), id);
+                        if (random.nextInt(4) == 0) {
+                            Deencapsulation.setField(job, "createTimestamp", 0L);
+                        }
+                        manager.addLoadJob(job);
+                        long finishId = 1 + random.nextInt((int) Math.max(1, registered.get()));
+                        LoadJob finishing = manager.getLoadJob(finishId);
+                        manager.recordFinishedLoadJob(finishing == null ? "label_0" : finishing.getLabel(), 1L,
+                                "db", 1L, EtlJobType.INSERT, System.currentTimeMillis(),
+                                random.nextBoolean() ? "" : "failed", "", "", userInfo, finishId);
+                    }
+                    return null;
+                }));
+            }
+            workers.add(pool.submit(() -> {
+                while (!stop.get()) {
+                    manager.removeOldLoadJob();
+                    manager.removeOverLimitLoadJob();
+                }
+                return null;
+            }));
+            workers.add(pool.submit(() -> {
+                Random random = new Random(7);
+                while (!stop.get()) {
+                    manager.replayCleanLabel(new CleanLabelOperationLog(1L + random.nextInt(2),
+                            random.nextInt(4) == 0 ? "" : "label_" + random.nextInt(6)));
+                    Thread.sleep(1);
+                }
+                return null;
+            }));
+            Thread.sleep(2000);
+            stop.set(true);
+            for (Future<?> worker : workers) {
+                worker.get(30, TimeUnit.SECONDS);
+            }
+        } finally {
+            stop.set(true);
+            pool.shutdownNow();
+            Config.label_keep_max_second = oldLabelKeepMaxSecond;
+            Config.streaming_label_keep_max_second = oldStreamingLabelKeepMaxSecond;
+            Config.label_num_threshold = oldLabelNumThreshold;
+        }
+        Assert.assertTrue("registered " + registered.get(), registered.get() > 1000);
+        assertIndexesConsistent(manager, "after " + registered.get() + " jobs");
+    }
+
+    private void mockRecordFinished(Env env, InternalCatalog catalog, Database database, Table table,
+            EditLog editLog) throws Exception {
+        new Expectations() {
+            {
+                Env.getCurrentEnv();
+                minTimes = 0;
+                result = env;
+                Env.getCurrentInternalCatalog();
+                minTimes = 0;
+                result = catalog;
+                env.getEditLog();
+                minTimes = 0;
+                result = editLog;
+                env.getNextId();
+                minTimes = 0;
+                result = 1000L;
+                catalog.getDbOrMetaException(anyString);
+                minTimes = 0;
+                result = database;
+                catalog.getDbOrMetaException(anyLong);
+                minTimes = 0;
+                result = database;
+                database.getId();
+                minTimes = 0;
+                result = 1L;
+                database.getFullName();
+                minTimes = 0;
+                result = "db";
+                database.getTableOrMetaException(anyLong);
+                minTimes = 0;
+                result = table;
+                table.getName();
+                minTimes = 0;
+                result = "tbl";
+            }
+        };
+    }
+
+    private void mockCatalog(Env env, InternalCatalog catalog, Database database, Table table) {
+        new Expectations() {
+            {
+                env.getInternalCatalog();
+                minTimes = 0;
+                result = catalog;
+                catalog.getDbNullable(anyLong);
+                minTimes = 0;
+                result = database;
+                database.getTableNullable(anyLong);
+                minTimes = 0;
+                result = table;
+                table.getName();
+                minTimes = 0;
+                result = "tablename";
+            }
+        };
     }
 
     private File serializeToFile(LoadManager loadManager) throws Exception {

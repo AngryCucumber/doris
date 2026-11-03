@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.httpv2.rest;
 
@@ -55,7 +56,15 @@ public class MetricsAction extends RestBaseController {
         }
         response.setContentType("text/plain");
         try {
-            response.getWriter().write(MetricRepo.getMetric(visitor));
+            String metrics = MetricRepo.getMetric(visitor);
+            if (metrics == null) {
+                // another request is still computing the metrics and there is no earlier result to return
+                response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
+                response.setHeader("Retry-After", "1");
+                response.getWriter().write("metrics are being computed, retry later");
+                return;
+            }
+            response.getWriter().write(metrics);
         } catch (IOException e) {
             LOG.warn("", e);
         }

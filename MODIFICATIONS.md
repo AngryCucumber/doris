@@ -430,6 +430,35 @@ while the FE kept serving queries. Cloud mode runtime was not exercised.
   handed on as before, without a copy.
 - Add mixed-type cases to `format_v2/wal/wal_reader_test.cpp`.
 
+## Group commit load-job leak and /metrics fixes from 4.0.5 (2026-11-03)
+
+- Port the FE fixes released on `4.0.5-fix-group-commit` (`2f7475f6009` through
+  `9841d01d1e6`, package `massdb-sql-4.0.5-rc01`). Upstream #62889, which that
+  branch also carries, is already part of the 4.1.5 baseline.
+- Do not register insert load jobs for plan-only http stream loads (BE commits
+  them) or for empty inserts, and let the label cleaner drop `InsertLoadJob`s
+  that stayed PENDING longer than `label_keep_max_second`. An executor finishing
+  a job and the cleaner dropping it decide by a CAS on the job: finishing an
+  insert takes only that job's lock, and the cleaner never waits for one.
+- Keep the per-database label index consistent under concurrent registration
+  and removal: a job is in its label before it can be found by id, label lists
+  are `ConcurrentLinkedQueue`s updated inside `compute`/`computeIfPresent` of
+  the database, and long histories of one label are trimmed in batches. CLEAN
+  LABEL, SHOW LOAD, SHOW PROC and the cloud copy-job cleanup use the same rules.
+- `/metrics` no longer serializes every request on the `MetricRepo` class
+  monitor: one request computes at a time, results are reused for
+  `metrics_result_cache_ms` (5000), requests with an earlier result get it at
+  once, and a cold request waits at most `metrics_lock_wait_ms` (3000) before
+  answering 503. Load-job gauges are only computed on the master.
+- Bind the Jetty thread settings with the Spring Boot 3 names
+  (`server.jetty.threads.*`); fe.conf values Jetty cannot run with fall back to
+  the defaults with a warning instead of stopping the FE.
+- Keep the 4.1.5 `recordFinishedLoadJob` diagnostics and the persisted
+  `jobDetailsJson` snapshot of `InsertLoadJob`. The new tests use the company
+  header under `massdb/` packages (`httpv2.massdb.HttpServerTest`,
+  `cloud.load.massdb.CloudLoadManagerTest`), so
+  `HttpServer.addJettyProperties(Map, int)` is public for testing.
+
 ## Complete rc02 release builds (2026-09-09)
 
 - `build-for-release.sh`: explicitly select FE, BE, Cloud/MS, Broker and Hive UDF

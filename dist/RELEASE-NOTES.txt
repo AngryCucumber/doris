@@ -122,6 +122,22 @@ replay with the block, the column and both types in the error, and the WAL is ke
 the operator to set aside or repair. Before upgrading a BE
 that holds WALs from an older version, check its WAL directory for such files.
 
+Group commit load-job leak fixes from 4.0.5-rc01: the master FE no longer keeps a
+PENDING insert load job for every BE group commit http_stream load or empty
+INSERT. Those jobs were never finished, so memory grew with uptime and /metrics
+slowed down. PENDING insert jobs older than label_keep_max_second are dropped.
+Failed INSERTs show as CANCELLED in SHOW LOAD. /metrics computes one request at a
+time and reuses the result for metrics_result_cache_ms (default 5000), so values
+can be a few seconds old. While a computation runs, other requests get the last
+result at once; without one they wait at most metrics_lock_wait_ms (default 3000)
+and then get 503. The jetty_* thread settings in fe.conf now take effect; values
+Jetty cannot run with are logged as a warning and the defaults are used. Before,
+the FE always ran 200 Jetty threads; now it runs jetty_threadPool_maxThreads
+(default 400). Check fe.conf before upgrading: after redirecting a stream load,
+the FE keeps the Jetty thread for up to stream_load_redirect_bounded_drain_max_idle_time_ms
+(default 1000) when the client waits for 100-continue, as Flink does, so stream
+loads redirected per second are bounded by roughly the number of Jetty threads.
+
 rc415 更新：源码基线升级至 Apache Doris 4.1.5-release；保留 MassDB 品牌、
 JDBC 数组精度、报告去重与并行处理、存储介质缓存、compaction 防护、
 Group Commit 超时与元数据工具初始化修复。已有上游修复使用 4.1.5 的实现。
@@ -149,4 +165,14 @@ Group Commit WAL 重放：同一个 WAL 中各块的列类型不一致时（如 
 数值或日期块在后的 WAL 会使 BE 每次启动都崩溃，其他组合每次重放都失败。无法转换的块使重放失败，
 报错中写明块序号、列和两种类型，WAL 保留，由运维隔离或修复。升级仍留有旧版本 WAL 的 BE 之前，
 请检查其 WAL 目录。
+合入 4.0.5-rc01 的 group commit 导入任务泄漏修复：BE 侧 group commit 的 http_stream 导入
+和空 INSERT 不再在 Master FE 留下永不结束的 PENDING 导入任务（此前内存随运行时间增长、
+/metrics 变慢）；超过 label_keep_max_second 仍为 PENDING 的 INSERT 任务会被清理；
+失败的 INSERT 在 SHOW LOAD 中显示为 CANCELLED。/metrics 同时只计算一次，结果复用
+metrics_result_cache_ms（默认 5000 毫秒），数值可能滞后几秒；计算期间其他请求直接取上次结果，
+尚无结果时最多等待 metrics_lock_wait_ms（默认 3000 毫秒）后返回 503。fe.conf 中的 jetty_*
+线程配置开始生效，Jetty 无法使用的值只记 WARN 并回退默认值。此前 FE 固定使用 200 个 Jetty 线程，
+现在使用 jetty_threadPool_maxThreads（默认 400），升级前请检查 fe.conf：FE 转发 stream load 后，
+若客户端在等待 100-continue（如 Flink），该线程最多再占用 stream_load_redirect_bounded_drain_max_idle_time_ms
+（默认 1000 毫秒），因此经 FE 转发的 stream load 每秒数量大致受 Jetty 线程数限制。
 历史二进制审查记录仅适用于原审查包，不代表 rc415 已完成构建或验证。

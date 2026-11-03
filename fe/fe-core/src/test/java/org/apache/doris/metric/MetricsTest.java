@@ -26,6 +26,7 @@ import org.apache.doris.common.FeConstants;
 import org.apache.doris.common.Pair;
 import org.apache.doris.common.Version;
 import org.apache.doris.common.jmockit.Deencapsulation;
+import org.apache.doris.common.util.DebugPointUtil;
 import org.apache.doris.common.util.JsonUtil;
 import org.apache.doris.ha.FrontendNodeType;
 import org.apache.doris.job.base.AbstractJob;
@@ -49,11 +50,16 @@ import org.junit.Test;
 
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @Slf4j
@@ -654,5 +660,158 @@ public class MetricsTest {
         Assert.assertTrue(metricResult.contains("# TYPE doris_fe_plan_partition_prune_duration_ms summary"));
         Assert.assertTrue(metricResult.contains("# TYPE doris_fe_plan_cloud_meta_duration_ms summary"));
         Assert.assertTrue(metricResult.contains("# TYPE doris_fe_plan_materialized_view_rewrite_duration_ms summary"));
+    }
+
+    private static final String SLOW_METRIC_DEBUG_POINT = "MetricRepo.computeMetric.sleep";
+
+    private static long elapsedMs(long startNs) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNs);
+    }
+
+    // not the common pool: it may have a single thread and run the requests one by one
+    private static final ExecutorService METRIC_REQUEST_POOL = Executors.newCachedThreadPool(r -> {
+        Thread thread = new Thread(r, "metrics-test-request");
+        thread.setDaemon(true);
+        return thread;
+    });
+
+    private static CompletableFuture<String> getMetricAsync() {
+        return CompletableFuture.supplyAsync(() -> MetricRepo.getMetric(new PrometheusMetricVisitor()),
+                METRIC_REQUEST_POOL);
+    }
+
+    private static void runWithSlowMetric(long computeMs, long cacheMs, long lockWaitMs, Runnable test) {
+        boolean oldEnableDebugPoints = Config.enable_debug_points;
+        long oldCacheMs = Config.metrics_result_cache_ms;
+        long oldLockWaitMs = Config.metrics_lock_wait_ms;
+        try {
+            MetricRepo.clearMetricResults();
+            Config.enable_debug_points = true;
+            Config.metrics_result_cache_ms = cacheMs;
+            Config.metrics_lock_wait_ms = lockWaitMs;
+            DebugPointUtil.addDebugPointWithValue(SLOW_METRIC_DEBUG_POINT, computeMs);
+            test.run();
+        } finally {
+            DebugPointUtil.removeDebugPoint(SLOW_METRIC_DEBUG_POINT);
+            Config.enable_debug_points = oldEnableDebugPoints;
+            Config.metrics_result_cache_ms = oldCacheMs;
+            Config.metrics_lock_wait_ms = oldLockWaitMs;
+            MetricRepo.clearMetricResults();
+        }
+    }
+
+    @Test
+    public void testSlowMetricDoesNotBlockWaitersForever() {
+        runWithSlowMetric(2000, 0, 300, () -> {
+            CompletableFuture<String> first = getMetricAsync();
+            sleepMs(200);
+
+            // no earlier result: give up after metrics_lock_wait_ms and return null
+            long start = System.nanoTime();
+            Assert.assertNull(MetricRepo.getMetric(new PrometheusMetricVisitor()));
+            long waited = elapsedMs(start);
+            Assert.assertTrue("waited " + waited + " ms", waited >= 250 && waited < 1500);
+
+            // getMetricsByName() is not blocked by a running computation
+            start = System.nanoTime();
+            Assert.assertEquals(4, MetricRepo.getMetricsByName("snmp").size());
+            Assert.assertTrue(elapsedMs(start) < 200);
+
+            String firstResult = first.join();
+            Assert.assertTrue(firstResult.contains("jvm_gc"));
+
+            // with an earlier result: return it at once, do not wait for the running computation
+            CompletableFuture<String> second = getMetricAsync();
+            sleepMs(200);
+            start = System.nanoTime();
+            Assert.assertSame(firstResult, MetricRepo.getMetric(new PrometheusMetricVisitor()));
+            waited = elapsedMs(start);
+            Assert.assertTrue("waited " + waited + " ms", waited < 200);
+            Assert.assertNotSame(firstResult, second.join());
+        });
+    }
+
+    @Test
+    public void testManyRequestsDuringSlowMetricReturnAtOnce() {
+        runWithSlowMetric(2000, 0, 3000, () -> {
+            DebugPointUtil.removeDebugPoint(SLOW_METRIC_DEBUG_POINT);
+            String firstResult = MetricRepo.getMetric(new PrometheusMetricVisitor());
+            DebugPointUtil.addDebugPointWithValue(SLOW_METRIC_DEBUG_POINT, 2000L);
+            CompletableFuture<String> slow = getMetricAsync();
+            sleepMs(200);
+            // like the scrapes that used to hold all http server threads while one computation ran
+            long start = System.nanoTime();
+            List<CompletableFuture<String>> requests = new ArrayList<>();
+            for (int i = 0; i < 50; i++) {
+                requests.add(getMetricAsync());
+            }
+            for (CompletableFuture<String> request : requests) {
+                Assert.assertSame(firstResult, request.join());
+            }
+            long elapsed = elapsedMs(start);
+            Assert.assertTrue("took " + elapsed + " ms", elapsed < 1000);
+            Assert.assertFalse(slow.isDone());
+            Assert.assertNotSame(firstResult, slow.join());
+        });
+    }
+
+    @Test
+    public void testResultAgeIsNotTakenFromTheWallClock() {
+        runWithSlowMetric(0, 60000, 3000, () -> {
+            // a result that looks younger than possible, as a wall clock set back used to make it look, is not reused
+            MetricRepo.putMetricResult(PrometheusMetricVisitor.class,
+                    System.nanoTime() + TimeUnit.HOURS.toNanos(1), "old");
+            Assert.assertNotEquals("old", MetricRepo.getMetric(new PrometheusMetricVisitor()));
+        });
+        runWithSlowMetric(0, 0, 3000, () -> {
+            // without the cache a later request computes again
+            String firstResult = MetricRepo.getMetric(new PrometheusMetricVisitor());
+            Assert.assertNotSame(firstResult, MetricRepo.getMetric(new PrometheusMetricVisitor()));
+        });
+    }
+
+    @Test
+    public void testConcurrentRequestsShareComputation() {
+        runWithSlowMetric(1000, 0, 10000, () -> {
+            long start = System.nanoTime();
+            CompletableFuture<String> first = getMetricAsync();
+            sleepMs(200);
+            // these arrive while the first computation is running: one of them computes again,
+            // the others take its result instead of computing one by one
+            List<CompletableFuture<String>> waiters = new ArrayList<>();
+            for (int i = 0; i < 5; i++) {
+                waiters.add(getMetricAsync());
+            }
+            String firstResult = first.join();
+            String waiterResult = waiters.get(0).join();
+            for (CompletableFuture<String> waiter : waiters) {
+                Assert.assertSame(waiterResult, waiter.join());
+            }
+            Assert.assertNotSame(firstResult, waiterResult);
+            long elapsed = elapsedMs(start);
+            Assert.assertTrue("took " + elapsed + " ms", elapsed < 3500);
+        });
+    }
+
+    @Test
+    public void testMetricResultCache() {
+        runWithSlowMetric(500, 60000, 3000, () -> {
+            String firstResult = MetricRepo.getMetric(new PrometheusMetricVisitor());
+            long start = System.nanoTime();
+            Assert.assertSame(firstResult, MetricRepo.getMetric(new PrometheusMetricVisitor()));
+            Assert.assertTrue(elapsedMs(start) < 200);
+            // results are kept per format
+            String jsonResult = MetricRepo.getMetric(new JsonMetricVisitor());
+            Assert.assertNotEquals(firstResult, jsonResult);
+            Assert.assertSame(jsonResult, MetricRepo.getMetric(new JsonMetricVisitor()));
+        });
+    }
+
+    private static void sleepMs(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
     }
 }

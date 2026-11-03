@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.nereids.trees.plans.commands.insert;
 
@@ -450,12 +451,13 @@ public class InsertIntoTableCommand extends Command implements NeedAuditEncrypti
                     if (((PhysicalOlapTableSink<?>) physicalSink).getDmlCommandType() == DMLCommandType.GROUP_COMMIT) {
                         jobId = -1;
                     }
+                    // An empty insert returns before it is executed, nothing would finish its load job.
                     executorFactory = ExecutorFactory.from(
                             planner,
                             dataSink,
                             physicalSink,
-                            () -> new OlapInsertExecutor(
-                                    ctx, olapTable, label, planner, insertCtx, emptyInsert, jobId, jobId != -1)
+                            () -> new OlapInsertExecutor(ctx, olapTable, label, planner, insertCtx, emptyInsert,
+                                    jobId, jobId != -1 && !emptyInsert)
                     );
                 }
 
