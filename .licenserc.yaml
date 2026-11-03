@@ -22,6 +22,7 @@ header:
     - "fe/fe-core/src/test/java/org/apache/doris/catalog/massdb/CooldownReplicaCheckTest.java"
     - "fe/fe-core/src/test/java/org/apache/doris/catalog/massdb/StorageMediumMapCacheTest.java"
     - "fe/fe-core/src/test/java/org/apache/doris/master/ReportHandlerTest.java"
+    - "fe/fe-core/src/test/java/org/apache/doris/master/massdb/MasterImplClearTransactionTaskTest.java"
     - "fe/fe-core/src/test/java/org/apache/doris/planner/massdb/GroupCommitInsertRpcTimeoutTest.java"
     - "ui/scripts/base-href.test.cjs"
     - "ui/scripts/collect-bundled-licenses.cjs"

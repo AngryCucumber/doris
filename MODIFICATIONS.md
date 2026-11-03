@@ -380,6 +380,30 @@ while the FE kept serving queries. Cloud mode runtime was not exercised.
   stay on registry.npmjs.org. The UI source does not import axios, so the
   bundled component inventory and legal pages are unchanged.
 
+## Group commit WAL replay storm (2026-11-03)
+
+- Production logs showed WALs that can never be replayed retried every 5 s,
+  each attempt aborting the previous attempt's txn, the FE broadcasting a
+  clear transaction task to every BE and logging a WARN for each report
+  (about 1000 lines/s in fe.warn.log).
+- `WalTable::replay_interval_ms` computes the replay back-off in 64 bits.
+  In int32, `(retry_num - group_commit_replay_wal_retry_num) *
+  group_commit_replay_wal_retry_interval_max_seconds * 1000` overflowed at
+  retry 1204, about 25 days after a WAL was registered, and from then on a
+  failing WAL was replayed on every 5 s tick. It now keeps being retried every
+  `group_commit_replay_wal_retry_interval_max_seconds` (1800 by default); WAL
+  give-up rules are unchanged.
+- `WalTable::_handle_stream_load` rolls a replay txn back when its execution
+  fails, with the failure (without its stack trace, which the FE would keep
+  with the txn) as the abort reason. Before, `RETURN_IF_ERROR` on the
+  execution future skipped the rollback, and the txn stayed open until the next
+  replay aborted it or it timed out.
+- `MasterImpl` logs finish reports of clear transaction tasks at debug level:
+  like drop tasks they are never put into `AgentTaskQueue`, so every report
+  took the "got null task" WARN path.
+- Add `WalTableReplayIntervalTest` to `wal_manager_test.cpp` and
+  `master.massdb.MasterImplClearTransactionTaskTest`.
+
 ## Complete rc02 release builds (2026-09-09)
 
 - `build-for-release.sh`: explicitly select FE, BE, Cloud/MS, Broker and Hive UDF

@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #include "load/group_commit/wal/wal_table.h"
 
@@ -155,23 +156,28 @@ Status WalTable::replay_wals() {
     return Status::OK();
 }
 
+int64_t WalTable::replay_interval_ms(int32_t retry_num) {
+    // In 64 bits: computed in int32, the linear part overflowed after about 1200 retries (some 25 days
+    // with the defaults), the interval became negative and a failing WAL was replayed every 5 s for good.
+    const int32_t doubling_retries = config::group_commit_replay_wal_retry_num;
+    const int64_t interval_ms =
+            int64_t(config::group_commit_replay_wal_retry_interval_seconds) * 1000;
+    if (retry_num < doubling_retries) {
+        return int64_t(pow(2, retry_num) * interval_ms);
+    }
+    const int64_t interval_max_ms =
+            int64_t(config::group_commit_replay_wal_retry_interval_max_seconds) * 1000;
+    return int64_t(pow(2, doubling_retries) * interval_ms) +
+           int64_t(retry_num - doubling_retries) * interval_max_ms;
+}
+
 bool WalTable::_need_replay(std::shared_ptr<WalInfo> wal_info) {
     if (config::group_commit_wait_replay_wal_finish) {
         return true;
     }
 #ifndef BE_TEST
-    int64_t replay_interval = 0;
-    if (wal_info->get_retry_num() >= config::group_commit_replay_wal_retry_num) {
-        replay_interval =
-                int64_t(pow(2, config::group_commit_replay_wal_retry_num) *
-                                config::group_commit_replay_wal_retry_interval_seconds * 1000 +
-                        (wal_info->get_retry_num() - config::group_commit_replay_wal_retry_num) *
-                                config::group_commit_replay_wal_retry_interval_max_seconds * 1000);
-    } else {
-        replay_interval = int64_t(pow(2, wal_info->get_retry_num()) *
-                                  config::group_commit_replay_wal_retry_interval_seconds * 1000);
-    }
-    return UnixMillis() - wal_info->get_start_time_ms() >= replay_interval;
+    return UnixMillis() - wal_info->get_start_time_ms() >=
+           replay_interval_ms(wal_info->get_retry_num());
 #else
     return true;
 #endif
@@ -273,17 +279,26 @@ Status WalTable::_handle_stream_load(int64_t wal_id, const std::string& wal,
     DBUG_EXECUTE_IF("WalTable::_handle_stream_load.fail",
                     { st = Status::InternalError("WalTable::_handle_stream_load.fail"); });
     if (st.ok()) {
-        // wait stream load finish
-        RETURN_IF_ERROR(ctx->future.get());
-        if (ctx->status.ok()) {
-            // deprecated and should be removed in 3.1, use token instead.
-            ctx->auth.auth_code = wal_id;
-            st = _exec_env->stream_load_executor()->commit_txn(ctx.get());
-        } else {
-            st = ctx->status;
+        // wait stream load finish. The txn is begun by now and nothing else rolls a replay back
+        // (need_commit_self is false): if the execution failed, roll it back below instead of leaving
+        // it open until the next replay aborts it, or until it times out
+        st = ctx->future.get();
+        if (st.ok()) {
+            if (ctx->status.ok()) {
+                // deprecated and should be removed in 3.1, use token instead.
+                ctx->auth.auth_code = wal_id;
+                st = _exec_env->stream_load_executor()->commit_txn(ctx.get());
+            } else {
+                st = ctx->status;
+            }
         }
     }
     if (!st.ok()) {
+        if (ctx->status.ok()) {
+            // the FE records it as the reason of the abort; leave out the stack trace, the FE keeps the
+            // reason with the txn
+            ctx->status = Status(st.code(), std::string(st.msg()));
+        }
         _exec_env->stream_load_executor()->rollback_txn(ctx.get());
     }
     return st;

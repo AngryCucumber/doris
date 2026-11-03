@@ -21,7 +21,8 @@
     "fe/fe-core/src/test/java/org/apache/doris/catalog/massdb/StorageMediumMapCacheTest.java",
     "ui/scripts/base-href.test.cjs",
     "fe/fe-core/src/test/java/org/apache/doris/catalog/massdb/CooldownReplicaCheckTest.java",
-    "fe/fe-core/src/test/java/org/apache/doris/planner/massdb/GroupCommitInsertRpcTimeoutTest.java"
+    "fe/fe-core/src/test/java/org/apache/doris/planner/massdb/GroupCommitInsertRpcTimeoutTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/master/massdb/MasterImplClearTransactionTaskTest.java"
   ],
   "apache": [
     "docker-compose/docker-compose.be-host.yml",
@@ -440,6 +441,22 @@
     },
     "bin/start_be.sh": {
       "originalHeaderSha256": "0128fa96946942192cb4f7888e056a74a13d2b39ca375aa985f2437dd6715cda",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "be/src/load/group_commit/wal/wal_table.h": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "be/src/load/group_commit/wal/wal_table.cpp": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "be/test/format/wal/wal_manager_test.cpp": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/master/MasterImpl.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
     }
   }

@@ -14,12 +14,14 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 #include "load/group_commit/wal/wal_manager.h"
 
 #include <gen_cpp/Descriptors_types.h>
 #include <gen_cpp/PlanNodes_types.h>
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -496,6 +498,41 @@ TEST_F(WalManagerTest, TestDynamicWalSpaceLimt) {
     config::group_commit_wal_max_disk_limit = "-1M";
     EXPECT_EQ(_env->wal_mgr()->_init_wal_dirs_info(), Status::InternalError(""));
     EXPECT_EQ(_env->wal_mgr()->wal_limit_test_bytes, available_bytes);
+}
+
+TEST(WalTableReplayIntervalTest, TestBackOffDoesNotOverflow) {
+    auto origin_retry_num = config::group_commit_replay_wal_retry_num;
+    auto origin_interval_seconds = config::group_commit_replay_wal_retry_interval_seconds;
+    auto origin_interval_max_seconds = config::group_commit_replay_wal_retry_interval_max_seconds;
+    Defer defer([&]() {
+        config::group_commit_replay_wal_retry_num = origin_retry_num;
+        config::group_commit_replay_wal_retry_interval_seconds = origin_interval_seconds;
+        config::group_commit_replay_wal_retry_interval_max_seconds = origin_interval_max_seconds;
+    });
+
+    // the defaults: doubling from 5 s for 10 retries, then 1800 s more per retry
+    config::group_commit_replay_wal_retry_num = 10;
+    config::group_commit_replay_wal_retry_interval_seconds = 5;
+    config::group_commit_replay_wal_retry_interval_max_seconds = 1800;
+    EXPECT_EQ(5000, WalTable::replay_interval_ms(0));
+    EXPECT_EQ(10000, WalTable::replay_interval_ms(1));
+    EXPECT_EQ(2560000, WalTable::replay_interval_ms(9));
+    EXPECT_EQ(5120000, WalTable::replay_interval_ms(10));
+    EXPECT_EQ(5120000 + 1800000, WalTable::replay_interval_ms(11));
+    // (retry_num - 10) * 1800 * 1000 overflowed int32 from retry 1204 on, about 25 days after registration
+    EXPECT_EQ(5120000 + 1193LL * 1800000, WalTable::replay_interval_ms(1203));
+    EXPECT_EQ(5120000 + 1194LL * 1800000, WalTable::replay_interval_ms(1204));
+    EXPECT_EQ(5120000 + 100000LL * 1800000, WalTable::replay_interval_ms(100010));
+    const int32_t max_retry_num = std::numeric_limits<int32_t>::max();
+    EXPECT_EQ(5120000 + (max_retry_num - 10LL) * 1800000,
+              WalTable::replay_interval_ms(max_retry_num));
+
+    // a large interval max overflowed int32 at the first retry already
+    config::group_commit_replay_wal_retry_num = 0;
+    config::group_commit_replay_wal_retry_interval_max_seconds = 2147484;
+    EXPECT_EQ(5000, WalTable::replay_interval_ms(0));
+    EXPECT_EQ(5000 + 2147484000LL, WalTable::replay_interval_ms(1));
+    EXPECT_EQ(5000 + 2 * 2147484000LL, WalTable::replay_interval_ms(2));
 }
 
 } // namespace doris

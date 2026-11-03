@@ -105,6 +105,14 @@ group_commit_insert_rpc_timeout_second (default 300) instead of the whole insert
 timeout. The BE request is not cancelled, so rows of a timed-out insert may still be
 written; do not retry such an insert blindly.
 
+Group commit WAL replay: a WAL that keeps failing to replay is retried every
+group_commit_replay_wal_retry_interval_max_seconds (default 1800) for good. Before,
+an integer overflow made it replay every 5 seconds from about 25 days after the BE
+registered it, and each attempt made the FE send clear transaction tasks to all BEs.
+A failed replay now aborts its transaction at once instead of leaving it open until
+the next attempt. Reports of clear transaction tasks are no longer logged as
+warnings in fe.warn.log.
+
 rc415 更新：源码基线升级至 Apache Doris 4.1.5-release；保留 MassDB 品牌、
 JDBC 数组精度、报告去重与并行处理、存储介质缓存、compaction 防护、
 Group Commit 超时与元数据工具初始化修复。已有上游修复使用 4.1.5 的实现。
@@ -123,4 +131,8 @@ JDBC catalog 支持 Doris 的 DECIMAL(p) 以及后接属性的类型声明。库
 （如 home、Session）时，刷新 Playground 页面可正常加载。预编译 Group Commit 插入等待
 BE 的时间不超过内部攒批导入超时加 group_commit_insert_rpc_timeout_second（默认 300 秒），
 不再等满整个导入超时；BE 端请求不会被取消，超时报错的插入仍可能写入，不应直接重试。
+Group Commit WAL 重放：一直无法重放的 WAL 始终按 group_commit_replay_wal_retry_interval_max_seconds
+（默认 1800 秒）重试。此前整数溢出使其在 BE 登记约 25 天后变为每 5 秒重放一次，每次都让 FE
+向所有 BE 发送清理事务任务。重放失败时立即中止本次事务，不再留到下一次重放时才中止。
+清理事务任务的回报不再以 WARN 写入 fe.warn.log。
 历史二进制审查记录仅适用于原审查包，不代表 rc415 已完成构建或验证。

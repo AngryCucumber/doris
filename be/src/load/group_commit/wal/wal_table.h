@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 #pragma once
 #include <gen_cpp/FrontendService.h>
 #include <gen_cpp/FrontendService_types.h>
@@ -41,6 +42,10 @@ public:
     size_t size();
     void stop();
     std::string get_last_replay_wal_failed_reason() const;
+    // How long after its registration a WAL that failed retry_num times is replayed again: doubling from
+    // group_commit_replay_wal_retry_interval_seconds for the first group_commit_replay_wal_retry_num
+    // retries, then group_commit_replay_wal_retry_interval_max_seconds more for each further retry.
+    static int64_t replay_interval_ms(int32_t retry_num);
 
 private:
     void _pick_relay_wals();

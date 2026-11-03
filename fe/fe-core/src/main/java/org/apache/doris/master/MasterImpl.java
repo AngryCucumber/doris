@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.master;
 
@@ -143,12 +144,17 @@ public class MasterImpl {
                 errorMsgs.add(errMsg);
                 tStatus.setErrorMsgs(errorMsgs);
             } else {
-                // drop task is not in AgentTaskQueue
-                if (taskType != TTaskType.DROP) {
-                    LOG.warn("Finish task rpc got null task for request={}", request);
-                } else {
+                if (taskType == TTaskType.DROP) {
                     // drop task is not in AgentTaskQueue
                     LOG.info("Finish task rpc for request={}", request);
+                } else if (taskType == TTaskType.CLEAR_TRANSACTION_TASK) {
+                    // clear transaction tasks are not in AgentTaskQueue either: every aborted txn sends one to each
+                    // backend, so a WARN per report flooded fe.warn.log (about 1000 lines/s with WAL replays failing)
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug("Finish task rpc for request={}", request);
+                    }
+                } else {
+                    LOG.warn("Finish task rpc got null task for request={}", request);
                 }
             }
             return result;
