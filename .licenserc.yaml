@@ -21,6 +21,8 @@ header:
     - "fe/be-java-extensions/jdbc-scanner/src/test/java/org/apache/doris/jdbc/massdb/MySQLJdbcArrayTest.java"
     - "fe/fe-core/src/test/java/org/apache/doris/catalog/massdb/CooldownReplicaCheckTest.java"
     - "fe/fe-core/src/test/java/org/apache/doris/catalog/massdb/StorageMediumMapCacheTest.java"
+    - "fe/fe-core/src/test/java/org/apache/doris/cloud/load/massdb/CloudLoadManagerTest.java"
+    - "fe/fe-core/src/test/java/org/apache/doris/httpv2/massdb/HttpServerTest.java"
     - "fe/fe-core/src/test/java/org/apache/doris/master/ReportHandlerTest.java"
     - "fe/fe-core/src/test/java/org/apache/doris/planner/massdb/GroupCommitInsertRpcTimeoutTest.java"
     - "ui/scripts/base-href.test.cjs"

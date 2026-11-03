@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.httpv2;
 
@@ -191,7 +192,7 @@ public class HttpServer extends SpringBootServletInitializer {
     }
 
     @VisibleForTesting
-    void addJettyProperties(Map<String, Object> properties, int cores) {
+    public void addJettyProperties(Map<String, Object> properties, int cores) {
         // enable jetty config, with the property names of Spring Boot 3.
         // These settings were ignored while the old property names were used, so a value Jetty cannot run with never
         // mattered. Jetty refuses to start with such values and the FE would not start: use the defaults instead.
