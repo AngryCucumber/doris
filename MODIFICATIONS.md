@@ -4,6 +4,38 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `917b20be8387
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## Complex-input comparison after the WAL fixes (2026-11-04, R2)
+
+- Add `docs/massdb-sql-comparison-test-20261104-r2.md` for the confirmed
+  `49f67bdbb94` baseline and the `2f21ee39070` candidate. Preserve the earlier
+  comparison and distinguish new executions from reused, unchanged-module
+  evidence. This report changes no product implementation.
+- Record changing byte-exact IPv4/IPv6, Unicode, binary-file and HTTP inputs,
+  nested WAL recovery, concurrency, upgrades, selected unit/regression tests,
+  query measurements and repeated file-throughput comparisons. Retain shared
+  data-integrity defects, the short-timeout recovery regression, protocol
+  observations and the unresolved gzip performance signal.
+- Keep original failures and their controls, including the regression suite's
+  global WAL-count interference and its isolated rerun, under
+  `.build-records/codex-http-complex-retest-20261104-r2/`. Seal the report,
+  changing inputs, tool snapshots, raw measurements and provenance together.
+
+## Independent version comparison (2026-11-04)
+
+- Add `docs/massdb-sql-comparison-test-20261104.md` for the user-confirmed
+  same-branch comparison of `49f67bdbb94` and `b31b5da06ac`. Withdraw the earlier
+  comparison against a package from the `2.0.5-license` branch; its upgrade,
+  performance and defect-attribution conclusions do not apply to this scope.
+- Record changing independent data oracles, failure recovery, node loss,
+  upgrade compatibility, unit/regression results, and paired performance runs.
+  Distinguish inherited defects, regressions, repaired behavior, test-fixture
+  failures and unexecuted scenarios; this report changes no product code.
+- Retain the corrected comparison's probes, captured WAL fixtures, source and
+  binary identities, and raw results under
+  `.build-records/codex-same-branch-retest-20261104/`. Preserve the earlier
+  campaign separately under `.build-records/codex-independent-retest-20261104/`
+  so the withdrawn report and original measurements remain auditable.
+
 ## Doris 4.1.5 baseline and MassDB 2.0.5-rc415 (2026-10-28)
 
 - Base branch `4.1.5` on upstream tag `4.1.5-release`; migrate the product
