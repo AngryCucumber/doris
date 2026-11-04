@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #pragma once
 
@@ -23,6 +24,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <future>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -207,7 +209,15 @@ private:
     std::string _create_plan_failed_reason;
     int _create_plan_be_exe_version = 0;
     int64_t _create_plan_start_time_ms = 0;
+    // consecutive failed attempts to create a plan fragment, and the MonotonicMillis() before which
+    // no further attempt starts
+    int32_t _create_plan_failures = 0;
+    int64_t _create_plan_retry_at_ms = 0;
 };
+
+// How long to wait before the next attempt to create a group commit plan fragment after `failures`
+// consecutive failed ones: 50 ms, doubled per failure, at most 1 s (0 for no failure).
+int64_t group_commit_create_plan_retry_interval_ms(int32_t failures);
 
 class GroupCommitMgr {
 public:
@@ -229,7 +239,8 @@ public:
     void remove_load_id(int64_t table_id, const UniqueId& load_id);
     std::promise<Status> debug_promise;
     std::future<Status> debug_future = debug_promise.get_future();
-    void add_need_create_plan_table(int64_t table_id);
+    // Has the worker create a plan fragment for the table, not before MonotonicMillis() is due_ms.
+    void add_need_create_plan_table(int64_t table_id, int64_t due_ms = 0);
     std::shared_ptr<MemTrackerLimiter> group_commit_mem_tracker() {
         return _group_commit_mem_tracker;
     }
@@ -247,7 +258,8 @@ private:
     std::unordered_map<int64_t, std::shared_ptr<GroupCommitTable>> _table_map;
     std::mutex _need_create_plan_lock;
     std::condition_variable _need_create_plan_cv;
-    std::set<int64_t> _need_create_plan_tables;
+    // table id -> MonotonicMillis() from which its plan fragment is created
+    std::map<int64_t, int64_t> _need_create_plan_tables;
     bool _stopped = false;
     std::thread _create_plan_thread;
     std::shared_ptr<MemTrackerLimiter> _group_commit_mem_tracker;

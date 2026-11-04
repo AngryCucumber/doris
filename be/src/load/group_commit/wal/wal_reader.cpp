@@ -58,17 +58,23 @@ bool wal_column_is_nested(const DataTypePtr& type) {
     }
 }
 
+bool wal_column_is_all_null(const IColumn& column) {
+    const auto full_column = column.convert_to_full_column_if_const();
+    const auto* nullable = check_and_get_column<ColumnNullable>(full_column.get());
+    return nullable != nullptr &&
+           std::memchr(nullable->get_null_map_data().data(), 0, full_column->size()) == nullptr;
+}
+
 Status convert_wal_column(RuntimeState* state, const ColumnWithTypeAndName& column,
-                          const DataTypePtr& target_type, ColumnPtr* result) {
+                          const DataTypePtr& target_type, const DataTypePtr& table_type,
+                          ColumnPtr* result) {
     DORIS_CHECK(state != nullptr);
     DORIS_CHECK(result != nullptr);
     const auto result_type =
             column.type->is_nullable() ? make_nullable(target_type) : remove_nullable(target_type);
     const auto full_column = column.column->convert_to_full_column_if_const();
     const auto rows = full_column->size();
-    if (const auto* nullable = check_and_get_column<ColumnNullable>(full_column.get());
-        nullable != nullptr &&
-        std::memchr(nullable->get_null_map_data().data(), 0, rows) == nullptr) {
+    if (wal_column_is_all_null(*full_column)) {
         // also the only way for a type that no CAST accepts, e.g. an IPV6 column planned for an INT
         // column, whose values were lost to NULL when it was written
         auto nulls = result_type->create_column();
@@ -76,9 +82,11 @@ Status convert_wal_column(RuntimeState* state, const ColumnWithTypeAndName& colu
         *result = std::move(nulls);
         return Status::OK();
     }
-    if (wal_column_is_nested(target_type)) {
-        return Status::InternalError("{} is not converted to {}: only all-NULL blocks are",
-                                     column.type->get_name(), result_type->get_name());
+    if (wal_column_is_nested(table_type)) {
+        return Status::InternalError(
+                "{} is not converted to {}: the table column is {}, to which only all-NULL blocks "
+                "are converted",
+                column.type->get_name(), result_type->get_name(), table_type->get_name());
     }
     ColumnsWithTypeAndName arguments {{full_column, column.type, column.name}};
     // as format::Cast and VExprContext set up the cast of a file column to its table type
@@ -169,7 +177,8 @@ Status WalReader::get_next_block(Block* block, size_t* read_rows, bool* eof) {
         }
         const auto& target_type = output_block_columns[index].type;
         if (!wal_column_type_matches(source.type, target_type)) {
-            auto convert_st = convert_wal_column(_state, source, target_type, &column_ptr);
+            auto convert_st =
+                    convert_wal_column(_state, source, target_type, target_type, &column_ptr);
             if (!convert_st.ok()) {
                 // not DATA_QUALITY_ERROR: WalTable deletes a WAL that fails with it, and the other
                 // blocks hold rows that can be loaded; the WAL is kept and retried

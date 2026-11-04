@@ -14,13 +14,17 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #include "load/group_commit/group_commit_mgr.h"
 
 #include <gen_cpp/Types_types.h>
 #include <glog/logging.h>
 
+#include <algorithm>
 #include <chrono>
+#include <limits>
+#include <vector>
 
 #include "cloud/config.h"
 #include "common/compiler_util.h"
@@ -373,6 +377,15 @@ Status GroupCommitTable::_submit_create_group_commit_load() {
             return Status::OK();
         }
     }
+    if (_create_plan_retry_at_ms > MonotonicMillis()) {
+        // Back off after failed attempts, e.g. while the FE rejects new transactions; retrying at once
+        // sent the FE thousands of plan requests a second per table and BE. The worker submits again
+        // when the interval is over, also for the loads that arrive meanwhile.
+        if (_group_commit_mgr) {
+            _group_commit_mgr->add_need_create_plan_table(_table_id, _create_plan_retry_at_ms);
+        }
+        return Status::OK();
+    }
 
     auto mem_tracker = _group_commit_mgr->group_commit_mem_tracker();
     int be_exe_version = _create_plan_be_exe_version;
@@ -386,6 +399,15 @@ Status GroupCommitTable::_submit_create_group_commit_load() {
             std::unique_lock l(_lock);
             _is_creating_plan_fragment = false;
             _create_plan_failed_reason = create_plan_failed_reason;
+            if (create_group_commit_st.ok()) {
+                _create_plan_failures = 0;
+                _create_plan_retry_at_ms = 0;
+            } else {
+                ++_create_plan_failures;
+                _create_plan_retry_at_ms =
+                        MonotonicMillis() +
+                        group_commit_create_plan_retry_interval_ms(_create_plan_failures);
+            }
             if (created_load_block_queue && create_group_commit_st.ok() &&
                 !created_load_block_queue->need_commit()) {
                 std::vector<UniqueId> success_load_ids;
@@ -428,8 +450,9 @@ Status GroupCommitTable::_submit_create_group_commit_load() {
                 need_resubmit = true;
             }
             if (need_resubmit && _group_commit_mgr) {
-                LOG(INFO) << "resubmit create group commit load task for table: " << _table_id;
-                _group_commit_mgr->add_need_create_plan_table(_table_id);
+                LOG(INFO) << "resubmit create group commit load task for table: " << _table_id
+                          << ", failed attempts: " << _create_plan_failures;
+                _group_commit_mgr->add_need_create_plan_table(_table_id, _create_plan_retry_at_ms);
             }
         }};
         create_group_commit_st =
@@ -474,6 +497,8 @@ void GroupCommitTable::remove_load_id(const UniqueId& load_id) {
 Status GroupCommitTable::_create_group_commit_load(
         int be_exe_version, const std::shared_ptr<MemTrackerLimiter>& mem_tracker,
         std::shared_ptr<LoadBlockQueue>& created_load_block_queue) {
+    DBUG_EXECUTE_IF("GroupCommitTable._create_group_commit_load.error",
+                    { return Status::InternalError("injected group commit plan creation error"); });
     Status st = Status::OK();
     TStreamLoadPutResult result;
     std::string label;
@@ -796,6 +821,15 @@ Status GroupCommitTable::get_load_block_queue(const TUniqueId& instance_id,
     return Status::OK();
 }
 
+int64_t group_commit_create_plan_retry_interval_ms(int32_t failures) {
+    if (failures <= 0) {
+        return 0;
+    }
+    constexpr int64_t first_interval_ms = 50;
+    constexpr int64_t max_interval_ms = 1000;
+    return std::min(max_interval_ms, first_interval_ms << std::min(failures - 1, 20));
+}
+
 GroupCommitMgr::GroupCommitMgr(ExecEnv* exec_env) : _exec_env(exec_env) {
     static_cast<void>(ThreadPoolBuilder("GroupCommitThreadPool")
                               .set_min_threads(1)
@@ -828,13 +862,16 @@ void GroupCommitMgr::stop() {
     LOG(INFO) << "GroupCommitMgr is stopped";
 }
 
-void GroupCommitMgr::add_need_create_plan_table(int64_t table_id) {
+void GroupCommitMgr::add_need_create_plan_table(int64_t table_id, int64_t due_ms) {
     {
         std::lock_guard<std::mutex> l(_need_create_plan_lock);
         if (_stopped) {
             return;
         }
-        _need_create_plan_tables.insert(table_id);
+        auto [it, inserted] = _need_create_plan_tables.emplace(table_id, due_ms);
+        if (!inserted) {
+            it->second = std::min(it->second, due_ms);
+        }
     }
     _need_create_plan_cv.notify_one();
 }
@@ -842,15 +879,35 @@ void GroupCommitMgr::add_need_create_plan_table(int64_t table_id) {
 void GroupCommitMgr::_create_plan_worker() {
     SCOPED_INIT_THREAD_CONTEXT();
     while (true) {
-        std::set<int64_t> need_create_plan_tables;
+        std::vector<int64_t> need_create_plan_tables;
         {
             std::unique_lock<std::mutex> l(_need_create_plan_lock);
-            _need_create_plan_cv.wait(
-                    l, [this] { return _stopped || !_need_create_plan_tables.empty(); });
-            if (_stopped && _need_create_plan_tables.empty()) {
-                return;
+            while (true) {
+                if (_stopped && _need_create_plan_tables.empty()) {
+                    return;
+                }
+                const int64_t now_ms = MonotonicMillis();
+                int64_t next_due_ms = std::numeric_limits<int64_t>::max();
+                for (auto it = _need_create_plan_tables.begin();
+                     it != _need_create_plan_tables.end();) {
+                    if (_stopped || it->second <= now_ms) {
+                        need_create_plan_tables.push_back(it->first);
+                        it = _need_create_plan_tables.erase(it);
+                    } else {
+                        next_due_ms = std::min(next_due_ms, it->second);
+                        ++it;
+                    }
+                }
+                if (!need_create_plan_tables.empty()) {
+                    break;
+                }
+                if (next_due_ms == std::numeric_limits<int64_t>::max()) {
+                    _need_create_plan_cv.wait(l);
+                } else {
+                    _need_create_plan_cv.wait_for(l,
+                                                  std::chrono::milliseconds(next_due_ms - now_ms));
+                }
             }
-            need_create_plan_tables.swap(_need_create_plan_tables);
         }
         for (const auto table_id : need_create_plan_tables) {
             std::shared_ptr<GroupCommitTable> group_commit_table;

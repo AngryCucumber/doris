@@ -55,6 +55,9 @@ private:
     Status _ensure_schema_loaded() const;
     Status _validate_block_version(const PBlock& pblock) const;
     Status _init_schema_from_block(const PBlock* pblock) const;
+    // Declares each of the given nested columns, whose first block is all NULL, with the type of
+    // its first block that holds a value, or with the table type if it holds none.
+    void _describe_all_null_first_columns(std::vector<size_t> columns) const;
     // Moves the requested columns of a block into the file block, converting a column whose type
     // differs from the file schema type (block_index is for error messages).
     Status _materialize_requested_columns(Block* source_block, Block* file_block,
@@ -67,6 +70,8 @@ private:
     uint32_t _version = 0;
     std::vector<int32_t> _column_ids;
     mutable std::vector<ColumnDefinition> _file_schema;
+    // the table column type of each WAL column, nullptr for one that is not projected
+    mutable std::vector<DataTypePtr> _table_types;
     mutable PBlock _first_block;
     mutable bool _first_block_loaded = false;
     mutable bool _first_block_consumed = false;

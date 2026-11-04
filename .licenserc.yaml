@@ -6,6 +6,7 @@ header:
   paths-ignore:
     # Commercial and independent Apache files are validated by check-source-headers.py.
     # BEGIN MassDB separately checked headers
+    - "be/test/load/group_commit/group_commit_mgr_test.cpp"
     - "build-support/check-source-headers.py"
     - "build-support/prepare-product-notices.py"
     - "build-support/python-runtime/build-python-runtime.py"

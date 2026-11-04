@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #include "service/http/action/stream_load.h"
 
@@ -918,9 +919,6 @@ Status StreamLoadAction::_can_group_commit(HttpRequest* req, std::shared_ptr<Str
         can_group_commit = false;
         return Status::OK();
     }
-    if (is_chunk) {
-        ctx->label = "";
-    }
 
     auto partial_columns = !req->header(HTTP_PARTIAL_COLUMNS).empty() &&
                            iequal(req->header(HTTP_PARTIAL_COLUMNS), "true");
@@ -932,6 +930,14 @@ Status StreamLoadAction::_can_group_commit(HttpRequest* req, std::shared_ptr<Str
              iequal(req->header(HTTP_UNIQUE_KEY_UPDATE_MODE), "UPDATE_FLEXIBLE_COLUMNS"));
     if (!partial_columns && !partitions && !temp_partitions && !ctx->two_phase_commit &&
         !update_mode) {
+        // Flink sends a label with every chunked load, also one that asks for group commit, which
+        // takes no label. Drop the label only for such a load: one without a group_commit header is
+        // a normal load unless the table's group_commit_mode says otherwise, and keeps its label
+        // (a two-phase commit or partial update never gets here); dropping it there made a retry with
+        // the same label load the data twice.
+        if (is_chunk && !group_commit_header.empty()) {
+            ctx->label = "";
+        }
         if (!config::wait_internal_group_commit_finish && !group_commit_header.empty() &&
             !ctx->label.empty()) {
             return Status::InvalidArgument("label and group_commit can't be set at the same time");

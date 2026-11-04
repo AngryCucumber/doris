@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #include "service/http/action/http_stream.h"
 
@@ -467,15 +468,17 @@ Status HttpStreamAction::_handle_group_commit(HttpRequest* req,
         ctx->group_commit = false;
         return Status::OK();
     }
-    if (is_chunk) {
-        ctx->label = "";
-    }
 
     auto partial_columns = !req->header(HTTP_PARTIAL_COLUMNS).empty() &&
                            iequal(req->header(HTTP_PARTIAL_COLUMNS), "true");
     auto temp_partitions = !req->header(HTTP_TEMP_PARTITIONS).empty();
     auto partitions = !req->header(HTTP_PARTITIONS).empty();
     if (!partial_columns && !partitions && !temp_partitions && !ctx->two_phase_commit) {
+        // a chunked load (Flink) sends its label also with group commit, which takes none; a load
+        // that does not go through group commit keeps it
+        if (is_chunk) {
+            ctx->label = "";
+        }
         if (!config::wait_internal_group_commit_finish && !ctx->label.empty()) {
             return Status::InvalidArgument("label and group_commit can't be set at the same time");
         }

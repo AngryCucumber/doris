@@ -417,7 +417,8 @@ while the FE kept serving queries. Cloud mode runtime was not exercised.
   whose first block differs from it, also when that block is of a nested type
   (the WAL's column ids are the table's), and keeps the first block's schema
   otherwise; ARRAY, MAP, STRUCT and VARIANT table columns keep the first block's
-  shape. Every block's column whose type differs from the declared one, up to
+  shape (all-NULL first blocks and the rule for nested columns changed on 2026-11-04, see below).
+  Every block's column whose type differs from the declared one, up to
   nullability, is converted before it is handed on, so a scalar block is cast to
   the table type itself and never twice.
 - `convert_wal_column` (in the legacy `load/group_commit/wal/wal_reader`, which
@@ -468,6 +469,53 @@ while the FE kept serving queries. Cloud mode runtime was not exercised.
   header under `massdb/` packages (`httpv2.massdb.HttpServerTest`,
   `cloud.load.massdb.CloudLoadManagerTest`), so
   `HttpServer.addJettyProperties(Map, int)` is public for testing.
+
+## Fixes from the same-branch comparison test (2026-11-04)
+
+- Fix the four defects that the independent comparison of `49f67bdbb94` and
+  `b31b5da06ac` (`docs/massdb-sql-comparison-test-20261104.md`) reports as
+  P1-1, P1-2, P1-3 and P2-3. All are BE changes.
+- WAL replay into a VARIANT column, a regression of `fcea19125bb` and
+  `047ec5a4dd2`: before VARIANT blocks, an all-NULL block of another type made
+  `format_v2::wal::WalReader` declare that type and cast the VARIANT values to
+  it; the replay's casts are not strict, so the values became NULLs, and the
+  replay succeeded and deleted the WAL. Whether a block other than an all-NULL
+  one may be converted for an ARRAY, MAP, STRUCT or VARIANT table column is now
+  decided by the table type, no longer by the declared one (`convert_wal_column`
+  takes the table type): such blocks are never cast, also not to the scalar type
+  of a first block. A nested column whose first block is all NULL is declared
+  with the type of its first block that holds a value (the WAL is read a second
+  time, one block at a time, until there is one), or with the table type if no
+  block holds one; the mapper then maps it as it maps a WAL of that type only.
+  Casting other blocks to VARIANT was tried and rejected: a differential test
+  found DATETIME blocks cast after VARIANT blocks loaded as packed integers,
+  DATE and DECIMAL blocks failing, and MAP WALs failing for a VARIANT column.
+- STRUCT values of every group commit WAL replayed by FileScannerV2, in upstream
+  4.1.5: the mapper matches WAL columns by field id down to STRUCT children, and
+  the WAL reader gave the children none, so every child was loaded as its
+  default, NULL, and the replay succeeded and deleted the WAL. WAL children now
+  carry their positions as field ids, as the table column's children do without
+  an external schema. The legacy reader was not affected.
+- Labels of chunked stream loads, in upstream 4.1.5: since loads without a
+  `group_commit` header reach `StreamLoadAction::_can_group_commit` (for the
+  table's `group_commit_mode`), it dropped the label of every chunked load, also
+  of a two-phase commit, and a retry with the same label loaded the data twice.
+  As in 4.0.5, only a load that asks for group commit by the header, and can
+  take it, drops the label that Flink sends with every chunked load.
+  `HttpStreamAction` likewise keeps the label of a load that cannot take group
+  commit.
+- Retries of group commit plan creation, in upstream 4.1.5: after a failed
+  attempt, e.g. while the FE rejects new transactions, the BE retried at once
+  until `group_commit_create_plan_timeout_ms` (120 s by default), about 1,900
+  FE plan requests a second for one table. It now waits 50 ms, doubled per
+  failure up to 1 s, also for loads that arrive meanwhile; the timeout is
+  unchanged. The create-plan worker keeps a due time per table. Add the BE debug
+  point `GroupCommitTable._create_group_commit_load.error`.
+- Tests: `format_v2/wal/wal_reader_test.cpp` (VARIANT, all-NULL first blocks
+  before blocks with values, columns NULL in every block, the table-type rule,
+  STRUCT child mapping), `service/http/stream_load_test.cpp`
+  (labels of chunked loads) and the new `load/group_commit/group_commit_mgr_test.cpp`
+  (company header).
 
 ## Complete rc02 release builds (2026-09-09)
 

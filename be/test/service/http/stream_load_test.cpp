@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #include "service/http/action/stream_load.h"
 
@@ -194,5 +195,101 @@ TEST_F(StreamLoadTest, HttpStreamBodySizeLimitPlusOneErrorIncludesExactBytes) {
               "(100 MiB) set by BE config `streaming_load_max_mb`. Increase it if you are sure "
               "this load is reasonable");
     evhttp_request_free(evhttp_req);
+}
+
+namespace {
+
+// A chunked load with a label, as Flink sends one, through _handle_group_commit.
+struct LabeledChunkedLoad {
+    evhttp_request* evhttp_req = evhttp_request_new(nullptr, nullptr);
+    HttpRequest req {evhttp_req};
+    std::shared_ptr<StreamLoadContext> ctx = std::make_shared<StreamLoadContext>(nullptr);
+
+    LabeledChunkedLoad(const std::string& group_commit, bool two_phase_commit,
+                       const std::string& transfer_encoding = "chunked") {
+        if (!transfer_encoding.empty()) {
+            req.set_header(HttpHeaders::TRANSFER_ENCODING, transfer_encoding);
+        } else {
+            req.set_header(HttpHeaders::CONTENT_LENGTH, "19");
+        }
+        if (!group_commit.empty()) {
+            req.set_header(HTTP_GROUP_COMMIT, group_commit);
+        }
+        ctx->label = "flink_label_1";
+        ctx->two_phase_commit = two_phase_commit;
+    }
+    ~LabeledChunkedLoad() { evhttp_request_free(evhttp_req); }
+};
+
+} // namespace
+
+// A chunked load drops its label only when it asks for group commit by its group_commit header and
+// can take it. Dropping it for a load without that header (a normal load unless the table's
+// group_commit_mode says otherwise) or for a two-phase commit made a retry with the same label load
+// the data twice.
+TEST_F(StreamLoadTest, ChunkedLoadKeepsItsLabelUnlessItGoesThroughGroupCommit) {
+    const auto original_wait = config::wait_internal_group_commit_finish;
+    Defer restore {[original_wait] { config::wait_internal_group_commit_finish = original_wait; }};
+    config::wait_internal_group_commit_finish = false;
+    StreamLoadAction action(nullptr);
+    {
+        LabeledChunkedLoad load("", false);
+        ASSERT_TRUE(action._handle_group_commit(&load.req, load.ctx).ok());
+        EXPECT_EQ(load.ctx->label, "flink_label_1");
+        EXPECT_FALSE(load.ctx->group_commit);
+        EXPECT_EQ(load.ctx->group_commit_mode, ""); // the table's group_commit_mode decides
+    }
+    {
+        LabeledChunkedLoad load("", true);
+        ASSERT_TRUE(action._handle_group_commit(&load.req, load.ctx).ok());
+        EXPECT_EQ(load.ctx->label, "flink_label_1");
+        EXPECT_FALSE(load.ctx->group_commit);
+    }
+    {
+        LabeledChunkedLoad load("off_mode", false);
+        ASSERT_TRUE(action._handle_group_commit(&load.req, load.ctx).ok());
+        EXPECT_EQ(load.ctx->label, "flink_label_1");
+        EXPECT_FALSE(load.ctx->group_commit);
+    }
+    {
+        LabeledChunkedLoad load("sync_mode", true);
+        ASSERT_TRUE(action._handle_group_commit(&load.req, load.ctx).ok());
+        EXPECT_EQ(load.ctx->label, "flink_label_1");
+        EXPECT_FALSE(load.ctx->group_commit);
+    }
+    {
+        // Flink with group commit, as before
+        LabeledChunkedLoad load("sync_mode", false);
+        ASSERT_TRUE(action._handle_group_commit(&load.req, load.ctx).ok());
+        EXPECT_EQ(load.ctx->label, "");
+        EXPECT_TRUE(load.ctx->group_commit);
+        EXPECT_EQ(load.ctx->group_commit_mode, "sync_mode");
+    }
+    {
+        // a load of known length still may not set both
+        LabeledChunkedLoad load("sync_mode", false, "");
+        auto st = action._handle_group_commit(&load.req, load.ctx);
+        EXPECT_TRUE(st.is<ErrorCode::INVALID_ARGUMENT>()) << st;
+        EXPECT_EQ(load.ctx->label, "flink_label_1");
+    }
+}
+
+TEST_F(StreamLoadTest, ChunkedHttpStreamKeepsItsLabelUnlessItGoesThroughGroupCommit) {
+    const auto original_wait = config::wait_internal_group_commit_finish;
+    Defer restore {[original_wait] { config::wait_internal_group_commit_finish = original_wait; }};
+    config::wait_internal_group_commit_finish = false;
+    HttpStreamAction action(nullptr);
+    {
+        LabeledChunkedLoad load("sync_mode", true);
+        ASSERT_TRUE(action._handle_group_commit(&load.req, load.ctx).ok());
+        EXPECT_EQ(load.ctx->label, "flink_label_1");
+        EXPECT_FALSE(load.ctx->group_commit);
+    }
+    {
+        LabeledChunkedLoad load("sync_mode", false);
+        ASSERT_TRUE(action._handle_group_commit(&load.req, load.ctx).ok());
+        EXPECT_EQ(load.ctx->label, "");
+        EXPECT_TRUE(load.ctx->group_commit);
+    }
 }
 } // namespace doris
