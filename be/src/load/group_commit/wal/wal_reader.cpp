@@ -46,6 +46,18 @@ bool wal_column_type_matches(const DataTypePtr& block_type, const DataTypePtr& e
             expected_nested->get_primitive_type() == TYPE_VARIANT);
 }
 
+bool wal_column_is_nested(const DataTypePtr& type) {
+    switch (remove_nullable(type)->get_primitive_type()) {
+    case TYPE_ARRAY:
+    case TYPE_MAP:
+    case TYPE_STRUCT:
+    case TYPE_VARIANT:
+        return true;
+    default:
+        return false;
+    }
+}
+
 Status convert_wal_column(RuntimeState* state, const ColumnWithTypeAndName& column,
                           const DataTypePtr& target_type, ColumnPtr* result) {
     DORIS_CHECK(state != nullptr);
@@ -63,6 +75,10 @@ Status convert_wal_column(RuntimeState* state, const ColumnWithTypeAndName& colu
         nulls->insert_many_defaults(rows);
         *result = std::move(nulls);
         return Status::OK();
+    }
+    if (wal_column_is_nested(target_type)) {
+        return Status::InternalError("{} is not converted to {}: only all-NULL blocks are",
+                                     column.type->get_name(), result_type->get_name());
     }
     ColumnsWithTypeAndName arguments {{full_column, column.type, column.name}};
     // as format::Cast and VExprContext set up the cast of a file column to its table type

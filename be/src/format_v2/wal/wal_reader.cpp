@@ -82,18 +82,6 @@ ColumnDefinition build_wal_column_definition(const PColumnMeta& meta, int32_t lo
     return field;
 }
 
-bool is_nested_or_variant(const DataTypePtr& type) {
-    switch (remove_nullable(type)->get_primitive_type()) {
-    case TYPE_ARRAY:
-    case TYPE_MAP:
-    case TYPE_STRUCT:
-    case TYPE_VARIANT:
-        return true;
-    default:
-        return false;
-    }
-}
-
 } // namespace
 
 Status parse_wal_column_ids(const std::string& encoded, std::vector<int32_t>* column_ids) {
@@ -276,19 +264,20 @@ Status WalReader::_init_schema_from_block(const PBlock* pblock) const {
             // mapper can validate ARRAY/MAP/STRUCT projections instead of seeing an empty shell.
             field = build_wal_column_definition(meta, cast_set<int32_t>(idx));
             field.identifier = Field::create_field<TYPE_INT>(_column_ids[idx]);
-            // The blocks of one WAL can disagree on a scalar column's type, so the first block does
-            // not describe the file; the WAL's column ids are the table's, and every block is
-            // converted to that table type (_materialize_requested_columns). Only when the first
-            // block differs from it: otherwise the schema stays exactly the first block's.
+            // The blocks of one WAL can disagree on a column's type, so the first block does not
+            // describe the file. For a scalar table column the WAL's column id names, take the table
+            // type when the first block differs from it, so that every block is converted to the table
+            // type itself (_materialize_requested_columns) and never twice; otherwise the schema stays
+            // exactly the first block's. A nested table column keeps the first block's shape.
             const auto projected =
                     std::ranges::find_if(_projected_columns, [&](const auto& candidate) {
                         return candidate.has_identifier_field_id() &&
                                candidate.get_identifier_field_id() == _column_ids[idx];
                     });
-            if (projected != _projected_columns.end() && !is_nested_or_variant(field.type) &&
-                !is_nested_or_variant(projected->type) &&
+            if (projected != _projected_columns.end() && !wal_column_is_nested(projected->type) &&
                 !wal_column_type_matches(field.type, projected->type)) {
                 field.type = make_nullable(projected->type);
+                field.children.clear();
             }
         } else {
             const auto projected =
