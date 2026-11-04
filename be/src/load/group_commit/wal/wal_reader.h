@@ -29,13 +29,19 @@ struct ScannerCounter;
 // the same type up to nullability. VARIANT columns are always handed on as they are.
 bool wal_column_type_matches(const DataTypePtr& block_type, const DataTypePtr& expected);
 
+// ARRAY, MAP, STRUCT and VARIANT: a WAL block is converted to such a type only when it is all NULL.
+bool wal_column_is_nested(const DataTypePtr& type);
+
 // Converts a WAL block column to the type the reader hands on. The blocks of one WAL can disagree on a
 // column's type (seen in WALs from 4.1.0: a VARCHAR block before DOUBLE blocks, an all-NULL IPV6 block
 // before INT blocks), and a reader that hands one block's column on under another block's type
-// crashes or fails on every replay. An all-NULL column becomes NULLs of the target type; any other
-// column is cast the way the file scan casts a file column to its table type, and a failed cast is an
-// error, never NULLs in place of values. The result keeps the column's nullability. Callers fail the
-// replay with an error other than DATA_QUALITY_ERROR, which would make WalTable delete the WAL.
+// crashes or fails on every replay. An all-NULL column becomes NULLs of the target type. Any other
+// column is cast the way the file scan casts a file column to its table type, if the target type is
+// scalar (callers pass the table column's type, so nothing is cast twice). Nothing else is converted to
+// a nested type: the file scan maps no scalar to a nested type, and maps nested types element by element,
+// which a CAST need not match. A failed or refused cast is an error, never NULLs in place of values.
+// The result keeps the column's nullability. Callers fail the replay with an error other than
+// DATA_QUALITY_ERROR, which would make WalTable delete the WAL.
 Status convert_wal_column(RuntimeState* state, const ColumnWithTypeAndName& column,
                           const DataTypePtr& target_type, ColumnPtr* result);
 

@@ -413,22 +413,32 @@ while the FE kept serving queries. Cloud mode runtime was not exercised.
   file-to-table cast from the first block only: a later block went through a
   cast for another type, and a string block before numeric or date blocks
   crashed the BE (SIGSEGV) on every start.
-- `format_v2::wal::WalReader` declares the table type for a scalar column whose
-  first block differs from it (the WAL's column ids are the table's) and keeps
-  the first block's schema otherwise; ARRAY, MAP, STRUCT and VARIANT columns keep
-  their block metadata. Every block's column whose type differs from the
-  declared one, up to nullability, is converted before it is handed on.
+- `format_v2::wal::WalReader` declares the table type for a scalar table column
+  whose first block differs from it, also when that block is of a nested type
+  (the WAL's column ids are the table's), and keeps the first block's schema
+  otherwise; ARRAY, MAP, STRUCT and VARIANT table columns keep the first block's
+  shape. Every block's column whose type differs from the declared one, up to
+  nullability, is converted before it is handed on, so a scalar block is cast to
+  the table type itself and never twice.
 - `convert_wal_column` (in the legacy `load/group_commit/wal/wal_reader`, which
   `enable_file_scanner_v2 = false` uses and which converts the same way) turns
   an all-NULL column into NULLs of the target type, which is also the only way
   for a type no CAST accepts, and casts any other column with the CAST function
-  and the strictness the file scan uses for its file-to-table cast. A failed cast
+  and the strictness the file scan uses for its file-to-table cast, if the target
+  type is scalar. Nothing else is converted to a nested type: the file scan maps no
+  scalar to a nested type and maps nested types element by element, which a CAST
+  need not match. A failed or refused cast
   fails the replay with the WAL, block, column and both types named; it never
   writes NULLs in place of values, and it is an INTERNAL_ERROR, not a
   DATA_QUALITY_ERROR, for which `WalTable` would delete the WAL with the rows
   of its other blocks: the WAL is kept and retried. Blocks whose types agree are
   handed on as before, without a copy.
-- Add mixed-type cases to `format_v2/wal/wal_reader_test.cpp`.
+- Add mixed-type cases to `format_v2/wal/wal_reader_test.cpp`. A differential
+  test (WALs written by a BE, spliced block by block, against the unmodified BE
+  replaying each type's blocks alone) found the nested cases: a CAST through a
+  first block of ARRAY<INT> turned later STRING and ARRAY<BIGINT> blocks into
+  NULLs, and refusing every nested block failed ARRAY-to-STRING WALs the file
+  scan replays.
 
 ## Complete rc02 release builds (2026-09-09)
 

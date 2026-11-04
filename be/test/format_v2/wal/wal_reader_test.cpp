@@ -365,6 +365,55 @@ TEST(WalReaderV2Test, MatchingBlocksAreHandedOnUnchanged) {
     EXPECT_EQ(output.get_by_position(0).column.get(), original);
 }
 
+// A nested first block (here all NULL) before INT blocks: the INT table type is taken, the nested
+// block becomes NULLs, and nothing reaches a cast that reads it as an array.
+TEST(WalReaderV2Test, NestedFirstBlockTakesTheScalarTableType) {
+    const auto int_type = make_nullable(std::make_shared<DataTypeInt32>());
+    MixedWal wal({all_null(std::make_shared<DataTypeArray>(int_type), 3),
+                  nullable_numbers<TYPE_INT, DataTypeInt32>({41, 42})},
+                 int_type);
+    const auto file_type = wal.open();
+    EXPECT_TRUE(file_type->equals(*int_type)) << file_type->get_name();
+    ColumnPtr column;
+    bool eof = false;
+    ASSERT_TRUE(wal.next(file_type, &column, &eof).ok());
+    ASSERT_EQ(column->size(), 3);
+    EXPECT_TRUE((*column)[0].is_null());
+    ASSERT_TRUE(wal.next(file_type, &column, &eof).ok());
+    EXPECT_EQ((*column)[1].get<TYPE_INT>(), 42);
+}
+
+// Nothing but an all-NULL block is converted to a nested table type: the file scan maps no scalar to a
+// nested type. A nested block for a scalar table type is cast to it, as the file scan does.
+TEST(WalReaderV2Test, OnlyAllNullBlocksAreConvertedToANestedType) {
+    const auto string_type = make_nullable(std::make_shared<DataTypeString>());
+    const auto array_type = make_nullable(
+            std::make_shared<DataTypeArray>(make_nullable(std::make_shared<DataTypeInt32>())));
+    auto arrays = array_type->create_column();
+    Array value;
+    value.push_back(Field::create_field<TYPE_INT>(1));
+    value.push_back(Field::create_field<TYPE_INT>(2));
+    arrays->insert(Field::create_field<TYPE_ARRAY>(value));
+    MixedWal wal({{arrays->get_ptr(), array_type, "c"}, nullable_strings({"[3]"})}, array_type);
+    const auto file_type = wal.open();
+    ColumnPtr column;
+    bool eof = false;
+    ASSERT_TRUE(wal.next(file_type, &column, &eof).ok());
+    auto st = wal.next(file_type, &column, &eof);
+    ASSERT_FALSE(st.ok());
+    EXPECT_TRUE(st.is<ErrorCode::INTERNAL_ERROR>()) << st;
+    EXPECT_NE(st.to_string().find("is not converted"), std::string::npos) << st;
+
+    RuntimeState state;
+    ColumnPtr result;
+    EXPECT_TRUE(convert_wal_column(&state, all_null(string_type, 2), array_type, &result).ok());
+    EXPECT_EQ(result->size(), 2);
+    ASSERT_TRUE(
+            convert_wal_column(&state, {arrays->get_ptr(), array_type, "c"}, string_type, &result)
+                    .ok());
+    EXPECT_EQ(result->get_data_at(0).to_string(), "[1, 2]");
+}
+
 TEST(WalColumnConversionTest, TypeMatchIgnoresNullabilityAndStringLength) {
     const auto string_type = std::make_shared<DataTypeString>();
     EXPECT_TRUE(wal_column_type_matches(make_nullable(string_type),
