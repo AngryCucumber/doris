@@ -138,6 +138,26 @@ the FE keeps the Jetty thread for up to stream_load_redirect_bounded_drain_max_i
 (default 1000) when the client waits for 100-continue, as Flink does, so stream
 loads redirected per second are bounded by roughly the number of Jetty threads.
 
+Group commit fixes from the 2026-11-04 comparison test: a WAL replayed into a STRUCT
+column no longer loads every STRUCT field as NULL, and a WAL with an all-NULL block of
+another type before VARIANT blocks no longer loads the VARIANT values as NULL. Both
+replays succeeded and deleted the WAL. A chunked stream load (such as Flink's) keeps
+its label unless it asks for group commit with the group_commit header, also with
+two_phase_commit; before, a retry with the same label loaded the data twice. When a
+group commit load cannot get a plan, for example while the FE rejects new
+transactions, the BE retries after 50 ms, doubling up to 1 second, instead of
+sending the FE thousands of requests a second until group_commit_create_plan_timeout_ms.
+
+Fixes from the second 2026-11-04 comparison test: after group commit loads time out
+waiting for a plan, the next load tries at once; before, it waited for the back-off of
+the earlier loads and failed when group_commit_create_plan_timeout_ms was short. Waiting
+loads time out on time. A chunked stream load of Parquet or ORC, or of CSV with
+compress_type SNAPPY_BLOCK, loads its data; before, it succeeded with no rows. A
+compressed file that ends inside its compressed stream, such as a gzip file without its
+trailer, fails as truncated; before, the rows read so far were loaded with Success. A
+file of LZOP or of a Hadoop LZ4 or Snappy block format cut exactly at a block boundary
+still loads its complete blocks.
+
 rc415 更新：源码基线升级至 Apache Doris 4.1.5-release；保留 MassDB 品牌、
 JDBC 数组精度、报告去重与并行处理、存储介质缓存、compaction 防护、
 Group Commit 超时与元数据工具初始化修复。已有上游修复使用 4.1.5 的实现。
@@ -175,4 +195,16 @@ metrics_result_cache_ms（默认 5000 毫秒），数值可能滞后几秒；计
 现在使用 jetty_threadPool_maxThreads（默认 400），升级前请检查 fe.conf：FE 转发 stream load 后，
 若客户端在等待 100-continue（如 Flink），该线程最多再占用 stream_load_redirect_bounded_drain_max_idle_time_ms
 （默认 1000 毫秒），因此经 FE 转发的 stream load 每秒数量大致受 Jetty 线程数限制。
+2026-11-04 对比测试发现问题的修复：重放 WAL 写入 STRUCT 列时不再把所有子字段写成 NULL；
+VARIANT 列的 WAL 中别的类型的全空块在前时，不再把后面的 VARIANT 值写成 NULL（两种情况此前
+都重放“成功”并删除 WAL）。chunked 方式的 stream load（如 Flink）只有通过 group_commit 头
+请求 group commit 时才忽略 label，两阶段提交也保留 label；此前带同一 label 重试会导入两次。
+group commit 导入拿不到计划时（如 FE 拒绝新事务），BE 先等 50 毫秒、每次加倍、最多 1 秒
+再重试，不再在 group_commit_create_plan_timeout_ms 内每秒向 FE 发送上千次请求。
+2026-11-04 第二轮对比测试发现问题的修复：group commit 导入等待计划超时后，下一个导入立即尝试；
+此前它要等完前面导入的退避时间，group_commit_create_plan_timeout_ms 较短时一次未试就失败。等待中的
+导入按时超时。chunked 方式的 Parquet、ORC stream load，以及 compress_type 为 SNAPPY_BLOCK 的 CSV，
+正常导入数据；此前返回成功但导入 0 行。压缩流尚未结束文件就结束的压缩文件（如缺少尾部的 gzip）
+报截断错误；此前把已读出的行作为成功导入。LZOP 和 Hadoop LZ4/Snappy 块格式的文件恰好在块边界
+截断时，仍会导入其中完整的块。
 历史二进制审查记录仅适用于原审查包，不代表 rc415 已完成构建或验证。

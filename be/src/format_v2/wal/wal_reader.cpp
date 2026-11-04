@@ -78,6 +78,11 @@ ColumnDefinition build_wal_column_definition(const PColumnMeta& meta, int32_t lo
     field.children.reserve(meta.children_size());
     for (int child_idx = 0; child_idx < meta.children_size(); ++child_idx) {
         field.children.push_back(build_wal_column_definition(meta.children(child_idx), child_idx));
+        // The mapper matches WAL columns by field id (WalTableReader), down to STRUCT children, and
+        // the table column's children carry their positions as field ids (AccessPathParser numbers
+        // them so without an external schema). A child without one matched nothing and every STRUCT
+        // value was replayed as NULLs.
+        field.children.back().identifier = Field::create_field<TYPE_INT>(child_idx);
     }
     return field;
 }
@@ -254,10 +259,22 @@ Status WalReader::_init_schema_from_block(const PBlock* pblock) const {
     }
 
     _file_schema.clear();
+    _table_types.assign(_column_ids.size(), nullptr);
+    // deserialized only to see whether a first block column is all NULL
+    std::unique_ptr<Block> first_block;
+    // nested table columns whose first block is all NULL and of another type
+    std::vector<size_t> all_null_first;
     for (size_t idx = 0; idx < _column_ids.size(); ++idx) {
         ColumnDefinition field;
         field.identifier = Field::create_field<TYPE_INT>(_column_ids[idx]);
         field.local_id = cast_set<int32_t>(idx);
+        const auto projected = std::ranges::find_if(_projected_columns, [&](const auto& candidate) {
+            return candidate.has_identifier_field_id() &&
+                   candidate.get_identifier_field_id() == _column_ids[idx];
+        });
+        if (projected != _projected_columns.end()) {
+            _table_types[idx] = projected->type;
+        }
         if (pblock != nullptr) {
             const auto& meta = pblock->column_metas(cast_set<int>(idx));
             // WAL metadata is the file-local schema; preserve its complete nested shape so the
@@ -265,26 +282,33 @@ Status WalReader::_init_schema_from_block(const PBlock* pblock) const {
             field = build_wal_column_definition(meta, cast_set<int32_t>(idx));
             field.identifier = Field::create_field<TYPE_INT>(_column_ids[idx]);
             // The blocks of one WAL can disagree on a column's type, so the first block does not
-            // describe the file. For a scalar table column the WAL's column id names, take the table
-            // type when the first block differs from it, so that every block is converted to the table
-            // type itself (_materialize_requested_columns) and never twice; otherwise the schema stays
-            // exactly the first block's. A nested table column keeps the first block's shape.
-            const auto projected =
-                    std::ranges::find_if(_projected_columns, [&](const auto& candidate) {
-                        return candidate.has_identifier_field_id() &&
-                               candidate.get_identifier_field_id() == _column_ids[idx];
-                    });
-            if (projected != _projected_columns.end() && !wal_column_is_nested(projected->type) &&
+            // describe the file. When it differs from the table column the WAL's column id names:
+            // - a scalar table column takes the table type, so that every block is converted to the
+            //   table type itself (_materialize_requested_columns) and never twice;
+            // - an ARRAY, MAP, STRUCT or VARIANT one, to which nothing but all-NULL blocks is
+            //   converted, keeps the type of the first block that holds a value, which the mapper
+            //   maps as it maps a WAL of that type only; an all-NULL first block tells nothing
+            //   (_describe_all_null_first_columns).
+            if (projected != _projected_columns.end() &&
                 !wal_column_type_matches(field.type, projected->type)) {
-                field.type = make_nullable(projected->type);
-                field.children.clear();
+                if (!wal_column_is_nested(projected->type)) {
+                    field.type = make_nullable(projected->type);
+                    field.children.clear();
+                } else {
+                    if (first_block == nullptr) {
+                        first_block = Block::create_unique();
+                        size_t uncompressed_size = 0;
+                        int64_t decompress_time = 0;
+                        RETURN_IF_ERROR(first_block->deserialize(*pblock, &uncompressed_size,
+                                                                 &decompress_time));
+                    }
+                    if (idx < first_block->columns() &&
+                        wal_column_is_all_null(*first_block->get_by_position(idx).column)) {
+                        all_null_first.push_back(idx);
+                    }
+                }
             }
         } else {
-            const auto projected =
-                    std::ranges::find_if(_projected_columns, [&](const auto& candidate) {
-                        return candidate.has_identifier_field_id() &&
-                               candidate.get_identifier_field_id() == _column_ids[idx];
-                    });
             if (projected == _projected_columns.end()) {
                 continue;
             }
@@ -293,8 +317,58 @@ Status WalReader::_init_schema_from_block(const PBlock* pblock) const {
         }
         _file_schema.push_back(std::move(field));
     }
+    if (!all_null_first.empty()) {
+        _describe_all_null_first_columns(std::move(all_null_first));
+    }
     _schema_inited = true;
     return Status::OK();
+}
+
+void WalReader::_describe_all_null_first_columns(std::vector<size_t> columns) const {
+    // Reads the WAL a second time, one block at a time, until each column holds a value. Only WALs
+    // whose blocks disagree on a nested column's type get here. A block that cannot be read ends
+    // the search: the read of the WAL itself reports it.
+    WalFileReader reader(_wal_path);
+    uint32_t version = 0;
+    std::string encoded_column_ids;
+    auto status = reader.init();
+    if (status.ok()) {
+        status = reader.read_header(version, encoded_column_ids);
+    }
+    while (status.ok() && !columns.empty()) {
+        PBlock pblock;
+        status = reader.read_block(pblock);
+        if (!status.ok() || !_validate_block_version(pblock).ok() ||
+            cast_set<size_t>(pblock.column_metas_size()) != _column_ids.size()) {
+            break;
+        }
+        Block block;
+        size_t uncompressed_size = 0;
+        int64_t decompress_time = 0;
+        if (!block.deserialize(pblock, &uncompressed_size, &decompress_time).ok() ||
+            block.columns() != _column_ids.size()) {
+            break;
+        }
+        std::erase_if(columns, [&](size_t idx) {
+            if (wal_column_is_all_null(*block.get_by_position(idx).column)) {
+                return false;
+            }
+            auto field = build_wal_column_definition(pblock.column_metas(cast_set<int>(idx)),
+                                                     cast_set<int32_t>(idx));
+            field.identifier = _file_schema[idx].identifier;
+            _file_schema[idx] = std::move(field);
+            return true;
+        });
+    }
+    static_cast<void>(reader.finalize());
+    // NULL in every block: NULLs of the table type, with its children for the mapper
+    for (const auto idx : columns) {
+        auto& field = _file_schema[idx];
+        field.type = make_nullable(_table_types[idx]);
+        PColumnMeta table_meta;
+        field.type->to_pb_column_meta(&table_meta);
+        field.children = build_wal_column_definition(table_meta, field.local_id).children;
+    }
 }
 
 Status WalReader::_materialize_requested_columns(Block* source_block, Block* file_block,
@@ -318,8 +392,12 @@ Status WalReader::_materialize_requested_columns(Block* source_block, Block* fil
             // A block whose column type differs from the file schema: the mapper's cast for the
             // file schema type must not read it (a string cast reading a DOUBLE column crashes)
             ColumnPtr converted;
+            const auto& table_type = cast_set<size_t>(source_idx) < _table_types.size() &&
+                                                     _table_types[source_idx] != nullptr
+                                             ? _table_types[source_idx]
+                                             : target.type;
             auto st = convert_wal_column(_state, {std::move(column), source.type, source.name},
-                                         target.type, &converted);
+                                         target.type, table_type, &converted);
             if (!st.ok()) {
                 // not DATA_QUALITY_ERROR: WalTable deletes a WAL that fails with it, and the other
                 // blocks hold rows that can be loaded; the WAL is kept and retried

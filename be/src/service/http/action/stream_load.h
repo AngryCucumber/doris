@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #pragma once
 
@@ -54,6 +55,7 @@ private:
     void _save_stream_load_record(std::shared_ptr<StreamLoadContext> ctx, const std::string& str);
     Status _check_wal_space(const std::string& group_commit_mode, int64_t content_length);
     Status _handle_group_commit(HttpRequest* http_req, std::shared_ptr<StreamLoadContext> ctx);
+    static void _set_saved_file_size(StreamLoadContext* ctx);
 
 private:
     ExecEnv* _exec_env;

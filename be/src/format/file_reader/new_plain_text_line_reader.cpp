@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #include "format/file_reader/new_plain_text_line_reader.h"
 
@@ -462,7 +463,6 @@ Status NewPlainTextLineReader::read_line(const uint8_t** ptr, size_t* size, bool
     _line_reader_ctx->refresh();
     size_t found_line_delimiter = 0;
     size_t offset = 0;
-    bool stream_end = true;
     while (!done()) {
         // find line delimiter in current decompressed data
         uint8_t* cur_ptr = _output_buf + _output_buf_pos;
@@ -517,7 +517,7 @@ Status NewPlainTextLineReader::read_line(const uint8_t** ptr, size_t* size, bool
                     _file_eof = true;
                 }
                 if (_file_eof || read_len == 0) {
-                    if (!stream_end) {
+                    if (!_stream_end) {
                         return Status::InternalError(
                                 "Compressed file has been truncated, which is not allowed");
                     } else {
@@ -530,7 +530,7 @@ Status NewPlainTextLineReader::read_line(const uint8_t** ptr, size_t* size, bool
 
                 if (_decompressor == nullptr) {
                     _output_buf_limit += read_len;
-                    stream_end = true;
+                    _stream_end = true;
                 } else {
                     // only update input limit.
                     // input pos is set at MARK step
@@ -557,10 +557,10 @@ Status NewPlainTextLineReader::read_line(const uint8_t** ptr, size_t* size, bool
                         &input_read_bytes, _output_buf + _output_buf_limit,    /* output */
                         cast_set<uint32_t>(_output_buf_size -
                                            _output_buf_limit), /* output_max_len */
-                        &decompressed_len, &stream_end, &_more_input_bytes, &_more_output_bytes));
+                        &decompressed_len, &_stream_end, &_more_input_bytes, &_more_output_bytes));
 
                 VLOG_DEBUG << "after decompress:"
-                           << " stream_end: " << stream_end
+                           << " stream_end: " << _stream_end
                            << " input_read_bytes: " << input_read_bytes
                            << " decompressed_len: " << decompressed_len
                            << " more_input_bytes: " << _more_input_bytes
