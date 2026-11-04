@@ -46,6 +46,16 @@ namespace doris {
 
 bvar::Adder<uint64_t> group_commit_block_by_memory_counter("group_commit_block_by_memory_counter");
 
+// When the worker submits plan creation again: at the end of the back-off interval, but no later
+// than the timeout of the waiting loads, so that they fail on time.
+static int64_t next_create_plan_attempt_ms(int64_t retry_at_ms, int64_t start_time_ms) {
+    int64_t timeout_ms = config::group_commit_create_plan_timeout_ms;
+    if (timeout_ms > 0 && start_time_ms > 0) {
+        return std::min(retry_at_ms, start_time_ms + timeout_ms + 1);
+    }
+    return retry_at_ms;
+}
+
 std::string LoadBlockQueue::_get_load_ids() {
     std::stringstream ss;
     ss << "[";
@@ -314,6 +324,10 @@ Status GroupCommitTable::get_first_block_load_queue(
     _create_plan_be_exe_version = be_exe_version;
     if (_create_plan_deps.empty()) {
         _create_plan_start_time_ms = MonotonicMillis();
+        // New waiting loads try at once: the back-off of earlier loads that timed out or were
+        // cancelled would delay them, beyond their own timeout if it is short.
+        _create_plan_failures = 0;
+        _create_plan_retry_at_ms = 0;
     }
     _create_plan_deps.emplace(load_id, std::make_tuple(create_plan_dep, put_block_dep,
                                                        base_schema_version, index_size));
@@ -382,7 +396,9 @@ Status GroupCommitTable::_submit_create_group_commit_load() {
         // sent the FE thousands of plan requests a second per table and BE. The worker submits again
         // when the interval is over, also for the loads that arrive meanwhile.
         if (_group_commit_mgr) {
-            _group_commit_mgr->add_need_create_plan_table(_table_id, _create_plan_retry_at_ms);
+            _group_commit_mgr->add_need_create_plan_table(
+                    _table_id, next_create_plan_attempt_ms(_create_plan_retry_at_ms,
+                                                           _create_plan_start_time_ms));
         }
         return Status::OK();
     }
@@ -452,7 +468,9 @@ Status GroupCommitTable::_submit_create_group_commit_load() {
             if (need_resubmit && _group_commit_mgr) {
                 LOG(INFO) << "resubmit create group commit load task for table: " << _table_id
                           << ", failed attempts: " << _create_plan_failures;
-                _group_commit_mgr->add_need_create_plan_table(_table_id, _create_plan_retry_at_ms);
+                _group_commit_mgr->add_need_create_plan_table(
+                        _table_id, next_create_plan_attempt_ms(_create_plan_retry_at_ms,
+                                                               _create_plan_start_time_ms));
             }
         }};
         create_group_commit_st =

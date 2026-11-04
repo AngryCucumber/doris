@@ -181,6 +181,9 @@ Status StreamLoadAction::_handle(std::shared_ptr<StreamLoadContext> ctx) {
     if (!ctx->use_streaming) {
         // we need to close file first, then execute_plan_fragment here
         ctx->body_sink.reset();
+        if (ctx->is_chunked_transfer) {
+            _set_saved_file_size(ctx.get());
+        }
         TPipelineFragmentParamsList mocked;
         RETURN_IF_ERROR(_exec_env->stream_load_executor()->execute_plan_fragment(ctx, mocked));
     }
@@ -839,6 +842,26 @@ Status StreamLoadAction::_process_put(HttpRequest* http_req,
     }
     TPipelineFragmentParamsList mocked;
     return _exec_env->stream_load_executor()->execute_plan_fragment(ctx, mocked);
+}
+
+// The plan of a load saved to a local file (Parquet, ORC) is made before the body arrives, with
+// the size of the file from Content-Length. A chunked request has none, and with a size of 0 the
+// scan read nothing: the load succeeded with no rows. The scan is given the size of the received
+// file.
+void StreamLoadAction::_set_saved_file_size(StreamLoadContext* ctx) {
+    auto size = static_cast<int64_t>(ctx->receive_bytes);
+    for (auto& instance : ctx->put_result.pipeline_params.local_params) {
+        for (auto& [_, scan_ranges] : instance.per_node_scan_ranges) {
+            for (auto& scan_range : scan_ranges) {
+                for (auto& range : scan_range.scan_range.ext_scan_range.file_scan_range.ranges) {
+                    if (range.path == ctx->data_saved_path) {
+                        range.__set_size(size);
+                        range.__set_file_size(size);
+                    }
+                }
+            }
+        }
+    }
 }
 
 Status StreamLoadAction::_data_saved_path(HttpRequest* req, std::string* file_path,

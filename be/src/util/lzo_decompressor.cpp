@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #include <crc32c/crc32c.h>
 
@@ -75,6 +76,9 @@ Status LzopDecompressor::decompress(uint8_t* input, uint32_t input_len, size_t* 
                                     uint8_t* output, uint32_t output_max_len,
                                     size_t* decompressed_len, bool* stream_end,
                                     size_t* more_input_bytes, size_t* more_output_bytes) {
+    // A header or block cut short is not the end of the stream, so that a file that ends inside
+    // one is reported as truncated.
+    *stream_end = false;
     if (!_is_header_loaded) {
         // this is the first time to call lzo decompress, parse the header info first
         RETURN_IF_ERROR(parse_header_info(input, input_len, input_bytes_read, more_input_bytes));

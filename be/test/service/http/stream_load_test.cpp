@@ -18,6 +18,8 @@
 
 #include "service/http/action/stream_load.h"
 
+#include <gen_cpp/PaloInternalService_types.h>
+#include <gen_cpp/PlanNodes_types.h>
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -291,5 +293,39 @@ TEST_F(StreamLoadTest, ChunkedHttpStreamKeepsItsLabelUnlessItGoesThroughGroupCom
         EXPECT_EQ(load.ctx->label, "");
         EXPECT_TRUE(load.ctx->group_commit);
     }
+}
+
+// The plan of a Parquet or ORC load is made before the body arrives, with the file size from
+// Content-Length. A chunked request has none: the scan was given a size of 0 and read nothing, and
+// the load succeeded with no rows. The size of the received file replaces it before the plan runs.
+TEST_F(StreamLoadTest, ChunkedLocalFileLoadScansTheReceivedFile) {
+    auto ctx = std::make_shared<StreamLoadContext>(nullptr);
+    ctx->data_saved_path = "/storage/stream_load/db/t.20261104.1";
+    ctx->receive_bytes = 123457;
+    auto make_range = [](const std::string& path) {
+        TFileRangeDesc range;
+        range.__set_path(path);
+        range.__set_start_offset(0);
+        range.__set_size(0);
+        range.__set_file_size(0);
+        return range;
+    };
+    TScanRangeParams scan_range;
+    scan_range.scan_range.ext_scan_range.file_scan_range.__set_ranges(
+            {make_range(ctx->data_saved_path), make_range("/another/file")});
+    TPipelineInstanceParams instance;
+    instance.per_node_scan_ranges[0] = {scan_range};
+    ctx->put_result.pipeline_params.__set_local_params({instance});
+
+    StreamLoadAction::_set_saved_file_size(ctx.get());
+
+    const auto& ranges = ctx->put_result.pipeline_params.local_params[0]
+                                 .per_node_scan_ranges[0][0]
+                                 .scan_range.ext_scan_range.file_scan_range.ranges;
+    EXPECT_EQ(ranges[0].size, 123457);
+    EXPECT_EQ(ranges[0].file_size, 123457);
+    EXPECT_EQ(ranges[0].start_offset, 0);
+    EXPECT_EQ(ranges[1].size, 0);
+    EXPECT_EQ(ranges[1].file_size, 0);
 }
 } // namespace doris

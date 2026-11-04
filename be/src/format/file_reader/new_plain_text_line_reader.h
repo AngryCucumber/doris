@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 #pragma once
 #include <cstddef>
@@ -302,6 +303,10 @@ private:
 
     bool _file_eof;
     bool _eof;
+    // Whether the decompressor is at the end of a compressed stream. It is kept across read_line()
+    // calls: a call that returned a line can leave a stream unfinished, and the end of the file
+    // must then fail the read as truncated, not end it.
+    bool _stream_end = true;
     size_t _more_input_bytes;
     size_t _more_output_bytes;
 

@@ -517,6 +517,45 @@ while the FE kept serving queries. Cloud mode runtime was not exercised.
   (labels of chunked loads) and the new `load/group_commit/group_commit_mgr_test.cpp`
   (company header).
 
+## Fixes from the second comparison test (2026-11-04)
+
+- Fix three defects that the second comparison, of `49f67bdbb94` and
+  `2f21ee39070` (`docs/massdb-sql-comparison-test-20261104-r2.md`), reports:
+  P2-1, a regression of `2f21ee39070`, and P1-2 and P1-3, which are in upstream
+  4.1.5 and in the same code of 4.0.5. All are BE changes. P1-1, string escapes
+  inside nested JSON values, is not fixed here.
+- Back-off of group commit plan creation (P2-1): a timeout ended the waiting
+  loads but not the back-off, so the loads that came next first waited for the
+  rest of it, up to 1 s, and failed without an attempt when
+  `group_commit_create_plan_timeout_ms` was shorter; and the timeout was only
+  noticed at the next attempt, up to 1 s late. Loads that start waiting when no
+  load waits now try at once (the failure count and the retry time are reset),
+  and the create-plan worker submits again no later than the timeout of the
+  waiting loads.
+- Chunked stream loads of Parquet and ORC (P1-2): such a load is saved to a
+  local file, and its plan is made before the body arrives, with the file size
+  from Content-Length. A chunked request has none, so the scan range had size
+  0, nothing was read, and the load succeeded with no rows.
+  `StreamLoadAction::_handle` now gives the scan range of the saved file the
+  size of the received body before the plan runs. CSV with
+  `compress_type: SNAPPY_BLOCK` is saved to a local file too and is fixed alike.
+- Truncated compressed files (P1-3): `NewPlainTextLineReader` forgot at every
+  `read_line()` call whether the decompressor was at the end of a stream, so
+  after a call that returned lines of an unfinished stream, the end of the file
+  ended the data: a gzip file cut after complete lines (after `Z_SYNC_FLUSH`)
+  or without its trailer loaded its prefix with Success, also with
+  `strict_mode` and `max_filter_ratio` 0. The state is now kept across calls,
+  and such a file fails as truncated, for gzip, deflate, bzip2, zstd, LZ4 frame
+  and the Hadoop LZ4 and Snappy block codecs. `LzopDecompressor` no longer
+  leaves the end of stream set while a header or block is incomplete. A file cut
+  exactly at a block boundary of a Hadoop block codec or of LZOP still loads its
+  complete blocks: Doris checks no end marker of these formats.
+- Tests: `load/group_commit/group_commit_mgr_test.cpp` (timeouts on time, loads
+  after a timeout try at once), `service/http/stream_load_test.cpp` (size of the
+  received file) and the new
+  `format/file_reader/compressed_line_reader_truncation_test.cpp` (company
+  header).
+
 ## Complete rc02 release builds (2026-09-09)
 
 - `build-for-release.sh`: explicitly select FE, BE, Cloud/MS, Broker and Hive UDF
