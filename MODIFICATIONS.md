@@ -4,6 +4,25 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `917b20be8387
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## Complex-input and performance retest after the stream fixes (2026-11-04/05, R3)
+
+- Add `docs/massdb-sql-comparison-test-20261104-r3.md` for the confirmed
+  `49f67bdbb94` baseline and merged `ea1b8daffa9` candidate. Rebuild the
+  candidate core, verify the matching sanitizer source, and preserve R1/R2
+  evidence. This report changes no product implementation.
+- Record changing HTTP, binary, Unicode, nested-type and compressed-file
+  inputs; actual WAL recovery, upgrades and node failures; selected unit and
+  SQL regression results; paired query measurements and file throughput.
+  Confirm repaired chunked file sizing, tested compressed-stream rejection,
+  and short-timeout recovery while retaining nested JSON and LZO integrity
+  findings, blocked-RPC deadlines, HTTP observations and gzip performance risk.
+- Preserve original failures and controls, including both versions' global
+  WAL-counter interference, unsupported nested Stream Load expectations, and
+  the external Arrow 20 writer defect verified against Arrow 26 with identical
+  logical data. Keep scripts, changing inputs, source snapshots, raw results
+  and the sealed report in
+  `.build-records/codex-http-complex-retest-20261104-r3/`.
+
 ## Complex-input comparison after the WAL fixes (2026-11-04, R2)
 
 - Add `docs/massdb-sql-comparison-test-20261104-r2.md` for the confirmed
