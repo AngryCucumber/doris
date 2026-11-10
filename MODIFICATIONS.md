@@ -4,6 +4,41 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License review 2026-11-10: L14 test gaps, clock role fixes, refused commits and licensed unit tests (2026-11-10)
+
+Fixes for L1, L2, L4 and L12 of the 2026-11-10 License/UI review, and the L14 tests that reproduce them.
+
+- `LicenseClock` (L1, option A): `applyCommitted` judges a watermark by the 5-minute startup tolerance only when it is
+  ahead of this process's confirmed time. The master applying its own watermark after an in-process wall-clock
+  rollback stays under the 12-hour rollback tolerance instead of denying every query with `CLOCK_SUSPECT`; a replayed
+  or replicated watermark ahead of the wall clock is still suspect beyond 5 minutes. The startup anchor is unchanged.
+- `LicenseClock` (L2): only an enforced clock (the serving master) confirms a forward wall-clock correction. On a
+  follower `observe()` no longer tracks an in-process forward jump, and the startup candidate only follows the wall
+  clock for admission. `setEnforced` drops an in-process candidate and the peer verdict on every role change, so a
+  promoted follower starts the peer check from scratch; the startup candidate is kept (restarting never buys time).
+- `LicenseManager`, `EnvLicenseHost`, `EditLog.logLicense` (L4): a journal write refused before anything is written
+  (lost leadership, invalid operation) throws `LicenseManager.NotCommittedException`. `persist()` reports it as
+  `NOT_SUBMITTED` (`LICENSE_NOT_LEADER` or `LICENSE_MANAGEMENT_UNAVAILABLE`) and no longer records an uncertain
+  commit, so queries keep running and the next maintenance round retries. Any other commit failure stays uncertain.
+- `TestWithFeService`, `DorisHttpTestCase` (L12): upstream tests run as a licensed cluster through a
+  `LicenseManager.queryStatus()` mock-up installed by the base class; `validLicenseFixture()` returns false in the
+  license tests that keep the real unit-test status or set it themselves. `OldCoordinatorTest` is back to the
+  upstream text because its fixture moved to the base class. `FederationBackendPolicyTest` gives its `@Mocked Env`
+  a license manager that runs the dropped backend's membership change.
+- `ExpressionParserTest`: the expected-token list of the `3 += 2` syntax error now starts with the seven license
+  keywords that `DorisLexer.g4` defines before `LEFT_PAREN`; parsing is unchanged. `CloudGlobalTransactionMgrTest`:
+  the test part of upstream #61881 (from the branch-4.1 backport `291f6869f78`), which the backport `5abf4fdd0d5`
+  had omitted, so the abort tests mock the transaction state the fix reads first.
+- Tests (L14 rows 1–5): `LicenseClockTest` and `LicenseManagerTest` gain the L1, L2 and L4 reproductions, unequal
+  tolerances, a configurable master role in the fake host and a pre-write refusal; `LicenseClockRepairTest` drops
+  tautological assertions in favour of `LicenseManagerTest.clockRepairNeverMakesAnExpiredLicenseValid`; new
+  `LicenseRealAdmissionTest` and `http/LicenseQueryPlanHttpAdmissionTest` run the real guard on real plans.
+- Validation on JDK 17: the five L1, L2 and L4 reproductions fail before the fixes and pass after them; `License*Test`
+  (35 classes, 386 tests) and the 10 upstream classes L12 had broken pass; the full FE run leaves only the three fe-core
+  failures that upstream 4.0.5 also has (5840 tests); Checkstyle and the source-header check pass. A real-cluster drill
+  of the L1 and L2 steps and the 2026-10-23 clock drills D1 to D3 passed all 35 checks in one run
+  (`.build-records/license-review-fix-drill-20261110/`).
+
 ## License key rotation order, hourly digest check and latency comparison recorded (2026-10-24)
 
 Documentation only; no code change. `docs/license-management-p2.md` section 1 gains the order for rotating the signing
@@ -1103,6 +1138,7 @@ complete third-party license review or determine customer-specific contract term
 | `fe/fe-core/src/main/java/org/apache/doris/transaction/DatabaseTransactionMgr.java` | Modified relative to upstream source baseline; original license header retained, modification notice added. |
 | `fe/fe-core/src/main/java/org/apache/doris/transaction/GlobalTransactionMgr.java` | Modified relative to upstream source baseline; original license header retained, modification notice added. |
 | `fe/fe-core/src/main/resources/doris-logo.png` | Replaced visual asset; modification recorded in this inventory, also copied into FE/UI legal resources. Company ownership evidence remains pending. |
+| `fe/fe-core/src/test/java/org/apache/doris/cloud/transaction/CloudGlobalTransactionMgrTest.java` | Apache Doris upstream backport(s) #61881, test part taken on 2026-11-10 from the branch-4.1 backport `291f6869f78` (`5abf4fdd0d5` had omitted it). Upstream authorship is retained; no company-original change is claimed. |
 | `fe/fe-core/src/test/java/org/apache/doris/master/ReportHandlerTest.java` | Added in this fork. See the provenance evidence appendix for authorship and licensing status. |
 | `fe/fe-core/src/test/java/org/apache/doris/system/SystemInfoServiceTest.java` | Modified relative to upstream source baseline; original license header retained, modification notice added. |
 | `gensrc/script/gen_build_version.sh` | Modified relative to upstream source baseline; original license header retained, modification notice added. |

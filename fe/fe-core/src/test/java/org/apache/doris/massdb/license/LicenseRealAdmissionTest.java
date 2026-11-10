@@ -27,6 +27,12 @@ import org.junit.jupiter.api.Test;
 class LicenseRealAdmissionTest extends TestWithFeService {
     private static volatile LicenseQueryStatus status = LicenseQueryStatus.EXPIRED;
 
+    /** Forces the status itself. */
+    @Override
+    protected boolean validLicenseFixture() {
+        return false;
+    }
+
     @Override
     protected void runBeforeAll() throws Exception {
         createDatabase("lic");

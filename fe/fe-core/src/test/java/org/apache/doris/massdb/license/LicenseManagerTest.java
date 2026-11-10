@@ -1994,6 +1994,12 @@ class LicenseManagerTest {
         LicenseQueryStatus afterRefusal = manager.queryStatus();
         Assertions.assertTrue(afterRefusal.permitsNewQuery(),
                 "nothing reached the journal, so the commit is not uncertain; got " + afterRefusal);
+        String renewal = certificate(2, 900, 3000);
+        LicenseManagementException refused = Assertions.assertThrows(LicenseManagementException.class,
+                () -> run(LicenseManager.Action.IMPORT, renewal));
+        Assertions.assertEquals("NOT_SUBMITTED", refused.getBody().get("submission_status"));
+        Assertions.assertEquals(written, host.records.size());
+        Assertions.assertTrue(manager.queryStatus().permitsNewQuery());
         host.rejectBeforeWrite = false;
         manager.maintenance();
         Assertions.assertEquals(applied + 1, manager.getAppliedVersion());
@@ -2380,7 +2386,7 @@ class LicenseManagerTest {
         @Override
         public void commit(short operation, LicensePersistRecord record) throws IOException {
             if (rejectBeforeWrite) {
-                throw new IOException("License commits require the current serving master");
+                throw new LicenseManager.NotCommittedException("License commits require the current serving master");
             }
             if (retainLatestOnly) {
                 records.clear();

@@ -30,6 +30,12 @@ import java.util.Collections;
 
 /** Exercises the real procedure query bridge and top-level SQL error adapter with denied FE reads. */
 class LicenseProcedureAdmissionTest extends TestWithFeService {
+    /** Keeps the unit-test Env's real status: without a certificate every protected read is denied. */
+    @Override
+    protected boolean validLicenseFixture() {
+        return false;
+    }
+
     @Override
     protected void runBeforeAll() throws Exception {
         createDatabaseAndUse("license_procedure");

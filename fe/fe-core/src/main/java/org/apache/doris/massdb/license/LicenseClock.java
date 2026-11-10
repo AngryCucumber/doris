@@ -26,9 +26,15 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p>A wall clock behind the confirmed time is a suspicion, never a change of the trusted time. It is
  * re-evaluated on every read and clears by itself when the wall clock returns within tolerance. The
- * startup and replayed-watermark check uses the small startup tolerance; the in-process check uses the
- * large rollback tolerance. A suspicion denies queries only when this process is the serving master and
- * has left its settling period; a replicated master suspicion denies everywhere.
+ * startup check, and the check of a replayed watermark ahead of this process's confirmed time, use the
+ * small startup tolerance; the in-process check, including the master applying its own watermark, uses
+ * the large rollback tolerance. A suspicion denies queries only when this process is the serving master
+ * and has left its settling period; a replicated master suspicion denies everywhere.
+ *
+ * <p>Only the serving master (an enforced clock) confirms a forward correction. A follower's wall clock
+ * never enters its trusted time: an in-process forward jump is not even tracked there, and the startup
+ * candidate keeps counting for admission while the wall clock holds it but waits for leadership to be
+ * confirmed. Becoming the master starts the peer check from scratch.
  */
 public final class LicenseClock {
     public static final long MAX_MILLIS = 253402300799999L;
@@ -344,8 +350,18 @@ public final class LicenseClock {
         return age < 0 || age >= TimeUnit.MILLISECONDS.toNanos(settings.settlingMillis);
     }
 
-    /** The serving master enforces its own suspicion; followers and observers only report it. */
-    public void setEnforced(boolean enforced) {
+    /**
+     * The serving master enforces its own suspicion; followers and observers only report it. A change of role
+     * restarts the peer check: an in-process forward candidate tracked in the other role is dropped and an old
+     * verdict is forgotten. The startup candidate is kept, so restarting or failing over never buys time.
+     */
+    public synchronized void setEnforced(boolean enforced) {
+        if (this.enforced != enforced) {
+            if (pending != null && !pending.startup) {
+                pending = null;
+            }
+            peerVerdict = PeerVerdict.UNKNOWN;
+        }
         this.enforced = enforced;
     }
 
@@ -440,9 +456,14 @@ public final class LicenseClock {
         Facts adopted = committed.highWaterMillis >= old.facts.highWaterMillis ? committed
                 : new Facts(committed.version, committed.clockEpoch, old.facts.highWaterMillis,
                         committed.repairAuthorizationVersion);
-        read(old, false);
+        long confirmedNow = read(old, false);
         long wall = source.wallTimeMillis();
-        if (wall < 0 || wall > MAX_MILLIS || adopted.highWaterMillis - wall > settings.startupToleranceMillis) {
+        // Only progress this process has not confirmed itself is judged by the small startup tolerance: a
+        // replayed or replicated watermark ahead of the local confirmed time (review L1). The master's own
+        // watermark is never ahead of its confirmed time, so its wall clock stays under the in-process
+        // rollback tolerance that read() applies.
+        if (wall < 0 || wall > MAX_MILLIS || (adopted.highWaterMillis > confirmedNow
+                && adopted.highWaterMillis - wall > settings.startupToleranceMillis)) {
             old.startupSuspect.set(true);
         }
         // The wall read (or the read above) may have been descheduled. Pair the fixed
@@ -467,7 +488,10 @@ public final class LicenseClock {
      * confirms it when it has held long enough, when the other FEs agree or after the acceptance bound,
      * and discards it when the wall clock is corrected back. The startup candidate waits for the settling
      * period instead. An outlier verdict suspends automatic confirmation until the peers agree or an
-     * administrator confirms.
+     * administrator confirms. Only an enforced clock (the serving master) confirms anything: a follower's
+     * time comes from the replicated watermarks and its monotonic clock, never from its own wall clock
+     * (review L2), so an in-process forward jump is not tracked there and the startup candidate only
+     * follows the wall clock for admission.
      */
     public synchronized Event observe() {
         Anchor current = anchor;
@@ -478,6 +502,10 @@ public final class LicenseClock {
         if (wall < 0 || wall > MAX_MILLIS) {
             return Event.NONE;
         }
+        boolean master = enforced;
+        if (!master && pending != null && !pending.startup) {
+            pending = null;
+        }
         long wallOffset = wall - elapsed;
         if (wallOffset - confirmed < MIN_FORWARD_MILLIS) {
             // Not ahead, or ahead by jitter only: nothing to confirm. A candidate is discarded when taken back.
@@ -487,6 +515,9 @@ public final class LicenseClock {
             return discarded ? Event.FORWARD_DISCARDED : Event.NONE;
         }
         if (pending == null) {
+            if (!master) {
+                return Event.NONE;
+            }
             pending = new Pending(wallOffset, monotonic, false);
             return Event.FORWARD_PENDING;
         }
@@ -500,6 +531,9 @@ public final class LicenseClock {
         if (pending.startup) {
             // Admission follows the startup candidate down when the boot clock is partly corrected.
             current.admissionOffsetMillis.set(Math.max(confirmed, pending.candidateOffsetMillis));
+        }
+        if (!master) {
+            return Event.NONE;
         }
         long ageNanos = monotonic - pending.sinceNanos;
         boolean due;

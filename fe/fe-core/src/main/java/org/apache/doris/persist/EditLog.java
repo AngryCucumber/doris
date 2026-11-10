@@ -86,6 +86,7 @@ import org.apache.doris.load.StreamLoadRecordMgr.FetchStreamLoadRecord;
 import org.apache.doris.load.loadv2.LoadJob.LoadJobStateUpdateInfo;
 import org.apache.doris.load.loadv2.LoadJobFinalOperation;
 import org.apache.doris.load.routineload.RoutineLoadJob;
+import org.apache.doris.massdb.license.LicenseManager;
 import org.apache.doris.massdb.license.LicensePersistRecord;
 import org.apache.doris.meta.MetaContext;
 import org.apache.doris.metric.MetricRepo;
@@ -2498,7 +2499,7 @@ public class EditLog {
 
     public long logLicense(short opCode, LicensePersistRecord record) throws IOException {
         if (!OperationType.isMassdbLicenseOperation(opCode) || record.getOperation() != opCode) {
-            throw new IOException("Invalid license journal operation");
+            throw new LicenseManager.NotCommittedException("Invalid license journal operation");
         }
         return logEdit(opCode, record);
     }

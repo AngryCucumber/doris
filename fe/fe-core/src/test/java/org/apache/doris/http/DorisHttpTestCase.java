@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// MassDB modification: run the upstream HTTP tests as a licensed cluster; license tests opt out.
+
 package org.apache.doris.http;
 
 import org.apache.doris.alter.MaterializedViewHandler;
@@ -47,6 +49,8 @@ import org.apache.doris.datasource.CatalogMgr;
 import org.apache.doris.datasource.InternalCatalog;
 import org.apache.doris.httpv2.HttpServer;
 import org.apache.doris.httpv2.IllegalArgException;
+import org.apache.doris.massdb.license.LicenseManager;
+import org.apache.doris.massdb.license.LicenseQueryStatus;
 import org.apache.doris.mysql.privilege.AccessControllerManager;
 import org.apache.doris.mysql.privilege.Auth;
 import org.apache.doris.persist.EditLog;
@@ -389,8 +393,24 @@ public abstract class DorisHttpTestCase {
                 return tabletInvertedIndex;
             }
         };
+        if (validLicenseFixture()) {
+            new MockUp<LicenseManager>() {
+                @Mock
+                public LicenseQueryStatus queryStatus() {
+                    return LicenseQueryStatus.VALID;
+                }
+            };
+        }
         assignBackends();
         doSetUp();
+    }
+
+    /**
+     * MassDB modification: the test Env holds no certificate, so `_query_plan` would be denied with 403
+     * (review L12). Upstream tests run as a licensed cluster; a license test that sets the status returns false.
+     */
+    protected boolean validLicenseFixture() {
+        return true;
     }
 
     @After

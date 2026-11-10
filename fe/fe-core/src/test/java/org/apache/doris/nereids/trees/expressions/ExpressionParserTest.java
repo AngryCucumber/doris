@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// MassDB modification: the license SQL keywords lead the expected-token list of a syntax error.
+
 package org.apache.doris.nereids.trees.expressions;
 
 import org.apache.doris.nereids.analyzer.UnboundSlot;
@@ -148,9 +150,11 @@ public class ExpressionParserTest extends ParserTestBase {
         String subtract = "3 - 2";
         assertExpr(subtract);
 
+        // MassDB: DorisLexer.g4 defines the seven license keywords before LEFT_PAREN.
         parseExpression("3 += 2")
                 .assertThrowsExactly(SyntaxParseException.class)
-                .assertMessageContains("extraneous input '=' expecting {'(");
+                .assertMessageContains("extraneous input '=' expecting {'LICENSE', 'IMPORT', 'VALIDATE', "
+                        + "'DEPLOYMENT', 'CLOCK', 'CHALLENGE', 'CONFIRM', '(");
 
     }
 

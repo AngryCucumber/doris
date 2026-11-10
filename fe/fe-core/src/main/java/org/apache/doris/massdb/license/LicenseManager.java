@@ -62,6 +62,10 @@ public final class LicenseManager implements AutoCloseable {
             return membership().version;
         }
 
+        /**
+         * Writes the record to the journal. Throws {@link NotCommittedException} when the record is refused
+         * before anything is written; any other failure leaves the outcome unknown.
+         */
         void commit(short operation, LicensePersistRecord record) throws IOException;
 
         /** Before the one-time deployment initialization only: every registered FE carries the license module. */
@@ -111,6 +115,18 @@ public final class LicenseManager implements AutoCloseable {
     @FunctionalInterface
     public interface MembershipMutation {
         void run() throws DdlException;
+    }
+
+    /**
+     * A journal write refused before anything was written (leadership lost, an invalid operation): the record
+     * can never be replayed, so the commit is known not to have happened rather than uncertain (review L4).
+     */
+    public static final class NotCommittedException extends IOException {
+        private static final long serialVersionUID = 1L;
+
+        public NotCommittedException(String message) {
+            super(message);
+        }
     }
 
     private static final UUID UNINITIALIZED = new UUID(0, 0);
@@ -883,6 +899,10 @@ public final class LicenseManager implements AutoCloseable {
         }
         try {
             host.commit(next.getOperation(), next);
+        } catch (NotCommittedException e) {
+            // Nothing reached the journal: no state changed, and the next round retries from the committed facts.
+            throw failure(leader && host.isMaster() ? "LICENSE_MANAGEMENT_UNAVAILABLE" : "LICENSE_NOT_LEADER", 503,
+                    "NOT_SUBMITTED", fingerprint);
         } catch (IOException | RuntimeException e) {
             uncertainCommit = next;
             publishUnavailable();

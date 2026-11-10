@@ -32,6 +32,12 @@ import java.util.Optional;
 
 /** Real binding/rewrite/cache tests; no BE execution or entitlement is simulated as an integration result. */
 class LicenseQueryPlannerTest extends TestWithFeService {
+    /** Plans against the unit-test Env's real license state. */
+    @Override
+    protected boolean validLicenseFixture() {
+        return false;
+    }
+
     @Override
     protected void runBeforeAll() throws Exception {
         createDatabaseAndUse("license_query");

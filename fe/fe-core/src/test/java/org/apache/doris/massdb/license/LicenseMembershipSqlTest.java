@@ -27,6 +27,12 @@ import java.nio.charset.StandardCharsets;
 
 /** Exercise the complete ALTER command error path, including Nereids exception wrapping. */
 class LicenseMembershipSqlTest extends TestWithFeService {
+    /** Replaces the license manager itself. */
+    @Override
+    protected boolean validLicenseFixture() {
+        return false;
+    }
+
     @Test
     void rejectedAddKeepsLicenseCodeThroughActualSqlExecution() throws Exception {
         Env controlled = Mockito.spy(Env.getCurrentEnv());

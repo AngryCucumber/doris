@@ -27,6 +27,12 @@ import java.io.IOException;
  * stack, planner and guard; only the license status is forced.
  */
 public class LicenseQueryPlanHttpAdmissionTest extends DorisHttpTestCase {
+    /** Forces the status itself. */
+    @Override
+    protected boolean validLicenseFixture() {
+        return false;
+    }
+
     @Test
     public void expiredLicenseDeniesTheQueryPlanWithTheTransportStatus() throws IOException {
         forceStatus(LicenseQueryStatus.EXPIRED);

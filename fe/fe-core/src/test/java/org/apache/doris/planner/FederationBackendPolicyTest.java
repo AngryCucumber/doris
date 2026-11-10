@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// MassDB modification: run the dropped backend's membership change like a licensed master.
+
 package org.apache.doris.planner;
 
 import org.apache.doris.catalog.Env;
@@ -24,6 +26,7 @@ import org.apache.doris.common.util.LocationPath;
 import org.apache.doris.datasource.FederationBackendPolicy;
 import org.apache.doris.datasource.FileSplit;
 import org.apache.doris.datasource.NodeSelectionStrategy;
+import org.apache.doris.massdb.license.LicenseManager;
 import org.apache.doris.resource.computegroup.ComputeGroupMgr;
 import org.apache.doris.spi.Split;
 import org.apache.doris.system.Backend;
@@ -39,6 +42,7 @@ import org.apache.hadoop.fs.Path;
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.jupiter.api.Assertions;
+import org.mockito.Mockito;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -571,6 +575,12 @@ public class FederationBackendPolicyTest {
         service.addBackend(backend3);
 
         ComputeGroupMgr cgmgr = new ComputeGroupMgr(service);
+        // MassDB modification: a licensed master runs the membership change; the cascaded mock would skip it.
+        LicenseManager licensed = Mockito.mock(LicenseManager.class);
+        Mockito.doAnswer(call -> {
+            call.<LicenseManager.MembershipMutation>getArgument(2).run();
+            return null;
+        }).when(licensed).runMembershipMutation(Mockito.anyInt(), Mockito.anyInt(), Mockito.any());
         new MockUp<Env>() {
             @Mock
             public SystemInfoService getCurrentSystemInfo() {
@@ -580,6 +590,11 @@ public class FederationBackendPolicyTest {
             @Mock
             public ComputeGroupMgr getComputeGroupMgr() {
                 return cgmgr;
+            }
+
+            @Mock
+            public LicenseManager getLicenseManager() {
+                return licensed;
             }
         };
 

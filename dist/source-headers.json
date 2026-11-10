@@ -593,9 +593,25 @@
       "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
     },
-    "fe/fe-core/src/test/java/org/apache/doris/qe/OldCoordinatorTest.java": {
+    "fe/fe-core/src/test/java/org/apache/doris/utframe/TestWithFeService.java": {
       "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
-      "notice": "MassDB modification: give the existing fragment-assignment test an explicit valid license fixture."
+      "notice": "MassDB modification: run the upstream tests as a licensed cluster; license tests opt out."
+    },
+    "fe/fe-core/src/test/java/org/apache/doris/http/DorisHttpTestCase.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "MassDB modification: run the upstream HTTP tests as a licensed cluster; license tests opt out."
+    },
+    "fe/fe-core/src/test/java/org/apache/doris/planner/FederationBackendPolicyTest.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "MassDB modification: run the dropped backend's membership change like a licensed master."
+    },
+    "fe/fe-core/src/test/java/org/apache/doris/nereids/trees/expressions/ExpressionParserTest.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "MassDB modification: the license SQL keywords lead the expected-token list of a syntax error."
+    },
+    "fe/fe-core/src/test/java/org/apache/doris/cloud/transaction/CloudGlobalTransactionMgrTest.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Apache Doris backport #61881. See MODIFICATIONS.md."
     },
     "fe/fe-core/src/main/java/org/apache/doris/httpv2/restv2/ESCatalogAction.java": {
       "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",

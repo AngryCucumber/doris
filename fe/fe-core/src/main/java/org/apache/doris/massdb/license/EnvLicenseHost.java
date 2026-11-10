@@ -43,7 +43,7 @@ public final class EnvLicenseHost implements LicenseManager.Host {
     @Override
     public void commit(short operation, LicensePersistRecord record) throws IOException {
         if (!env.isLicenseLeadership() || checkpointCatalog) {
-            throw new IOException("License commits require the current serving master");
+            throw new LicenseManager.NotCommittedException("License commits require the current serving master");
         }
         env.getEditLog().logLicense(operation, record);
     }

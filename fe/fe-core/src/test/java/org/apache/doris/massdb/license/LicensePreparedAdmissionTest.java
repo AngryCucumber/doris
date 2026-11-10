@@ -39,6 +39,12 @@ class LicensePreparedAdmissionTest extends TestWithFeService {
     private static final String SQL = "select v from t where k=1";
     private static final String HANDLE = "license_point";
 
+    /** Replaces the license manager itself. */
+    @Override
+    protected boolean validLicenseFixture() {
+        return false;
+    }
+
     @Override
     protected void runBeforeAll() throws Exception {
         createDatabaseAndUse("license_prepared");

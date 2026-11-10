@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// MassDB modification: run the upstream tests as a licensed cluster; license tests opt out.
+
 package org.apache.doris.utframe;
 
 import org.apache.doris.alter.AlterJobV2;
@@ -36,6 +38,8 @@ import org.apache.doris.common.FeConstants;
 import org.apache.doris.common.MetaNotFoundException;
 import org.apache.doris.datasource.CatalogIf;
 import org.apache.doris.job.base.AbstractJob;
+import org.apache.doris.massdb.license.LicenseManager;
+import org.apache.doris.massdb.license.LicenseQueryStatus;
 import org.apache.doris.nereids.CascadesContext;
 import org.apache.doris.nereids.StatementContext;
 import org.apache.doris.nereids.glue.LogicalPlanAdapter;
@@ -145,6 +149,9 @@ public abstract class TestWithFeService {
         Config.enable_advance_next_id = this.enableAdvanceNextId;
         FeConstants.enableInternalSchemaDb = false;
         FeConstants.disableWGCheckerForUT = true;
+        if (validLicenseFixture()) {
+            installValidLicense();
+        }
         beforeCreatingConnectContext();
         connectContext = createDefaultCtx();
         connectContext.getSessionVariable().feDebug = true;
@@ -155,6 +162,24 @@ public abstract class TestWithFeService {
     }
 
     protected void beforeCluster() {
+    }
+
+    /**
+     * MassDB modification: the unit-test Env holds no certificate, so license admission would deny every
+     * protected read with 6200 (review L12). Upstream tests run as a licensed cluster; a license test that
+     * needs the real "no certificate" status, or controls the status itself, returns false.
+     */
+    protected boolean validLicenseFixture() {
+        return true;
+    }
+
+    private static void installValidLicense() {
+        new MockUp<LicenseManager>() {
+            @Mock
+            public LicenseQueryStatus queryStatus() {
+                return LicenseQueryStatus.VALID;
+            }
+        };
     }
 
     @AfterAll
