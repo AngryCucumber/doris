@@ -203,10 +203,12 @@ the new records.
 - `fe/fe-core/src/main/java/org/apache/doris/catalog/Env.java`: replace the anonymous
   `LicenseManager.Host` with `org.apache.doris.massdb.license.EnvLicenseHost` and expose
   `isLicenseLeadership()`; the host delegates to the same Env state as before.
-- `fe/check/checkstyle/checkstyle.xml`: the commercial-header allow list now names only the six
+- `fe/check/checkstyle/checkstyle.xml`: the commercial-header allow list now names only the seven
   tests that must stay in upstream packages for package-private or protected access
   (`LicenseCtasAdmissionTest`, `LicenseExportAdmissionTest`, `LicenseExportSchedulerTest`,
-  `LicenseInsertAdmissionTest`, `LicenseQueryExecutionTest`, `LicenseQueryRetryTest`).
+  `LicenseInsertAdmissionTest`, `LicenseQueryExecutionTest`, `LicenseQueryRetryTest`, and
+  `http/LicenseQueryPlanHttpAdmissionTest`, added 2026-11-10 because `DorisHttpTestCase` is
+  package-private).
 
 ## License operating-limit clarification (2026-10-05)
 

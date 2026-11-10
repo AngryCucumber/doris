@@ -1978,14 +1978,95 @@ class LicenseManagerTest {
         }
     }
 
+    /** Review L4: a commit refused before the journal write is not uncertain, so nothing is blocked. */
+    @Test
+    void commitRefusedBeforeTheJournalWriteIsNotUncertainAndTheNextRoundRetries() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 2000));
+        Assertions.assertTrue(manager.queryStatus().permitsNewQuery());
+        long applied = manager.getAppliedVersion();
+        int written = host.records.size();
+        host.rejectBeforeWrite = true;
+        time.advance(LicenseManager.watermarkIntervalMillis());
+        manager.maintenance();
+        Assertions.assertEquals(written, host.records.size());
+        Assertions.assertEquals(applied, manager.getAppliedVersion());
+        LicenseQueryStatus afterRefusal = manager.queryStatus();
+        Assertions.assertTrue(afterRefusal.permitsNewQuery(),
+                "nothing reached the journal, so the commit is not uncertain; got " + afterRefusal);
+        host.rejectBeforeWrite = false;
+        manager.maintenance();
+        Assertions.assertEquals(applied + 1, manager.getAppliedVersion());
+        Assertions.assertEquals(written + 1, host.records.size());
+    }
+
+    /** Review L2: a follower whose wall clock runs 48 h fast keeps serving; its own clock never confirms. */
+    @Test
+    void followerWallClockRunningFastNeverExpiresTheLicenseOnThatFollower() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 100_000));
+        Assertions.assertTrue(manager.queryStatus().permitsNewQuery());
+        manager.onNonMaster();
+        host.master = false;
+        time.wall += TimeUnit.HOURS.toMillis(48);
+        manager.maintenance();
+        time.advance(LicenseClock.ACCEPT_FORWARD_MILLIS);
+        manager.maintenance();
+        LicenseQueryStatus onFollower = manager.queryStatus();
+        Assertions.assertTrue(onFollower.permitsNewQuery(),
+                "a follower's wall clock must not move its trusted time; got " + onFollower);
+    }
+
+    /** Review L2: a promoted master starts the forward-jump confirmation from its own first observation. */
+    @Test
+    void promotedMasterDoesNotInheritAForwardJumpObservedWhileItWasAFollower() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 100_000));
+        manager.onNonMaster();
+        host.master = false;
+        time.wall += TimeUnit.HOURS.toMillis(48);
+        manager.maintenance();
+        time.advance(TimeUnit.MINUTES.toMillis(50));
+        manager.maintenance();
+        host.master = true;
+        manager.onMasterStart(false);
+        awaitBackgroundMaintenance();
+        time.advance(TimeUnit.MINUTES.toMillis(15));
+        manager.maintenance();
+        LicenseQueryStatus promoted = manager.queryStatus();
+        Assertions.assertTrue(promoted.permitsNewQuery(),
+                "65 min after the jump but 15 after promotion: not yet held for the acceptance bound; got " + promoted);
+    }
+
+    /** Review L14: a clock repair corrects time only; it never turns an expired license back into a valid one. */
+    @Test
+    void clockRepairNeverMakesAnExpiredLicenseValid() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 2000));
+        time.advance(TimeUnit.SECONDS.toMillis(1100));
+        Assertions.assertEquals(LicenseQueryStatus.EXPIRED, manager.queryStatus());
+        ObjectNode challenge = JSON.valueToTree(run(LicenseManager.Action.CLOCK_CHALLENGE, null)
+                .getBody().get("challenge"));
+        LicenseManagementResult repaired = run(LicenseManager.Action.CLOCK_REPAIR,
+                repairTicket(challenge, 2100, 2000, 3000));
+        Assertions.assertEquals(200, repaired.getHttpStatus());
+        Assertions.assertEquals(1L, run(LicenseManager.Action.STATUS, null).getBody().get("clock_epoch"));
+        Assertions.assertEquals(LicenseQueryStatus.EXPIRED, manager.queryStatus());
+    }
+
     private String repairTicket(ObjectNode challenge) throws Exception {
+        return repairTicket(challenge, 1000, 900, 1500);
+    }
+
+    private String repairTicket(ObjectNode challenge, long issuedAt, long notBefore, long expiresAt)
+            throws Exception {
         ObjectNode claims = JSON.createObjectNode().put("schema_version", 1).put("product", "MassDB SQL")
                 .put("deployment_id", challenge.get("deployment_id").textValue())
                 .put("repair_id", UUID.randomUUID().toString()).put("nonce", challenge.get("nonce").textValue())
                 .put("clock_epoch", challenge.get("clock_epoch").longValue())
                 .put("repair_authorization_version", challenge.get("repair_authorization_version").longValue())
                 .put("leader_term", challenge.get("leader_term").textValue())
-                .put("issued_at", 1000).put("not_before", 900).put("expires_at", 1500);
+                .put("issued_at", issuedAt).put("not_before", notBefore).put("expires_at", expiresAt);
         return sign(claims, "repair", LicenseClockRepairVerifier.TYPE, repairKey);
     }
 
@@ -2238,7 +2319,10 @@ class LicenseManagerTest {
         private final String path;
         private final List<LicensePersistRecord> records = Collections.synchronizedList(new ArrayList<>());
         private volatile boolean compatible = true;
+        private volatile boolean master = true;
         private boolean throwAfterWrite;
+        /** Refuses like EnvLicenseHost.commit does before logLicense: nothing reaches the journal (review L4). */
+        private boolean rejectBeforeWrite;
         private boolean retainLatestOnly;
         private boolean failPublicationAfterCommit;
         private final AtomicBoolean publicationFailure = new AtomicBoolean();
@@ -2270,7 +2354,7 @@ class LicenseManagerTest {
 
         @Override
         public boolean isMaster() {
-            return true;
+            return master;
         }
 
         @Override
@@ -2295,6 +2379,9 @@ class LicenseManagerTest {
 
         @Override
         public void commit(short operation, LicensePersistRecord record) throws IOException {
+            if (rejectBeforeWrite) {
+                throw new IOException("License commits require the current serving master");
+            }
             if (retainLatestOnly) {
                 records.clear();
             }

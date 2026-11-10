@@ -198,7 +198,9 @@
     "ui/scripts/license.test.cjs",
     "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseExternalHttpAdmissionTest.java",
     "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicensePersistRecordTest.java",
-    "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseManagerDiagnosticsTest.java"
+    "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseManagerDiagnosticsTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseRealAdmissionTest.java",
+    "fe/fe-core/src/test/java/org/apache/doris/http/LicenseQueryPlanHttpAdmissionTest.java"
   ],
   "apache": [
     "docker-compose/docker-compose.be-host.yml",

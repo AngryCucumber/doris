@@ -64,11 +64,11 @@ under the License.
     </module>
     <module name="SuppressionSingleFilter">
         <property name="id" value="asfHeader"/>
-        <property name="files" value="(?:[/\\]master[/\\]ReportHandlerTest\.java$|[/\\]massdb[/\\]|[/\\]nereids[/\\]trees[/\\]plans[/\\]commands[/\\]LicenseCtasAdmissionTest\.java$|[/\\]load[/\\]LicenseExport(?:Admission|Scheduler)Test\.java$|[/\\]nereids[/\\]trees[/\\]plans[/\\]commands[/\\]insert[/\\]LicenseInsertAdmissionTest\.java$|[/\\]qe[/\\]LicenseQuery(?:Execution|Retry)Test\.java$)"/>
+        <property name="files" value="(?:[/\\]master[/\\]ReportHandlerTest\.java$|[/\\]massdb[/\\]|[/\\]nereids[/\\]trees[/\\]plans[/\\]commands[/\\]LicenseCtasAdmissionTest\.java$|[/\\]load[/\\]LicenseExport(?:Admission|Scheduler)Test\.java$|[/\\]nereids[/\\]trees[/\\]plans[/\\]commands[/\\]insert[/\\]LicenseInsertAdmissionTest\.java$|[/\\]qe[/\\]LicenseQuery(?:Execution|Retry)Test\.java$|[/\\]http[/\\]LicenseQueryPlanHttpAdmissionTest\.java$)"/>
     </module>
     <module name="SuppressionSingleFilter">
         <property name="id" value="independentHeader"/>
-        <property name="files" value="^(?!.*(?:[/\\]master[/\\]ReportHandlerTest\.java$|[/\\]massdb[/\\]|[/\\]nereids[/\\]trees[/\\]plans[/\\]commands[/\\]LicenseCtasAdmissionTest\.java$|[/\\]load[/\\]LicenseExport(?:Admission|Scheduler)Test\.java$|[/\\]nereids[/\\]trees[/\\]plans[/\\]commands[/\\]insert[/\\]LicenseInsertAdmissionTest\.java$|[/\\]qe[/\\]LicenseQuery(?:Execution|Retry)Test\.java$)).*"/>
+        <property name="files" value="^(?!.*(?:[/\\]master[/\\]ReportHandlerTest\.java$|[/\\]massdb[/\\]|[/\\]nereids[/\\]trees[/\\]plans[/\\]commands[/\\]LicenseCtasAdmissionTest\.java$|[/\\]load[/\\]LicenseExport(?:Admission|Scheduler)Test\.java$|[/\\]nereids[/\\]trees[/\\]plans[/\\]commands[/\\]insert[/\\]LicenseInsertAdmissionTest\.java$|[/\\]qe[/\\]LicenseQuery(?:Execution|Retry)Test\.java$|[/\\]http[/\\]LicenseQueryPlanHttpAdmissionTest\.java$)).*"/>
     </module>
     <module name="LineLength">
         <property name="fileExtensions" value="java"/>

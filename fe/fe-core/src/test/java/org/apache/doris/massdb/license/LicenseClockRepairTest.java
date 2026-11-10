@@ -70,18 +70,9 @@ class LicenseClockRepairTest {
         Assertions.assertFalse(clock.isSuspect());
         Assertions.assertEquals(NOW / 1000, clock.trustedNowSeconds());
         Assertions.assertSame(receipt, manager.confirmRepair(receipt.getRepairId()));
-        Assertions.assertEquals(17, store.unrelatedLicenseSequence);
-        Assertions.assertEquals(NOW - 1, store.unrelatedLicenseExpiresAt);
-        Assertions.assertEquals(9, store.unrelatedEffectiveCapacity);
         Assertions.assertEquals(2, store.state.getFacts().getRepairAuthorizationVersion());
-    }
-
-    @Test
-    void repairDoesNotMakeAlreadyExpiredProductLicenseValid() throws Exception {
-        LicenseClockRepair.Receipt receipt = manager.commitRepair(
-                manager.prepareRepair(sign(claims(manager.newChallenge()))));
-        Assertions.assertTrue(clock.trustedNowMillis() > store.unrelatedLicenseExpiresAt);
-        Assertions.assertEquals(NOW, receipt.getCorrectedMillis());
+        // That a repair leaves an expired product license expired is asserted through the real manager in
+        // LicenseManagerTest.clockRepairNeverMakesAnExpiredLicenseValid; this store has no license facts.
     }
 
     @Test
@@ -443,9 +434,6 @@ class LicenseClockRepairTest {
         private boolean failAfter;
         private boolean failLoad;
         private boolean conflict;
-        private final long unrelatedLicenseSequence = 17;
-        private final long unrelatedLicenseExpiresAt = NOW - 1;
-        private final int unrelatedEffectiveCapacity = 9;
 
         private FakeStore(LicenseClockRepair.State state) {
             this.state = state;

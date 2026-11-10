@@ -23,6 +23,9 @@ class LicenseClockTest {
     static final LicenseClock.Settings STRICT = new LicenseClock.Settings(5_000, 5_000, 0);
     /** A one-minute rollback tolerance, so forward corrections of a few seconds count as small. */
     private static final LicenseClock.Settings LENIENT = new LicenseClock.Settings(60_000, 5_000, 0);
+    /** Shipped tolerances (12 h in process, 5 min at startup), no settling: unequal, so the checks differ. */
+    private static final LicenseClock.Settings SHIPPED = new LicenseClock.Settings(
+            LicenseClock.DEFAULT_ROLLBACK_TOLERANCE_MILLIS, LicenseClock.DEFAULT_STARTUP_TOLERANCE_MILLIS, 0);
     private static final long HOUR = TimeUnit.HOURS.toMillis(1);
 
     @Test
@@ -597,6 +600,58 @@ class LicenseClockTest {
         normal.advance(1);
         Assertions.assertThrows(IllegalStateException.class, () -> exhausted.prepareCheckpoint(1));
         Assertions.assertThrows(IllegalArgumentException.class, () -> exhausted.prepareCheckpoint(0));
+    }
+
+    /**
+     * Review L1. The master writes only its confirmed time, so its own watermark is never ahead of its own
+     * trusted time. Applying it after an in-process rollback must stay under the 12 h rollback tolerance and
+     * must not trip the 5 min startup tolerance meant for replayed or foreign watermarks.
+     */
+    @Test
+    void masterApplyingItsOwnWatermarkAfterAnInProcessRollbackKeepsTheRollbackTolerance() {
+        FakeTime time = new FakeTime(10 * 24 * HOUR);
+        LicenseClock clock = new LicenseClock(new LicenseClock.Facts(0, 0, time.wall, 0), time, SHIPPED);
+        time.wall -= HOUR;
+        clock.trustedNowMillis();
+        Assertions.assertFalse(clock.isSuspect());
+        time.advance(10 * 60_000);
+        LicenseClock.Facts own = clock.prepareCheckpoint(60_000);
+        Assertions.assertNotNull(own);
+        Assertions.assertTrue(clock.applyCommitted(own));
+        Assertions.assertFalse(clock.diagnostics().isStartupSuspect(),
+                "the master's own watermark must not be judged by the startup tolerance");
+        Assertions.assertFalse(clock.isSuspect());
+        time.wall -= 12 * HOUR;
+        clock.trustedNowMillis();
+        Assertions.assertTrue(clock.isSuspect(), "beyond the rollback tolerance the clock is still suspect");
+    }
+
+    /** With unequal tolerances a watermark ahead of this FE's trusted time is judged by the startup tolerance. */
+    @Test
+    void foreignWatermarkAheadOfTheWallUsesTheStartupToleranceEvenWithALargeRollbackTolerance() {
+        FakeTime time = new FakeTime(10 * 24 * HOUR);
+        long start = time.wall;
+        LicenseClock clock = new LicenseClock(new LicenseClock.Facts(0, 0, start, 0), time, SHIPPED);
+        Assertions.assertTrue(clock.applyCommitted(new LicenseClock.Facts(1, 0, start + 4 * 60_000, 0)));
+        Assertions.assertFalse(clock.isSuspect());
+        Assertions.assertTrue(clock.applyCommitted(new LicenseClock.Facts(2, 0, start + 6 * 60_000, 0)));
+        Assertions.assertTrue(clock.isSuspect());
+        Assertions.assertTrue(clock.diagnostics().isStartupSuspect());
+        Assertions.assertFalse(clock.diagnostics().isRollbackSuspect());
+    }
+
+    /** Review L2. A follower's wall clock never enters its trusted time: only watermarks and monotonic time do. */
+    @Test
+    void followerNeverConfirmsItsOwnWallClockForwardJump() {
+        FakeTime time = new FakeTime(100_000L);
+        LicenseClock clock = new LicenseClock(new LicenseClock.Facts(0, 0, 100_000L, 0), time, SHIPPED);
+        clock.setEnforced(false);
+        time.wall += 2 * HOUR;
+        clock.observe();
+        time.advance(LicenseClock.CONFIRM_SMALL_FORWARD_MILLIS);
+        Assertions.assertNotEquals(LicenseClock.Event.FORWARD_CONFIRMED, clock.observe());
+        Assertions.assertEquals(100_000L + LicenseClock.CONFIRM_SMALL_FORWARD_MILLIS, clock.confirmedNowMillis());
+        Assertions.assertEquals(100_000L + LicenseClock.CONFIRM_SMALL_FORWARD_MILLIS, clock.trustedNowMillis());
     }
 
     private static LicenseClock clock(FakeTime time, long highWater) {
