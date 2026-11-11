@@ -4,6 +4,15 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License review 2026-11-10: manual for L3, L7 and L11 (2026-11-11)
+
+- `docs/license-management-p2.md`: L3 (an image dump on the master holds the license commit queue) is kept as designed
+  and documented instead: section 5.1 now says that during a dump on the master, certificate commits, member changes
+  and base-capacity switches are turned away with `LICENSE_MANAGEMENT_BUSY` after 5 seconds and must be redone after
+  the dump, that watermarks are only postponed, and that dumps should not run on the master. Section 3 describes the
+  5-second queue bound of L7 and the `NOT_SUBMITTED` answer of a follower that cannot reach the master (L11), both
+  committed in 9bc59616f6e, which had left the manual describing the earlier behaviour. No code changes.
+
 ## License review 2026-11-10: superseded certificates, L9 (2026-11-11)
 
 L9 of the 2026-11-10 License/UI review, decided on 2026-11-11: an older certificate is rejected outright.
