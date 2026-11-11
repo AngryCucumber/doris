@@ -662,6 +662,7 @@ public final class LicenseManager implements AutoCloseable {
         int status;
         switch (code) {
             case IMPORT_CONFLICT:
+            case IMPORT_SUPERSEDED:
             case STALE_IMPORT_DECISION:
                 status = 409;
                 break;

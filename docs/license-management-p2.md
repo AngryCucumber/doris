@@ -129,6 +129,7 @@ Basic 认证可用于接口调用。浏览器 Cookie POST 必须同时提供匹�
 | `UNKNOWN` | 当前无法确认结果，`retryable=false`；查询回执，不直接重提变更，不推断未提交或盲目签发替代证书 |
 | HTTP 400 / SQL 6201、45000 | 候选或格式错误，按 `reason` 修正输入 |
 | HTTP 409 / SQL 6202、45000 | 状态、序号或节点额度冲突；先重新查看已提交状态，不按事务序列化失败自动重试 |
+| HTTP 409、`LICENSE_IMPORT_SUPERSEDED` / SQL 6202、45000 | 2026-11-11 起：证书序号不高于已接受的最高序号，且回执证明它从未被接受。它已被取代、永远不会生效，`submission_status` 为 `NOT_SUBMITTED`，`retryable=false`；不要重试，请导入序号更高的证书。成功回执超过 1,024 条、早期回执已淘汰时无法给出这一证明，仍按下面的历史不可确认处理 |
 | HTTP 429 / SQL 6203、HY000 | 用户速率或管理队列已满；HTTP 遵守 `Retry-After`，SQL 按 `reason` 退避重试 |
 | HTTP 503 / SQL 6203、HY000 | 尚未就绪或提交不可确认；结合 `submission_status` 和回执处理，历史不可确认见下一行 |
 | HTTP 503、`*_HISTORY_UNAVAILABLE` / SQL 6204、HY000 | 历史回执不可确认；不表示从未提交 |
@@ -136,7 +137,7 @@ Basic 认证可用于接口调用。浏览器 Cookie POST 必须同时提供匹�
 
 SQL 使用结果行表达提交/应用状态，错误保留独立 errno 与 SQLSTATE；原认证/权限错误仍使用原错误码，不强制转换为 6201–6204。HTTP 错误正文包含稳定的 `reason`、脱敏 `message`、`retryable`、`submission_status` 和版本字段；能定位提交时包含指纹或 `repair_id`，尚不能确定的版本可为 `null`。
 
-先判断 `submission_status`，再解释 `retryable`，不能仅根据 HTTP 409/503 或 SQL 错误码自动重试。`LICENSE_NOT_READY`（恢复或回放追赶期）的管理响应和受保护读取的拒绝体都带 `retry_after_seconds = 30`，HTTP 同时带 `Retry-After: 30`；客户端按它退避，不要以更短间隔重试。负载均衡的健康检查请使用无需认证的只读 `GET /api/license/health`：本 FE 能提供受保护读取时返回 200 `{"status":"READY"}`，否则 503 `{"status":"NOT_READY","retry_after_seconds":30}` 并带 `Retry-After`，不含任何许可细节；`GET /api/license` 在未就绪时仍返回 200，以便页面展示原因。`NOT_SUBMITTED` 只有明确的暂态原因返回 `retryable=true`：`LICENSE_NOT_READY`、`LICENSE_IMPORT_NOT_READY`、`LICENSE_NOT_LEADER`、`LICENSE_RATE_LIMITED`、`LICENSE_MANAGEMENT_BUSY`、`LICENSE_METADATA_UNAVAILABLE`、`LICENSE_STORE_UNAVAILABLE`、`LICENSE_STALE_IMPORT_DECISION`。这允许在状态重新就绪后退避重试，不保证无限重试能够恢复。永久证书/修复冲突、节点超额、FE 升级要求、时钟修复要求、验签不可用及历史不可确认均为 `false`，须按原因处理。`UNKNOWN` 必须先按指纹或 `repair_id` 确认；`COMMITTED` 只需等待原提交应用，不能将轮询建议解释为重新导入或再次修复。
+先判断 `submission_status`，再解释 `retryable`，不能仅根据 HTTP 409/503 或 SQL 错误码自动重试。`LICENSE_NOT_READY`（恢复或回放追赶期）的管理响应和受保护读取的拒绝体都带 `retry_after_seconds = 30`，HTTP 同时带 `Retry-After: 30`；客户端按它退避，不要以更短间隔重试。负载均衡的健康检查请使用无需认证的只读 `GET /api/license/health`：本 FE 能提供受保护读取时返回 200 `{"status":"READY"}`，否则 503 `{"status":"NOT_READY","retry_after_seconds":30}` 并带 `Retry-After`，不含任何许可细节；`GET /api/license` 在未就绪时仍返回 200，以便页面展示原因。`NOT_SUBMITTED` 只有明确的暂态原因返回 `retryable=true`：`LICENSE_NOT_READY`、`LICENSE_IMPORT_NOT_READY`、`LICENSE_NOT_LEADER`、`LICENSE_RATE_LIMITED`、`LICENSE_MANAGEMENT_BUSY`、`LICENSE_METADATA_UNAVAILABLE`、`LICENSE_STORE_UNAVAILABLE`、`LICENSE_STALE_IMPORT_DECISION`。这允许在状态重新就绪后退避重试，不保证无限重试能够恢复。永久证书/修复冲突、已被取代的证书、节点超额、FE 升级要求、时钟修复要求、验签不可用及历史不可确认均为 `false`，须按原因处理。`UNKNOWN` 必须先按指纹或 `repair_id` 确认；`COMMITTED` 只需等待原提交应用，不能将轮询建议解释为重新导入或再次修复。
 
 内置页面在导入返回 `UNKNOWN` 或 `COMMITTED` 后，仅对原指纹执行只读回执查询，最多持续 120 秒，按 2/4/8/16/30 秒退避；不会自动重发导入请求。历史已经淘汰时，轮询不能重建回执，超时后需要人工确认。自建 Java 服务或代理也应区分“查询提交结果”和“再次提交证书”，不要只因 HTTP 503 就自动重发 POST。
 

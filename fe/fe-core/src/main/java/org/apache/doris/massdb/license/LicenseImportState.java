@@ -203,6 +203,20 @@ public final class LicenseImportState {
                 highestSequence, licenseVersion, receipts);
     }
 
+    /**
+     * Whether the receipts still list every certificate this deployment accepted. Every acceptance appends a receipt
+     * and is the only way the highest sequence rises, and receipts are evicted only once there are more than
+     * MAX_RECEIPTS, after which there are always MAX_RECEIPTS. So fewer receipts, the newest of them holding the
+     * highest sequence, means none was ever evicted (review L9).
+     */
+    boolean isReceiptHistoryComplete() {
+        if (receipts.size() >= MAX_RECEIPTS) {
+            return false;
+        }
+        return receipts.isEmpty() ? highestSequence == 0
+                : receipts.get(receipts.size() - 1).sequence == highestSequence;
+    }
+
     Receipt findReceipt(String fingerprint) {
         for (Slot slot : new Slot[] {active, pending, effectiveBase}) {
             if (slot != null && slot.document.getFingerprint().equals(fingerprint)) {

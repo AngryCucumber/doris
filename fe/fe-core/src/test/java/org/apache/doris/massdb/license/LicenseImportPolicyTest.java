@@ -484,6 +484,25 @@ class LicenseImportPolicyTest {
     }
 
     @Test
+    void neverAcceptedLowerSequenceIsSupersededWhileTheReceiptHistoryIsComplete() throws Exception {
+        // Review L9: while every accepted certificate still has its receipt, a lower sequence without one was never
+        // accepted and never will be, so it is a definite rejection rather than "history unavailable".
+        LicenseImportState state = accept(accept(empty, claims(1, 900, 2000), 1000), claims(3, 900, 3000), 1000);
+        Assertions.assertEquals("IMPORT_SUPERSEDED", rejection(state, claims(2, 900, 3000)).name());
+        Assertions.assertEquals(3, state.getHighestSequence(), "a rejected candidate changes nothing");
+        // Receipts that do not end with the highest accepted sequence prove nothing about older sequences.
+        LicenseImportState gap = LicenseImportState.restore(DEPLOYMENT, state.getActive(), null,
+                state.getEffectiveBase(), 9, 9, state.getReceipts());
+        Assertions.assertEquals(LicenseErrorCode.IMPORT_HISTORY_UNAVAILABLE, rejection(gap, claims(2, 900, 3000)));
+    }
+
+    private LicenseErrorCode rejection(LicenseImportState state, ObjectNode claims) throws Exception {
+        String compact = sign(claims);
+        return Assertions.assertThrows(LicenseException.class,
+                () -> policy.prepare(compact, state, now(1000), verifier)).getErrorCode();
+    }
+
+    @Test
     void receiptHistoryIsBoundedOrderedAndEvictionDoesNotInventSuccess() throws Exception {
         List<Receipt> receipts = new ArrayList<>();
         String discarded = sign(claims(1, 900, 1100));
@@ -616,7 +635,8 @@ class LicenseImportPolicyTest {
         Assertions.assertEquals(Long.MAX_VALUE, state.getHighestSequence());
         Assertions.assertTrue(policy.prepare(state.getActive().getCompact(), state, now(1000), verifier)
                 .isIdempotent());
-        reject(LicenseErrorCode.IMPORT_HISTORY_UNAVAILABLE, state, claims(2, 900, 3000), now(1000));
+        // Review L9: the complete receipt history proves sequence 2 was never accepted.
+        Assertions.assertEquals("IMPORT_SUPERSEDED", rejection(state, claims(2, 900, 3000)).name());
         LicenseImportState exhausted = LicenseImportState.restore(DEPLOYMENT, null, null, null,
                 0, Long.MAX_VALUE, Collections.emptyList());
         reject(LicenseErrorCode.IMPORT_CONFLICT, exhausted, claims(1, 900, 2000), now(1000));

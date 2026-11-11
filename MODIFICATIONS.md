@@ -4,6 +4,31 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License review 2026-11-10: superseded certificates, L9 (2026-11-11)
+
+L9 of the 2026-11-10 License/UI review, decided on 2026-11-11: an older certificate is rejected outright.
+
+- `LicenseImportPolicy`, `LicenseImportState`, `LicenseErrorCode`, `LicenseManager`: a valid certificate whose sequence
+  is not above the highest accepted one and that matches no receipt or slot was answered 503
+  `LICENSE_IMPORT_HISTORY_UNAVAILABLE` / `UNKNOWN` (SQL 6204), because its receipt might have been evicted. Every
+  acceptance appends a receipt and is the only way the highest sequence rises, and receipts are evicted only above
+  1,024, after which there are always 1,024; so with fewer receipts, the newest holding the highest sequence
+  (`LicenseImportState.isReceiptHistoryComplete`), the certificate provably was never accepted. Validation and import
+  now answer 409 `LICENSE_IMPORT_SUPERSEDED` / `NOT_SUBMITTED`, not retryable (SQL 6202 / 45000). With an incomplete
+  history the answer is unchanged, and so is the receipt query by fingerprint. The persisted format is unchanged.
+- `ui/src/api/license.ts`, `ui/public/locales/{en-us,zh-cn}.json`: the reason is accepted and explained ("superseded,
+  will not be accepted, do not retry; import a certificate with a higher sequence").
+- `docs/license-management-p2.md`: the error table and the list of non-retryable reasons include the new reason.
+- Tests: `LicenseImportPolicyTest` (new case; the maximum-sequence case now expects the new reason),
+  `LicenseManagerTest` (the validate and import matrix expects 409 / NOT_SUBMITTED / SQL 6202 for a never accepted
+  lower sequence), `LicenseSqlCommandTest`, `ui/scripts/license.test.cjs` (rejection at validation and at import).
+- Validation (`.build-records/license-l9-20261111/`): the three Java and two browser cases fail on the unfixed code and
+  pass on the fixed one; `License*Test` 35 classes, 394 tests; `test:license` 53/53, `test:legal` 4/4,
+  `check:notices`; the full FE unit test run fails exactly the 36 baseline cases; Checkstyle and the source-header
+  check pass. On a real FE that had imported sequence 5, a never imported sequence 3 was answered 503 `UNKNOWN`
+  (SQL 6204, "history cannot confirm") before the fix and 409 `LICENSE_IMPORT_SUPERSEDED` (SQL 6202, "superseded, do
+  not retry") after it, through the API, SQL and the License page, with screenshots.
+
 ## License review 2026-11-10: hardening L5, L6, L7, L8, L10 and L11 (2026-11-11)
 
 The part of batch 4 of the 2026-11-10 License/UI review that needs no product decision. L3, L9 and the manifest

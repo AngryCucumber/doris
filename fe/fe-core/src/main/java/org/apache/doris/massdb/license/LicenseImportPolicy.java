@@ -170,7 +170,11 @@ public final class LicenseImportPolicy {
             reject(LicenseErrorCode.IMPORT_CONFLICT);
         }
         if (candidate.getSequence() <= state.getHighestSequence()) {
-            reject(LicenseErrorCode.IMPORT_HISTORY_UNAVAILABLE);
+            // No receipt or slot has this fingerprint, sequence or license id. While the receipt history is complete
+            // that proves it was never accepted, and a lower sequence never will be (review L9); otherwise it may
+            // have been accepted before its receipt was evicted.
+            reject(state.isReceiptHistoryComplete() ? LicenseErrorCode.IMPORT_SUPERSEDED
+                    : LicenseErrorCode.IMPORT_HISTORY_UNAVAILABLE);
         }
         requireReady(context);
         long now = context.trustedNowSeconds;

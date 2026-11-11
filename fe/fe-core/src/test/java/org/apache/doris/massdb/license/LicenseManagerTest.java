@@ -1816,8 +1816,9 @@ class LicenseManagerTest {
         candidates.put(sign(valid, "issuer", LicenseClockRepairVerifier.TYPE, issuer), "LICENSE_INVALID_HEADER");
         candidates.put(sign(valid.deepCopy().put("deployment_id", UUID.randomUUID().toString()),
                 "issuer", "massdb-license+jws", issuer), "LICENSE_DEPLOYMENT_MISMATCH");
+        // Review L9: 4 is below the highest sequence 6 and was never accepted (receipts 5 and 6 are all there).
         candidates.put(sign(claims(deployment, 4, 900, 4000), "issuer", "massdb-license+jws", issuer),
-                "LICENSE_IMPORT_HISTORY_UNAVAILABLE");
+                "LICENSE_IMPORT_SUPERSEDED");
         candidates.put(sign(claims(deployment, 5, 900, 4000), "issuer", "massdb-license+jws", issuer),
                 "LICENSE_IMPORT_CONFLICT");
         // Two registered FEs exceed a one-FE quota; this is actual usage, not a replaced promise.
@@ -1838,8 +1839,17 @@ class LicenseManagerTest {
                         () -> run(action, candidate.getKey()));
                 Assertions.assertEquals(candidate.getValue(), failure.getReason());
                 int expected = candidate.getValue().endsWith("HISTORY_UNAVAILABLE") ? 503
-                        : candidate.getValue().endsWith("IMPORT_CONFLICT") ? 409 : 400;
+                        : candidate.getValue().endsWith("IMPORT_CONFLICT")
+                        || candidate.getValue().endsWith("IMPORT_SUPERSEDED") ? 409 : 400;
                 Assertions.assertEquals(expected, failure.getHttpStatus());
+                if (candidate.getValue().endsWith("IMPORT_SUPERSEDED")) {
+                    Assertions.assertEquals("NOT_SUBMITTED", failure.getBody().get("submission_status"));
+                    Assertions.assertEquals(false, failure.getBody().get("retryable"));
+                    // Like the other candidate rejections, the first decision names no submission.
+                    Assertions.assertNull(failure.getBody().get("fingerprint"));
+                    Assertions.assertEquals(6202, failure.getSqlErrorCode());
+                    Assertions.assertEquals("45000", failure.getSqlState());
+                }
                 Assertions.assertFalse(failure.toString().contains(candidate.getKey()));
                 Assertions.assertArrayEquals(before, image(manager));
                 Assertions.assertEquals(3, host.records.size());

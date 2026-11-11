@@ -154,8 +154,8 @@ class LicenseSqlCommandTest {
 
     @Test
     void retryAdviceDistinguishesTransientRejectionFromConflictsAndUnknownSubmissions() {
-        for (String reason : new String[] {"LICENSE_IMPORT_CONFLICT", "LICENSE_REPAIR_CONFLICT",
-                "LICENSE_BE_LIMIT_EXCEEDED", "LICENSE_FE_LIMIT_EXCEEDED"}) {
+        for (String reason : new String[] {"LICENSE_IMPORT_CONFLICT", "LICENSE_IMPORT_SUPERSEDED",
+                "LICENSE_REPAIR_CONFLICT", "LICENSE_BE_LIMIT_EXCEEDED", "LICENSE_FE_LIMIT_EXCEEDED"}) {
             LicenseManagementException failure = new LicenseManagementException(reason, 409,
                     "NOT_SUBMITTED", "fingerprint", 0, 7);
             Assertions.assertEquals(false, failure.getBody().get("retryable"), reason);

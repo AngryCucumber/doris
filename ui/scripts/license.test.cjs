@@ -977,6 +977,36 @@ test('P2U License browser contracts (controlled API, not FE integration)', { tim
             });
         }
 
+        // Review L9: a certificate below the highest accepted sequence that was never imported is rejected for good,
+        // 409 LICENSE_IMPORT_SUPERSEDED / NOT_SUBMITTED, at validation and (after a race) at import.
+        // As the FE answers it: like the other candidate rejections, without a fingerprint.
+        const superseded = () => ({ status: 409, body: errorBody('LICENSE_IMPORT_SUPERSEDED', 'NOT_SUBMITTED') });
+        await run('L09-superseded-certificate-rejected-at-validation', async f => {
+            f.model.validate = superseded();
+            await f.enter(); await f.clock(); await f.open();
+            await f.id('license-validate').click();
+            await f.id('license-error').waitFor();
+            assert.match(await f.id('license-error').innerText(), /LICENSE_IMPORT_SUPERSEDED · HTTP 409/);
+            assert.match(await f.id('license-error').innerText(), /superseded/i);
+            assert.equal(await f.id('license-confirm-import').isEnabled(), false);
+            await f.advance(300000);
+            assert.equal(f.count('/validate'), 1, 'a definite rejection is not retried');
+            assert.equal(f.count('/import'), 0);
+            await f.page.screenshot({ path: path.join(artifacts, 'license-superseded-at-validation.png'), fullPage: true });
+        });
+        await run('L09-superseded-certificate-rejected-at-import', async f => {
+            f.model.imported = superseded();
+            await f.enter(); await f.clock(); await f.open(); await f.validate(); await f.confirm();
+            await f.id('license-error').waitFor();
+            assert.match(await f.id('license-error').innerText(), /superseded/i);
+            assert.match(await f.id('license-error').innerText(), /LICENSE_IMPORT_SUPERSEDED · HTTP 409/);
+            assert.equal(await f.id('license-receipt').getAttribute('data-submission-status'), 'NOT_SUBMITTED');
+            await f.advance(300000);
+            assert.equal(f.receipts().length, 0, 'a definite rejection is not polled');
+            assert.equal(f.count('/import'), 1, 'and not submitted again');
+            await f.page.screenshot({ path: path.join(artifacts, 'license-superseded-at-import.png'), fullPage: true });
+        });
+
         for (const status of [401, 403, 429, 503]) {
             await run('U03-http-' + status, async f => {
                 const reason = { 401: 'UNAUTHENTICATED', 403: 'ACCESS_DENIED',

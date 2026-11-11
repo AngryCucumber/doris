@@ -33,5 +33,7 @@ public enum LicenseErrorCode {
     RENEWAL_REDUCTION,
     IMPORT_CONFLICT,
     IMPORT_HISTORY_UNAVAILABLE,
-    STALE_IMPORT_DECISION
+    STALE_IMPORT_DECISION,
+    // A sequence below the highest accepted one that the complete receipt history proves was never accepted.
+    IMPORT_SUPERSEDED
 }
