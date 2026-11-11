@@ -421,12 +421,14 @@ test('P2U License browser contracts (controlled API, not FE integration)', { tim
         await run('U04-clock-and-diagnostics-cards', async f => {
             await f.enter();
             const clock = await f.id('license-clock').innerText();
-            assert.match(clock, /Majority agrees/, 'the peer verdict must be translated');
-            assert.match(clock, /3600/, 'the pending forward seconds must be shown');
+            assert.match(clock, /Consistent/, 'the peer verdict must be translated');
+            assert.match(clock, /1 h 0 min/, 'the pending forward time must be shown');
             assert.match(clock, /UTC/, 'the confirmed time must be shown as a timestamp');
             const diagnostics = await f.id('license-diagnostics').innerText();
-            assert.match(diagnostics, /c{64}/, 'the trust digest must be shown');
-            assert.match(diagnostics, /No isolated slots/);
+            assert.match(diagnostics, /cccccccccccc…/, 'the start of the trust digest must be shown');
+            assert.equal(await f.id('license-diagnostics').locator('.ant-typography-copy').count(), 1,
+                'the full trust digest can be copied');
+            assert.match(diagnostics, /Certificates this FE cannot verify\s+None\./);
             f.model.status = { ...snapshot('INVALID'), replay_gaps: 1, invalid_slots: [
                 { slot: 'active', key_id: 'rogue-key-1', reason: 'UNTRUSTED_KEY' },
                 { slot: 'pending', key_id: null, reason: '<img src=x onerror=alert(1)>' },
@@ -445,6 +447,164 @@ test('P2U License browser contracts (controlled API, not FE integration)', { tim
             assert.match(gaps, /120/);
             assert.match(gaps, /10006/);
         });
+
+        for (const language of ['en', 'zh-CN']) {
+            // 2026-11-11: the deployment and clock cards say what each fact means for the operator.
+            await run('U07-plain-deployment-and-clock-cards-' + language, async f => {
+                const zh = language === 'zh-CN';
+                await f.enter();
+                const deployment = await f.id('license-deployment').innerText();
+                for (const text of zh
+                    ? ['集群授权信息', '集群授权编号', '申请证书时把它提供给签发方', '已导入证书的最大序号',
+                        '序号不大于它的证书不能再导入', '时间修复次数', '扩容上限', 'FE 4 台，BE 8 台']
+                    : ['Cluster license details', 'Cluster license ID', 'Give it to the issuer',
+                        'Highest imported certificate number', 'Time repairs', 'Expansion limit', 'FE 4, BE 8']) {
+                    assert.ok(deployment.includes(text), `the deployment card must say "${text}"`);
+                }
+                assert.match(deployment, /aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/);
+                assert.doesNotMatch(deployment, zh ? /部署标识|已接收最高序列号|已应用版本|时钟代次|基础 FE/
+                    : /Deployment ID|Highest sequence|Applied version|Clock epoch|Base FE/);
+                assert.equal(await f.id('license-deployment').locator('.ant-typography-copy').count(), 1,
+                    'the cluster license ID can be copied');
+
+                const clock = await f.id('license-clock').innerText();
+                for (const text of zh
+                    ? ['授权时间', '已确认时间', '与其他 FE 比对', '一致', '本机系统时间偏慢', '集群已判定时间异常',
+                        '本机负责时间判定', '启动观察期', '已结束', '服务器时间快出', '1 小时 0 分，已等待核实 2 分 0 秒',
+                        '授权时间用来判断证书是否到期']
+                    : ['License time', 'Confirmed time', 'Compared with other FEs', 'Consistent', 'Server clock behind',
+                        'Cluster-wide time problem', 'Judges time for the cluster', 'Startup observation period', 'over',
+                        'Server clock ahead', '1 h 0 min, verifying for 2 min 0 s',
+                        'The license time decides when certificates expire']) {
+                    assert.ok(clock.includes(text), `the clock card must say "${text}"`);
+                }
+                assert.doesNotMatch(clock, zh ? /同伴墙钟|待确认前跳|本机执行拒绝|稳定期已结束|单调时钟/
+                    : /Peer clock verdict|Pending forward|Enforced on this FE|Settling period|monotonic/);
+
+                const states = [
+                    [{}, 'pending', zh ? /待核实：服务器时间比授权时间快 1 小时 0 分，已等待 2 分 0 秒/
+                        : /Being verified: the server clock is 1 h 0 min ahead of the license time, verifying for 2 min 0 s/],
+                    [{ clock_pending_forward_seconds: 90, clock_pending_age_seconds: 5, clock_pending_startup: true },
+                        'pendingStartup', zh ? /启动时发现服务器时间比授权时间快 1 分 30 秒，已等待 5 秒。本机已按服务器时间判断/
+                            : /at startup the server clock was 1 min 30 s ahead of the license time, verifying for 5 s. This FE already uses it/],
+                    [{ clock_pending_forward_seconds: 0, clock_pending_age_seconds: 0, clock_peer_verdict: 'UNKNOWN' }, 'normal',
+                        zh ? /正常：授权时间与服务器时间一致/ : /Normal: the license time matches the server time/],
+                    [{ clock_pending_forward_seconds: 0, clock_local_suspect: true }, 'rejecting',
+                        zh ? /异常：本机系统时间比授权时间慢，查询已被拒绝/ : /so queries are rejected/],
+                    [{ clock_pending_forward_seconds: 0, clock_local_suspect: true, clock_settled: false }, 'slowSettling',
+                        zh ? /请在启动观察期结束前校正服务器时间/ : /before the startup observation period ends/],
+                    [{ clock_pending_forward_seconds: 0, clock_local_suspect: true, clock_enforced: false }, 'slowReported',
+                        zh ? /本机不是 Master，不会因此拒绝查询/ : /not the master and does not reject queries/],
+                    [{ clock_committed_suspect: true, clock_local_suspect: true }, 'committed',
+                        zh ? /所有 FE 都拒绝查询。请校正 Master 的服务器时间/ : /every FE rejects queries. Correct the master's/],
+                    [{ confirmed_utc: null }, 'unavailable', zh ? /授权时间尚未就绪/ : /not ready yet/],
+                ];
+                for (const [change, state, message] of states) {
+                    f.model.status = { ...snapshot(), ...change };
+                    await f.id('license-refresh').click();
+                    await eventually(async () => (await f.id('license-clock-state').getAttribute('data-clock-state')) === state
+                        && message.test(await f.id('license-clock-state').innerText()), `the clock card must report ${state}`);
+                    const text = await f.id('license-clock').innerText();
+                    if (change.clock_pending_startup) assert.ok(text.includes(zh ? '（启动时发现）' : '(found at startup)'));
+                    if (state === 'normal') {
+                        assert.ok(!text.includes(zh ? '服务器时间快出' : 'Server clock ahead'), 'no pending row without a pending jump');
+                        assert.ok(text.includes(zh ? '未比对' : 'Not compared'));
+                    }
+                    if (state === 'pending' && !change.clock_pending_startup) {
+                        await f.page.locator('[data-testid=license-deployment]').locator('xpath=..')
+                            .screenshot({ path: path.join(artifacts, `license-plain-cards-${language}.png`) });
+                    }
+                }
+            }, { language });
+        }
+
+        for (const language of ['en', 'zh-CN']) {
+            // 2026-11-11: the certificate check and the import result card say what each fact means.
+            await run('U08-plain-certificate-check-and-import-result-' + language, async f => {
+                const zh = language === 'zh-CN';
+                await f.enter();
+                const state = () => f.id('license-diagnostics-state').getAttribute('data-diagnostics-state');
+                assert.equal(await state(), 'normal');
+                let check = await f.id('license-diagnostics').innerText();
+                for (const text of zh
+                    ? ['本节点证书检查', '正常：本节点能验证全部证书，授权记录同步完整。', '验签公钥指纹', '各 FE 应一致',
+                        '跳过的元数据记录', '未采用的授权记录', '正常为 0', '无法验证的证书', '最近跳过的记录']
+                    : ['Certificate check on this FE', 'Normal: this FE can verify every certificate', 'Signing key fingerprint',
+                        'Should be the same on every FE', 'Skipped metadata records', 'License records not adopted',
+                        'Certificates this FE cannot verify', 'Recently skipped records']) {
+                    assert.ok(check.includes(text), `the certificate check must say "${text}"`);
+                }
+                assert.doesNotMatch(check, zh ? /本 FE 诊断|公钥集合摘要|回放缺口|隔离的证书槽位/
+                    : /Diagnostics of this FE|Trust digest|Replay gaps|Isolated certificate slots/);
+
+                f.model.status = { ...snapshot(), ignored_records: 2 };
+                await f.id('license-refresh').click();
+                await eventually(async () => await state() === 'notice', 'ignored records are a notice');
+                assert.match(await f.id('license-diagnostics-state').innerText(),
+                    zh ? /提醒：本节点同步授权记录时跳过或未采用过记录/ : /Note: this FE skipped or did not adopt/);
+
+                f.model.status = { ...snapshot('INVALID'), replay_gaps: 2, invalid_slots: [
+                    { slot: 'active', key_id: 'rogue-key-1', reason: 'UNTRUSTED_KEY' },
+                    { slot: 'base', key_id: null, reason: 'NEW_REASON_FROM_A_LATER_FE' },
+                ], recent_replay_gaps: [
+                    { journal_id: 120, op_code: 10006, kind: 'FORCE_SKIP_JOURNAL_ID', wall_millis: fixedEpoch * 1000 },
+                    { journal_id: -1, op_code: -1, kind: 'DEPLOYMENT_RESET', wall_millis: fixedEpoch * 1000 },
+                ] };
+                await f.id('license-refresh').click();
+                await eventually(async () => await state() === 'needsAction', 'isolated slots need action');
+                check = await f.id('license-diagnostics').innerText();
+                assert.match(check, zh ? /需要处理：本节点验证不了 2 张证书/ : /Action needed: this FE cannot verify 2 certificate/);
+                const slots = await f.id('license-invalid-slots').innerText();
+                assert.match(slots, zh ? /签名公钥本节点不认识\s*主证书（UNTRUSTED_KEY，证书 kid rogue-key-1）/
+                    : /Signing key unknown to this FE\s*Active certificate \(UNTRUSTED_KEY, certificate kid rogue-key-1\)/);
+                assert.match(slots, zh ? /其他原因\s*基础额度证书（NEW_REASON_FROM_A_LATER_FE/ : /Other reason\s*Base capacity certificate/);
+                const gaps = await f.id('license-replay-gaps').innerText();
+                assert.match(gaps, zh ? /按配置强制跳过\s*日志 120（操作码 10006） · FORCE_SKIP_JOURNAL_ID/
+                    : /Skipped by force_skip_journal_id\s*journal 120 \(op code 10006\) · FORCE_SKIP_JOURNAL_ID/);
+                assert.match(gaps, zh ? /集群授权被重新初始化\s*DEPLOYMENT_RESET/ : /Cluster license re-initialized\s*DEPLOYMENT_RESET/);
+                assert.doesNotMatch(gaps, /-1/, 'a gap without a journal names no journal');
+                await f.id('license-diagnostics').screenshot({ path: path.join(artifacts, `license-certificate-check-${language}.png`) });
+
+                f.model.status = snapshot();
+                await f.id('license-refresh').click();
+                await eventually(async () => await state() === 'normal', 'back to normal');
+                let card = await f.id('license-receipt').innerText();
+                for (const text of zh ? ['导入结果查询', '查询不会重新导入', '证书指纹（SHA-256）', '查询结果']
+                    : ['Check an import result', 'Checking never imports again', 'Certificate fingerprint (SHA-256)', 'Check result']) {
+                    assert.ok(card.includes(text), `the import result card must say "${text}"`);
+                }
+                assert.equal(await f.id('license-poll-status').isVisible(), false, 'no line while nothing is checked');
+                const results = [
+                    [{ status: 200, body: receipt('APPLIED') }, 'APPLIED',
+                        zh ? /已生效：这次导入已在本节点生效。/ : /In effect: this import has taken effect on this FE\./],
+                    [{ status: 202, body: receipt('COMMITTED') }, 'COMMITTED',
+                        zh ? /已提交：这次导入已被集群接受，本节点还在同步/ : /Committed: the cluster accepted this import/],
+                    [{ status: 409, body: { ...errorBody('LICENSE_IMPORT_SUPERSEDED'), fingerprint: expectedFingerprint } },
+                        'NOT_SUBMITTED', zh ? /未生效：这次导入没有被提交，可以修正后重新导入。[\s\S]*已被取代/
+                            : /Not in effect: this import was not submitted\.[\s\S]*superseded/],
+                    [{ status: 503, body: receipt('UNKNOWN') }, 'UNKNOWN',
+                        zh ? /暂时无法确认：这次导入是否生效还不确定。请稍后再查，不要重复导入。/ : /Not confirmed yet/],
+                ];
+                await f.id('license-receipt-fingerprint').fill(expectedFingerprint);
+                for (const [answer, expected, message] of results) {
+                    f.model.received = answer;
+                    await f.id('license-receipt-query').click();
+                    await eventually(async () => await f.id('license-receipt-result').count() === 1
+                        && (await f.id('license-receipt-result').getAttribute('data-receipt-state')) === expected,
+                        `the import result card must report ${expected}`);
+                    card = await f.id('license-receipt').innerText();
+                    assert.match(card, message);
+                    assert.match(card, zh ? /技术细节：/ : /Technical details: /);
+                    assert.ok(card.includes(expected), 'the raw status stays in the technical details');
+                    assert.match(card, new RegExp(`HTTP ${answer.status}`));
+                    if (expected === 'APPLIED') {
+                        assert.equal(await f.id('license-poll-status').isVisible(), false, 'the result is not repeated');
+                        await f.id('license-receipt').screenshot({ path: path.join(artifacts, `license-import-result-${language}.png`) });
+                    }
+                    await f.page.waitForTimeout(1100);
+                }
+            }, { language });
+        }
 
         await run('U04-role-change-clears-private-details', async f => {
             await f.enter();

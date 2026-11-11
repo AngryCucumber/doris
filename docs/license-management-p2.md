@@ -96,6 +96,8 @@ Basic 认证可用于接口调用。浏览器 Cookie POST 必须同时提供匹�
 
 管理员详情包含 active/pending、最高接受序号、FE/BE 注册用量、当前证书额度、已提交基础额度、可信 UTC 和本地应用版本。普通用户看不到客户信息、部署标识或完整证书详情。所有到期字段为 UTC Unix 秒；`SET time_zone` 不改变许可时间，`now == expires_at` 即到期。
 
+页面“授权证书”用通俗说法显示这些字段（2026-11-11 起）。“集群授权信息”卡片中，“集群授权编号”即 `deployment_id`，“已导入证书的最大序号”即 `highest_sequence`，“时间修复次数”即 `clock_epoch`，“扩容上限”即 `base_max_fe_nodes` / `base_max_be_nodes`。“授权时间”卡片顶部用一句话给出状态：正常、待核实（`clock_pending_forward_seconds` 大于 0）、提醒（本机系统时间偏慢但不拒绝查询）或异常（查询已被拒绝）。下面各项对应 `confirmed_utc`、`clock_peer_verdict`、`clock_local_suspect`、`clock_committed_suspect`、`clock_enforced`、`clock_settled` 和待核实的前跳；`applied_version` 与 `clock_startup_suspect` 不在这两张卡片上显示，仍可用 `SHOW LICENSE` 查看。“本节点证书检查”卡片顶部给出正常、提醒（`replay_gaps` 或 `ignored_records` 大于 0）或需要处理（`invalid_slots` 非空）；“验签公钥指纹”即 `trust_sha256`（显示前 12 位，可复制全文），“跳过的元数据记录”即 `replay_gaps`，“未采用的授权记录”即 `ignored_records`，“无法验证的证书”和“最近跳过的记录”在中文说明旁保留原始代码。“导入结果查询”卡片按指纹查询，与 `GET /api/license/imports/{fingerprint}` 和 `SHOW LICENSE IMPORT` 相同，用一句话说明结果（已生效、已提交、未生效或暂时无法确认），`submission_status`、`reason`、版本号和 HTTP 状态列在“技术细节”一行。
+
 ### 2.1 取代式续期、缩短与降额
 
 **2026-10-15 起的规则。** 同一部署内 sequence 更高的合法证书一经导入，就完全取代当前 active 和 pending 的全部承诺。FE 不再比较新旧证书的到期时间、生效时间、额度和功能集，只要求新证 FE、BE 额度分别容纳当前已注册+预留用量。因此可以导入到期更早的证书，也可以在旧证尚未到期、集群已真正缩容后导入额度更低的证书。该规则需要本轮更新后的 FE；验收结果见[执行计划与验收记录](license-renewal-replacement-plan-20261015.md)。

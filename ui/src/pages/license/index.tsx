@@ -5,7 +5,7 @@
 // Use is governed by LICENSE-MASSDB.txt and a separate agreement with the company.
 // Upstream and third-party components retain their respective licenses.
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Input, Modal, Tag } from 'antd';
+import { Alert, Button, Input, Modal, Tag, Typography } from 'antd';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { LicenseFields, LicenseResponse, licenseRequest } from '../../api/license';
@@ -29,9 +29,7 @@ function Fields({ value, names }: { value: LicenseFields; names: string[] }) {
     return <dl className={styles.fields}>{names.map(name => <React.Fragment key={name}>
         <dt>{t(`license.fields.${name}`)}</dt>
         <dd>{TIME_FIELDS.includes(name) ? <TimeValue value={value[name]} />
-            : typeof value[name] === 'boolean' ? t(`license.boolean.${value[name]}`)
-            : name === 'clock_peer_verdict' && typeof value[name] === 'string'
-                ? t(`license.verdict.${value[name]}`, { defaultValue: value[name] }) : displayValue(value[name])}</dd>
+            : typeof value[name] === 'boolean' ? t(`license.boolean.${value[name]}`) : displayValue(value[name])}</dd>
     </React.Fragment>)}</dl>;
 }
 
@@ -74,15 +72,96 @@ function CertificateCard({ name, certificate }: { name: string; certificate: Lic
     </section>;
 }
 
-const CLOCK_FIELDS = ['confirmed_utc', 'clock_peer_verdict', 'clock_local_suspect', 'clock_startup_suspect',
-    'clock_committed_suspect', 'clock_enforced', 'clock_settled', 'clock_pending_forward_seconds',
-    'clock_pending_age_seconds', 'clock_pending_startup'];
+/** One labelled fact with a plain-language note under it. */
+function Fact({ name, help, children }: { name: string; help?: string; children: React.ReactNode }) {
+    const { t } = useTranslation();
+    return <>
+        <dt>{t(`license.fields.${name}`)}</dt>
+        <dd data-field={name}>{children}{help && <small>{help}</small>}</dd>
+    </>;
+}
 
-/** This FE's trusted-clock facts: confirmed time, suspicion flags and the pending forward correction. */
+function seconds(value: any): number | null {
+    const number = Number(value);
+    return value !== null && value !== undefined && Number.isFinite(number) && number >= 0 ? Math.floor(number) : null;
+}
+
+/** Facts that identify this cluster's licensing: what an operator quotes to the issuer or checks before an import. */
+function DeploymentCard({ snapshot }: { snapshot: LicenseFields }) {
+    const { t } = useTranslation();
+    const id = typeof snapshot.deployment_id === 'string' && snapshot.deployment_id ? snapshot.deployment_id : null;
+    const fe = snapshot.base_max_fe_nodes;
+    const be = snapshot.base_max_be_nodes;
+    return <section className={styles.card} data-testid="license-deployment"><h2>{t('license.deployment')}</h2>
+        <dl className={styles.fields}>
+            <Fact name="deployment_id" help={t('license.help.deployment_id')}>
+                {id ? <Typography.Text copyable={{ text: id }} data-testid="license-deployment-id">{id}</Typography.Text> : '—'}
+            </Fact>
+            <Fact name="highest_sequence" help={t('license.help.highest_sequence')}>{displayValue(snapshot.highest_sequence)}</Fact>
+            <Fact name="clock_epoch" help={t('license.help.clock_epoch')}>{displayValue(snapshot.clock_epoch)}</Fact>
+            <Fact name="expansion_limit" help={t('license.help.expansion_limit')}>
+                {fe === null || fe === undefined || be === null || be === undefined ? '—'
+                    : t('license.expansionLimit', { fe: displayValue(fe), be: displayValue(be) })}
+            </Fact>
+        </dl>
+    </section>;
+}
+
+/**
+ * The state of this FE's license time in one sentence, from the same facts the server reports. Rejection follows
+ * LicenseClock.isSuspect(): a committed suspicion everywhere, a local one only on the master after its settling period.
+ */
+function clockState(snapshot: LicenseFields): string {
+    if (snapshot.confirmed_utc === null || snapshot.confirmed_utc === undefined) return 'unavailable';
+    if (snapshot.clock_committed_suspect === true) return 'committed';
+    if (snapshot.clock_local_suspect === true) {
+        if (snapshot.clock_enforced !== true) return 'slowReported';
+        return snapshot.clock_settled === true ? 'rejecting' : 'slowSettling';
+    }
+    if ((seconds(snapshot.clock_pending_forward_seconds) || 0) === 0) return 'normal';
+    // A boot clock ahead of the record already counts for this FE's admission; an in-process jump does not.
+    return snapshot.clock_pending_startup === true ? 'pendingStartup' : 'pending';
+}
+
+const CLOCK_ALERT: { [state: string]: 'success' | 'info' | 'warning' | 'error' } = {
+    normal: 'success', pending: 'info', pendingStartup: 'info', unavailable: 'info', slowReported: 'warning', slowSettling: 'warning',
+    rejecting: 'error', committed: 'error',
+};
+
+/** This FE's license time: a one-sentence state, then the facts behind it in plain words. */
 function ClockCard({ snapshot }: { snapshot: LicenseFields }) {
     const { t } = useTranslation();
+    const duration = (value: any) => {
+        const total = seconds(value);
+        if (total === null) return displayValue(value);
+        const h = Math.floor(total / 3600);
+        const m = Math.floor((total % 3600) / 60);
+        const s = total % 60;
+        return h > 0 ? t('license.duration.hours', { h, m }) : m > 0 ? t('license.duration.minutes', { m, s })
+            : t('license.duration.seconds', { s });
+    };
+    const yesNo = (value: any) => typeof value === 'boolean' ? t(`license.boolean.${value}`) : '—';
+    const state = clockState(snapshot);
+    const forward = seconds(snapshot.clock_pending_forward_seconds) || 0;
+    const verdict = typeof snapshot.clock_peer_verdict === 'string'
+        ? t(`license.verdict.${snapshot.clock_peer_verdict}`, { defaultValue: snapshot.clock_peer_verdict }) : '—';
     return <section className={styles.card} data-testid="license-clock"><h2>{t('license.clock')}</h2>
-        <Fields value={snapshot} names={CLOCK_FIELDS} />
+        <Alert type={CLOCK_ALERT[state]} showIcon data-testid="license-clock-state" data-clock-state={state}
+            message={t(`license.clockStates.${state}`, { forward: duration(forward),
+                age: duration(snapshot.clock_pending_age_seconds) })} />
+        <dl className={styles.fields}>
+            <Fact name="confirmed_utc" help={t('license.help.confirmed_utc')}><TimeValue value={snapshot.confirmed_utc} /></Fact>
+            <Fact name="clock_peer_verdict">{verdict}</Fact>
+            <Fact name="clock_local_suspect" help={t('license.help.clock_local_suspect')}>{yesNo(snapshot.clock_local_suspect)}</Fact>
+            <Fact name="clock_committed_suspect" help={t('license.help.clock_committed_suspect')}>
+                {yesNo(snapshot.clock_committed_suspect)}</Fact>
+            <Fact name="clock_enforced" help={t('license.help.clock_enforced')}>{yesNo(snapshot.clock_enforced)}</Fact>
+            <Fact name="clock_settled" help={t('license.help.clock_settled')}>
+                {typeof snapshot.clock_settled === 'boolean' ? t(`license.settled.${snapshot.clock_settled}`) : '—'}</Fact>
+            {forward > 0 && <Fact name="clock_pending_forward_seconds">
+                {t('license.pendingForward', { forward: duration(forward), age: duration(snapshot.clock_pending_age_seconds) })}
+                {snapshot.clock_pending_startup === true && t('license.pendingStartup')}</Fact>}
+        </dl>
         <p className={styles.muted}>{t('license.clockHint')}</p>
     </section>;
 }
@@ -92,29 +171,89 @@ function gapSeconds(value: any): number | null {
     return Number.isFinite(millis) && millis >= 0 ? Math.floor(millis / 1000) : null;
 }
 
-/** Replay diagnostics of this FE: trust digest, isolated slots and skipped journals. Facts only, no actions. */
+const SUBMISSION_STATES = ['APPLIED', 'COMMITTED', 'NOT_SUBMITTED', 'UNKNOWN'];
+
+/**
+ * A receipt in one sentence: whether that import took effect and what to do next. The codes and versions stay on one
+ * line below it for support; they are what SHOW LICENSE IMPORT and the API return.
+ */
+function ReceiptResult({ receipt }: { receipt: LicenseResponse }) {
+    const { t, i18n } = useTranslation();
+    const body = receipt.body;
+    const status = typeof body.submission_status === 'string' && SUBMISSION_STATES.includes(body.submission_status)
+        ? body.submission_status : null;
+    const reason = typeof body.reason === 'string' && /^[A-Z][A-Z0-9_]{1,79}$/.test(body.reason) ? body.reason : null;
+    const explained = status === 'NOT_SUBMITTED' && reason && i18n.exists(`license.errors.${reason}`)
+        ? t(`license.errors.${reason}`) : '';
+    const details = [displayValue(body.submission_status), reason,
+        body.committed_version !== undefined && body.committed_version !== null
+            ? `${t('license.fields.committed_version')} ${displayValue(body.committed_version)}` : null,
+        body.applied_version !== undefined && body.applied_version !== null
+            ? `${t('license.fields.applied_version')} ${displayValue(body.applied_version)}` : null,
+        receipt.httpStatus ? `HTTP ${receipt.httpStatus}` : null].filter(Boolean).join(' \u00b7 ');
+    return <div className={styles.changes} data-testid="license-receipt-result" data-receipt-state={status || 'OTHER'}>
+        <Alert type={status === 'APPLIED' ? 'success' : status === 'NOT_SUBMITTED' ? 'error'
+            : status === 'COMMITTED' ? 'info' : 'warning'} showIcon
+            message={t(`license.receiptStates.${status || 'OTHER'}`)} description={explained || undefined} />
+        {receipt.retryAfterSeconds !== null && <p>{t('license.receiptRetry', { seconds: receipt.retryAfterSeconds })}</p>}
+        <p className={styles.muted}>{t('license.receiptDetails', { details })}</p>
+    </div>;
+}
+
+const SLOT_REASONS = ['UNTRUSTED_KEY', 'INVALID_SIGNATURE', 'DEPLOYMENT_MISMATCH', 'SEQUENCE_ABOVE_HIGHEST',
+    'VERSION_ABOVE_LICENSE_VERSION', 'INVALID_SLOT', 'VERIFICATION_UNAVAILABLE', 'UNSUPPORTED_SCHEMA', 'UNSUPPORTED_POLICY',
+    'INVALID_COMPACT', 'INVALID_JSON', 'INVALID_HEADER', 'INVALID_CLAIMS'];
+const GAP_KINDS = ['FORCE_SKIP_JOURNAL_ID', 'REPLAY_EXCEPTION_SKIPPED', 'IMAGE_MODULE_MISSING', 'RECORD_VERSION_GAP',
+    'DEPLOYMENT_RESET', 'LEGACY_IMAGE_FLAG'];
+
+function count(value: any): number {
+    const number = Number(value);
+    return Number.isSafeInteger(number) && number > 0 ? number : 0;
+}
+
+/**
+ * Whether this FE can verify every certificate and has every license record, in one sentence, then the facts. The
+ * codes stay next to the plain words: they are what fe.log and SHOW LICENSE print. Facts only, no actions.
+ */
 function DiagnosticsCard({ snapshot }: { snapshot: LicenseFields }) {
     const { t } = useTranslation();
     const slots: LicenseFields[] = Array.isArray(snapshot.invalid_slots) ? snapshot.invalid_slots : [];
     const gaps: LicenseFields[] = Array.isArray(snapshot.recent_replay_gaps) ? snapshot.recent_replay_gaps : [];
+    const state = slots.length > 0 ? 'needsAction'
+        : count(snapshot.replay_gaps) > 0 || count(snapshot.ignored_records) > 0 || gaps.length > 0 ? 'notice' : 'normal';
+    const digest = typeof snapshot.trust_sha256 === 'string' && /^[0-9a-f]{64}$/.test(snapshot.trust_sha256)
+        ? snapshot.trust_sha256 : null;
     return <section className={styles.card} data-testid="license-diagnostics"><h2>{t('license.diagnostics')}</h2>
-        <Fields value={snapshot} names={['trust_sha256', 'replay_gaps', 'ignored_records']} />
+        <Alert type={state === 'needsAction' ? 'error' : state === 'notice' ? 'warning' : 'success'} showIcon
+            data-testid="license-diagnostics-state" data-diagnostics-state={state}
+            message={t(`license.diagnosticsStates.${state}`, { count: slots.length })} />
+        <dl className={styles.fields}>
+            <Fact name="trust_sha256" help={t('license.help.trust_sha256')}>
+                {digest ? <Typography.Text copyable={{ text: digest }} data-testid="license-trust-digest">
+                    {digest.slice(0, 12)}…</Typography.Text> : '—'}
+            </Fact>
+            <Fact name="replay_gaps" help={t('license.help.replay_gaps')}>{displayValue(snapshot.replay_gaps)}</Fact>
+            <Fact name="ignored_records" help={t('license.help.ignored_records')}>{displayValue(snapshot.ignored_records)}</Fact>
+        </dl>
         <h3>{t('license.invalidSlots')}</h3>
         {slots.length === 0 ? <p className={styles.muted}>{t('license.noInvalidSlots')}</p> : <div className={styles.changes}>
             <Alert type="warning" showIcon message={t('license.invalidSlotsWarning')} />
             <ul data-testid="license-invalid-slots">{slots.map((slot, index) => <li key={index}>
-                <Tag color="red">{slot.reason}</Tag>
-                <span>{t('license.slotLine', { slot: slot.slot, keyId: displayValue(slot.key_id) })}</span>
+                <Tag color="red">{t(`license.slotReasons.${SLOT_REASONS.includes(slot.reason) ? slot.reason : 'OTHER'}`)}</Tag>
+                <span>{t('license.slotLine', { slot: t(`license.slots.${slot.slot}`, { defaultValue: slot.slot }),
+                    code: slot.reason, keyId: displayValue(slot.key_id) })}</span>
             </li>)}</ul>
         </div>}
         <h3>{t('license.recentReplayGaps')}</h3>
         {gaps.length === 0 ? <p className={styles.muted}>{t('license.noReplayGaps')}</p> : <div className={styles.changes}>
             <ul data-testid="license-replay-gaps">{gaps.map((gap, index) => {
                 const time = timestamp(gapSeconds(gap.wall_millis));
+                const journal = Number(gap.journal_id);
                 return <li key={index}>
-                    <Tag color="orange">{gap.kind}</Tag>
-                    <span>{t('license.gapLine', { journal: displayValue(gap.journal_id), opCode: displayValue(gap.op_code) })}
-                        {time ? ` \u00b7 ${time.utc}` : ''}</span>
+                    <Tag color="orange">{t(`license.gapKinds.${GAP_KINDS.includes(gap.kind) ? gap.kind : 'OTHER'}`)}</Tag>
+                    <span>{Number.isFinite(journal) && journal >= 0
+                        ? `${t('license.gapLine', { journal: displayValue(gap.journal_id), opCode: displayValue(gap.op_code) })} \u00b7 ` : ''}
+                        {gap.kind}{time ? ` \u00b7 ${time.utc}` : ''}</span>
                 </li>;
             })}</ul>
         </div>}
@@ -526,10 +665,7 @@ export default function LicensePage() {
                     <CertificateCard name="pending" certificate={snapshot.pending} />
                 </div>
                 <div className={styles.columns}>
-                    <section className={styles.card} data-testid="license-deployment"><h2>{t('license.deployment')}</h2>
-                        <Fields value={snapshot} names={['deployment_id', 'highest_sequence', 'applied_version', 'clock_epoch',
-                            'base_max_fe_nodes', 'base_max_be_nodes']} />
-                    </section>
+                    <DeploymentCard snapshot={snapshot} />
                     <ClockCard snapshot={snapshot} />
                 </div>
                 <DiagnosticsCard snapshot={snapshot} />
@@ -553,10 +689,13 @@ export default function LicensePage() {
                 <Button data-testid="license-receipt-query" disabled={disabled || !isFingerprint(fingerprint)} onClick={queryReceipt}>
                     {t('license.queryReceipt')}</Button>
             </div>
-            {receipt && <Fields value={{ ...receipt.body, http_status: receipt.httpStatus || null, retry_after: receipt.retryAfterSeconds }}
-                names={['submission_status', 'reason', 'committed_version', 'applied_version', 'http_status', 'retry_after']} />}
+            {receipt && <ReceiptResult receipt={receipt} />}
             {importChanges && <ChangeList changes={importChanges} testId="license-import-changes" />}
-            <p role="status" data-testid="license-poll-status" data-poll-status={pollStatus}>{t(`license.poll.${pollStatus}`)}</p>
+            {/* Refreshing or closing the dialog also stops checking: with no result on screen there is nothing to say,
+                and a completed check repeats the result above. */}
+            <p role="status" data-testid="license-poll-status" data-poll-status={pollStatus}
+                hidden={pollStatus === 'idle' || pollStatus === 'complete' || (pollStatus === 'stopped' && !receipt)}>
+                {t(`license.poll.${pollStatus}`)}</p>
         </section>}
         <Modal visible={dialog && administrator} title={t('license.import')} destroyOnClose maskClosable={false}
             onCancel={() => { cancelWork(); clearInput(); setPollStatus('stopped'); }} footer={null}>

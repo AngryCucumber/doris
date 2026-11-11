@@ -4,6 +4,40 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License page: plain wording for the deployment, clock, certificate check and import result cards (2026-11-11)
+
+Requested on 2026-11-11: the cards spoke in implementation terms (部署标识, 时钟代次, 同伴墙钟判定, 本机执行拒绝,
+公钥集合摘要, 回放缺口, 导入回执 …). The deployment and clock cards were changed first, the other two after a
+separate proposal; nothing was hidden.
+
+- `ui/src/pages/license/index.tsx`: the deployment card ("集群授权信息" / "Cluster license details") shows the
+  cluster license ID with a copy control, the highest imported certificate number, the number of time repairs and the
+  expansion limit (base FE/BE capacity), each with a one-line note; the applied journal version is no longer shown
+  there. The clock card ("授权时间" / "License time") opens with one sentence for the state, derived like the server's
+  rejection rule (`LicenseClock.isSuspect`): normal, being verified (an in-process jump, not yet used, or a startup
+  jump, already used by this FE for admission), a warning (behind, not rejecting: a follower, or a master within its
+  settling period), rejecting (master after settling, or a committed suspicion on every FE) or not ready. The facts
+  below it are reworded with notes; the startup suspicion flag and the pending age and startup flags are folded into
+  the "behind" and "ahead" rows. Durations are shown as hours, minutes and seconds.
+- The diagnostics card ("本节点证书检查" / "Certificate check on this FE") opens with normal, a notice (skipped or
+  not adopted records) or action needed (isolated slots); the signing key fingerprint shows its first 12 characters
+  with a copy control; slot reasons, slot names and gap kinds are translated with the code kept beside them; a gap
+  without a journal names none. The receipt card ("导入结果查询" / "Check an import result") states the result of the
+  checked import in one sentence (in effect, committed, not in effect with the reason's text, not confirmed yet) and
+  keeps status, reason, versions and HTTP status on one "technical details" line; the polling line is hidden when
+  nothing is being checked or the result is already shown.
+- `ui/public/locales/zh-cn.json`, `en-us.json`: the texts; unused field labels removed.
+- `ui/scripts/license.test.cjs`: `U07-plain-deployment-and-clock-cards-en` / `-zh-CN` (wording, copy control, all
+  clock states) and `U08-plain-certificate-check-and-import-result-en` / `-zh-CN` (three check states, translated
+  slots and gaps, the four receipt results); `U04` follows the new verdict, duration and digest display. All five fail
+  on the HEAD bundle.
+- `docs/license-management-p2.md`, section 2: which `SHOW LICENSE` field each page label shows.
+- Validation (`.build-records/license-ui-plain-cards-20261111/`): build, `check:notices`, `test:legal` 4/4,
+  `test:license` 57/57. Real cluster, master and follower, same FE jar with only `static/` swapped: on HEAD the cards
+  show the old terms (`run-4-before`); with the change the master's clock reads "正常", the follower, whose clock was
+  ahead at startup, "待核实：启动时发现服务器时间比授权时间快 …", both certificate checks "正常", and checking C1's
+  fingerprint on the follower "已生效：这次导入已在本节点生效。" (`run-5-after`).
+
 ## License review 2026-11-10: L11, FE-to-FE HTTPS trust and FE startup with enable_https (2026-11-11)
 
 The rest of L11, done on 2026-11-11 ("L11 先解决"). It needed the FE to start with `enable_https = true` first.
