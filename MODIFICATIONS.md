@@ -4,6 +4,15 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License review 2026-11-10: manual for L10, trust manifest rollback (2026-11-11)
+
+- `docs/license-management-p2.md`: the rest of L10 is documented instead of changed, as decided on 2026-11-11. Section 1
+  says that signed trust manifests only add keys and that a key can be withdrawn only by a new program version that
+  drops it together with the trust key that signed any manifest containing it, because the FE keeps no manifest
+  sequence and an operator can restore an older manifest. The residual-risk paragraph records that a leaked key added
+  by a manifest stays usable until the site runs such a version, and why no manifest sequence check is made. The
+  `schema_version` part of L10 was fixed in 9bc59616f6e. No code changes.
+
 ## License review 2026-11-10: manual for L3, L7 and L11 (2026-11-11)
 
 - `docs/license-management-p2.md`: L3 (an image dump on the master holds the license commit queue) is kept as designed
