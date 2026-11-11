@@ -2174,6 +2174,52 @@ class LicenseManagerTest {
         Assertions.assertEquals(written + 1, host.records.size());
     }
 
+    /**
+     * Recheck F3: the clock challenge and the clock repair go through the same refused-before-write path as L4, so
+     * they answer NOT_SUBMITTED instead of UNKNOWN and the same ticket can simply be sent again.
+     */
+    @Test
+    void clockChallengeAndRepairRefusedBeforeTheJournalWriteAreNotSubmitted() throws Exception {
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 2000));
+        time.wall -= 6_000;
+        int written = host.records.size();
+        host.rejectBeforeWrite = true;
+        LicenseManagementException noChallenge = Assertions.assertThrows(LicenseManagementException.class,
+                () -> run(LicenseManager.Action.CLOCK_CHALLENGE, null));
+        Assertions.assertEquals("NOT_SUBMITTED", noChallenge.getBody().get("submission_status"));
+        Assertions.assertEquals("LICENSE_STORE_UNAVAILABLE", noChallenge.getReason());
+        Assertions.assertEquals(503, noChallenge.getHttpStatus());
+        host.rejectBeforeWrite = false;
+        ObjectNode challenge = JSON.valueToTree(run(LicenseManager.Action.CLOCK_CHALLENGE, null)
+                .getBody().get("challenge"));
+        String repairId = UUID.randomUUID().toString();
+        ObjectNode claims = JSON.createObjectNode().put("schema_version", 1).put("product", "MassDB SQL")
+                .put("deployment_id", challenge.get("deployment_id").textValue()).put("repair_id", repairId)
+                .put("nonce", challenge.get("nonce").textValue())
+                .put("clock_epoch", challenge.get("clock_epoch").longValue())
+                .put("repair_authorization_version", challenge.get("repair_authorization_version").longValue())
+                .put("leader_term", challenge.get("leader_term").textValue())
+                .put("issued_at", 1000).put("not_before", 900).put("expires_at", 1500);
+        String ticket = sign(claims, "repair", LicenseClockRepairVerifier.TYPE, repairKey);
+        written = host.records.size();
+        long applied = manager.getAppliedVersion();
+        host.rejectBeforeWrite = true;
+        LicenseManagementException noRepair = Assertions.assertThrows(LicenseManagementException.class,
+                () -> run(LicenseManager.Action.CLOCK_REPAIR, ticket));
+        Assertions.assertEquals("NOT_SUBMITTED", noRepair.getBody().get("submission_status"));
+        Assertions.assertEquals("LICENSE_STORE_UNAVAILABLE", noRepair.getReason());
+        Assertions.assertEquals(written, host.records.size());
+        Assertions.assertEquals(applied, manager.getAppliedVersion());
+        Assertions.assertEquals("CLOCK_SUSPECT", run(LicenseManager.Action.STATUS, null).getBody().get("status"));
+        // Nothing was written and the challenge is still the current one: the same ticket repairs the clock.
+        host.rejectBeforeWrite = false;
+        Map<String, Object> receipt = run(LicenseManager.Action.CLOCK_REPAIR, ticket).getBody();
+        Assertions.assertEquals(repairId, receipt.get("repair_id"));
+        Assertions.assertEquals(1L, receipt.get("clock_epoch"));
+        Assertions.assertEquals("EXPIRING", run(LicenseManager.Action.STATUS, null).getBody().get("status"));
+    }
+
     /** Review L2: a follower whose wall clock runs 48 h fast keeps serving; its own clock never confirms. */
     @Test
     void followerWallClockRunningFastNeverExpiresTheLicenseOnThatFollower() throws Exception {

@@ -470,7 +470,9 @@ export default function LicensePage() {
         cancelWork();
         setError(null);
         setNotice('');
-        setReceipt(null);
+        // A receipt on screen for this same fingerprint stays until the answer replaces it: a failure that says
+        // nothing about the submission must not take it away. A receipt for another fingerprint is cleared.
+        if (!receipt || receipt.body.fingerprint !== fingerprint) setReceipt(null);
         setPollStatus('stopped');
         const run = generation.current;
         try {

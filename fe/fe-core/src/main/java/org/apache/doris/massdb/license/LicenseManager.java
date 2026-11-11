@@ -1148,7 +1148,12 @@ public final class LicenseManager implements AutoCloseable {
                         ? LicensePersistRecord.REPAIR : LicensePersistRecord.WATERMARK;
                 persist(committed.withClock(operation, replacement), null);
                 return true;
-            } catch (LicenseManagementException | IOException e) {
+            } catch (LicenseManagementException e) {
+                // NOT_SUBMITTED: refused before the journal write (not the master, an earlier commit pending, the
+                // host refused), so nothing was committed. Anything else leaves the outcome unknown (recheck F3).
+                throw new LicenseClockRepair.StoreException(
+                        "NOT_SUBMITTED".equals(e.getBody().get("submission_status")));
+            } catch (IOException e) {
                 throw new LicenseClockRepair.StoreException();
             }
         }

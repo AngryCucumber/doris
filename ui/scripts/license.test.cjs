@@ -969,7 +969,8 @@ test('P2U License browser contracts (controlled API, not FE integration)', { tim
                 await eventually(() => f.receipts().length === before + 1, 'manual receipt query runs');
                 await eventually(async () => /LICENSE_NOT_READY · HTTP 503/.test(await f.id('license-error').innerText()),
                     'the manual query failure is shown');
-                assert.notEqual(await status(), 'NOT_SUBMITTED', 'a manual query must not report NOT_SUBMITTED either');
+                // Recheck F4: the manual query asks about the receipt on screen, so that receipt stays as well.
+                assert.equal(await status(), initial, 'a manual query for the same fingerprint must keep the receipt');
                 assert.match(await f.id('license-page').innerText(), /do not import the certificate again/);
                 assert.equal(f.count('/import'), 1, 'nothing is submitted again');
                 await f.page.screenshot({ path: path.join(artifacts, `license-receipt-unconfirmed-${initial}.png`),

@@ -170,7 +170,20 @@ test('Playground sidebar width follows the pointer up to one upper limit', { tim
         const narrowed = await limit();
         await page.waitForFunction(max => document.querySelector('aside').getBoundingClientRect().width <= max + 2,
             narrowed);
+        // Recheck F5: the narrower window only limits what is drawn; widening it brings the chosen width back.
+        await page.setViewportSize({ width: 1920, height: 900 });
+        const widened = await limit();
+        await page.waitForFunction(max => document.querySelector('aside').getBoundingClientRect().width >= max - 2,
+            widened).catch(() => {});
+        near(await width(), widened, 'after widening the window the sidebar returns to the width that was chosen');
+        await page.setViewportSize({ width: 1000, height: 900 });
+        await page.waitForFunction(max => document.querySelector('aside').getBoundingClientRect().width <= max + 2,
+            narrowed);
         near(await drag(-60), narrowed - 60, 'after narrowing the window the next drag back must move at once');
+        // A drag is a new choice: it is kept when the window widens again.
+        await page.setViewportSize({ width: 1920, height: 900 });
+        await page.waitForTimeout(300);
+        near(await width(), narrowed - 60, 'a width chosen in the narrow window is kept when it widens');
         await context.close();
     } finally {
         await browser.close();

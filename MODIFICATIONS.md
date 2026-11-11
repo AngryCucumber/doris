@@ -4,6 +4,44 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License review 2026-11-10: recheck F2 to F5, the four low-severity leftovers (2026-11-11)
+
+The remaining findings of the recheck at b73dcff7ab2 (`.build-records/license-ui-recheck-20261111/`).
+
+- F3, `LicenseManager.ClockStore.compareAndSet`, `LicenseClockRepair`: the L4 fix did not reach the clock paths. A
+  clock challenge, clock repair or watermark whose write was refused before the journal (not the master, an earlier
+  commit pending, the host refused) was still reported as `LICENSE_COMMIT_UNCERTAIN` / `UNKNOWN`. `StoreException` now
+  says when nothing was committed, and `LicenseClockRepair.commit` answers `STORE_UNAVAILABLE`, that is 503
+  `LICENSE_STORE_UNAVAILABLE` / `NOT_SUBMITTED`; the challenge stays current, so the same ticket can be sent again.
+  An attempted write that failed is still uncertain.
+- F4, `ui/src/pages/license/index.tsx`: the manual receipt query cleared the receipt before asking, so the U2 fix had
+  nothing to keep. A receipt on screen for the queried fingerprint now stays until the answer replaces it; a receipt
+  for another fingerprint is still cleared.
+- F5, `ui/src/pages/playground/page-side/index.tsx`: the sidebar keeps the width the user chose and draws it capped by
+  the current limit, so a window narrowed for a while gives the width back when it widens; a drag still starts from
+  the drawn width.
+- F2, `docs/license-management-p2.md` section 4: since the L1 fix only a watermark ahead of this process's confirmed
+  time is compared with the startup tolerance. The manual said every watermark a follower replays is; it now says
+  that a running follower's wall-clock rollback is judged by the in-process tolerance. No code change.
+- Tests: `LicenseManagerTest.clockChallengeAndRepairRefusedBeforeTheJournalWriteAreNotSubmitted`;
+  `ui/scripts/license.test.cjs` (the three U2 cases expect the receipt kept after the manual query);
+  `ui/scripts/legal-notices.test.cjs` (the sidebar case widens the window again).
+- Validation (`.build-records/license-recheck-lows-20261111/`): on the unfixed code the Java case fails (`UNKNOWN`
+  where `NOT_SUBMITTED` is expected) and the UI cases fail (receipt status empty; sidebar 387 px where 480 px is
+  expected). Fixed: `License*Test` 35 classes, 396 tests, 0 failures; Checkstyle 0; source headers and
+  `git diff --check` clean; UI build, `check:notices`, `test:legal` 4/4, `test:license` 53/53. Real cluster (three
+  FEs, one BE, browser): the batch 3 UI drill passes 7/7 on the fixed jar, and the manual receipt query through a
+  follower without a master now keeps the `APPLIED` receipt (empty on b73dcff7ab2). F3 and F5 on a real FE
+  (`f3_f5_drill.py`): F3 by fault injection, because the refusal needs the master role to be lost between the
+  leadership check and the journal write and a master that loses its role exits the process; a drill agent makes
+  `EnvLicenseHost.commit` refuse while a switch file exists. The refused clock challenge is answered 503
+  `LICENSE_COMMIT_UNCERTAIN` / `UNKNOWN` on f603a482048 and 503 `LICENSE_STORE_UNAVAILABLE` / `NOT_SUBMITTED` on the
+  fixed jar; in both nothing is applied, the license stays valid and the challenge is issued once the switch is
+  off. A real repair ticket for that challenge (issuer `repair-sign`, self-use time-repair key) gets the same two
+  answers on the API and as `ADMIN REPAIR LICENSE CLOCK` (6203 / HY000), the clock epoch stays 0 while refused,
+  and the same ticket repairs the clock (epoch 1, receipt confirmed) once the switch is off. F5 in the browser: dragged to 480 px at 1920 px, narrowed to 1000 px (387 px), widened again: 387 px before,
+  480 px after.
+
 ## License review 2026-11-10: recheck F1, a new master's startup clock candidate (2026-11-11)
 
 Found by the recheck of the review fixes at b73dcff7ab2 (`.build-records/license-ui-recheck-20261111/`).

@@ -38,15 +38,31 @@ public final class LicenseClockRepair {
          * non-clock metadata field. The P2 adapter must also fence this write using the existing
          * FE Master/journal leadership authority; a former Master must never commit here even if
          * its local endLeadership notification is delayed. False means a definite CAS conflict.
-         * An exception means
-         * unknown outcome; callers must load/confirm before assuming success or retrying.
+         * An exception means an unknown outcome, and callers must load/confirm before assuming success or
+         * retrying, unless it says {@link StoreException#isNotCommitted()}: then nothing was written.
          */
         boolean compareAndSet(long expectedVersion, State replacement) throws StoreException;
     }
 
     public static final class StoreException extends Exception {
+        private final boolean notCommitted;
+
         public StoreException() {
-            super("Clock metadata store unavailable or commit outcome unknown");
+            this(false);
+        }
+
+        /**
+         * @param notCommitted the store refused the write before anything was written (leadership lost, an
+         *     earlier commit still unresolved), so the outcome is known: nothing was committed (recheck F3)
+         */
+        public StoreException(boolean notCommitted) {
+            super(notCommitted ? "Clock metadata store refused the commit before writing"
+                    : "Clock metadata store unavailable or commit outcome unknown");
+            this.notCommitted = notCommitted;
+        }
+
+        public boolean isNotCommitted() {
+            return notCommitted;
         }
     }
 
@@ -370,7 +386,9 @@ public final class LicenseClockRepair {
                 throw failure(LicenseRepairException.Code.STALE_PREPARATION);
             }
         } catch (StoreException e) {
-            throw failure(LicenseRepairException.Code.COMMIT_UNCERTAIN);
+            // A write refused before it started changed nothing; only an attempted write is uncertain.
+            throw failure(e.isNotCommitted() ? LicenseRepairException.Code.STORE_UNAVAILABLE
+                    : LicenseRepairException.Code.COMMIT_UNCERTAIN);
         }
         clock.applyCommitted(replacement.facts);
     }
