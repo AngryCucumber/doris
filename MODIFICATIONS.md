@@ -4,6 +4,26 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License review 2026-11-10: recheck F1, a new master's startup clock candidate (2026-11-11)
+
+Found by the recheck of the review fixes at b73dcff7ab2 (`.build-records/license-ui-recheck-20261111/`).
+
+- `LicenseClock.setEnforced`: when an FE becomes the master, the settling period of its startup candidate (a boot wall
+  clock ahead of the watermark) starts again. Its age used to count from the boot, so a follower that had run longer
+  than the settling period confirmed the candidate on its first observation as the master, before any peer was asked,
+  and the next watermark carried that clock to every FE. Now the peer check runs first: an outlier is never confirmed
+  automatically, agreeing peers confirm at once, and without a verdict the candidate is confirmed one settling period
+  after the role change. Admission on that FE still follows the candidate, as before.
+- `LicenseClockTest`: `followerStartupCandidateWaitsForASettlingPeriodAsMasterBeforeItIsConfirmed` fails on the
+  unfixed code (`FORWARD_CONFIRMED` where `NONE` is expected).
+- `docs/license-management-p2.md`, section 4: the startup settling paragraph describes the role change.
+- Validation (`.build-records/license-f1-20261111/`): `License*Test` 35 classes, 395 tests, 0 failures; Checkstyle 0;
+  source headers and `git diff --check` clean. Real cluster, four FEs, the follower fe3 booted 2 days ahead and made
+  the master after the settling period: on b73dcff7ab2 every FE reports the license expired 3 seconds after the
+  failover (`run-3-before`); on the fixed jar fe3 stays pending with an OUTLIER verdict for 5 minutes, the other FEs
+  keep real time and a valid license, and correcting fe3's clock discards the candidate (`run-4-after`). The
+  2026-11-10 clock drill (L1, L2, D1 to D3) passes all 35 checks on the fixed jar (`run-5-clock`).
+
 ## License review 2026-11-10: manual for L10, trust manifest rollback (2026-11-11)
 
 - `docs/license-management-p2.md`: the rest of L10 is documented instead of changed, as decided on 2026-11-11. Section 1

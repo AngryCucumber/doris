@@ -654,6 +654,42 @@ class LicenseClockTest {
         Assertions.assertEquals(100_000L + LicenseClock.CONFIRM_SMALL_FORWARD_MILLIS, clock.trustedNowMillis());
     }
 
+    /**
+     * Recheck F1. A follower that booted with its wall clock ahead keeps the startup candidate; when it becomes the
+     * master the settling period starts again, so the peer check gets its say before anything is confirmed.
+     */
+    @Test
+    void followerStartupCandidateWaitsForASettlingPeriodAsMasterBeforeItIsConfirmed() {
+        long settling = 10 * 60_000;
+        FakeTime time = new FakeTime(2 * 24 * HOUR);
+        LicenseClock clock = new LicenseClock(new LicenseClock.Facts(0, 0, 100_000, 0), time,
+                new LicenseClock.Settings(5_000, 5_000, settling));
+        clock.setEnforced(false);
+        time.advance(settling + 60_000);
+        Assertions.assertEquals(LicenseClock.Event.NONE, clock.observe());
+        Assertions.assertTrue(clock.diagnostics().isPendingStartup());
+        long confirmed = clock.confirmedNowMillis();
+
+        clock.setEnforced(true);
+        Assertions.assertEquals(LicenseClock.Event.NONE, clock.observe());
+        Assertions.assertEquals(confirmed, clock.confirmedNowMillis());
+        // Admission still follows the wall clock: failing over buys no time.
+        Assertions.assertEquals(time.wall, clock.trustedNowMillis());
+        // The peers disagree: nothing is confirmed, however long it lasts.
+        clock.setPeerVerdict(LicenseClock.PeerVerdict.OUTLIER);
+        time.advance(2 * settling);
+        Assertions.assertEquals(LicenseClock.Event.NONE, clock.observe());
+        Assertions.assertEquals(confirmed + 2 * settling, clock.confirmedNowMillis());
+        // Without a verdict (fewer than three FEs) the window alone decides, counted from the role change.
+        clock.setEnforced(false);
+        clock.setEnforced(true);
+        time.advance(settling - 1_000);
+        Assertions.assertEquals(LicenseClock.Event.NONE, clock.observe());
+        time.advance(1_000);
+        Assertions.assertEquals(LicenseClock.Event.FORWARD_CONFIRMED, clock.observe());
+        Assertions.assertEquals(time.wall, clock.confirmedNowMillis());
+    }
+
     private static LicenseClock clock(FakeTime time, long highWater) {
         return new LicenseClock(new LicenseClock.Facts(0, 0, highWater, 0), time, STRICT);
     }

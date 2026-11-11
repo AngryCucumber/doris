@@ -34,7 +34,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>Only the serving master (an enforced clock) confirms a forward correction. A follower's wall clock
  * never enters its trusted time: an in-process forward jump is not even tracked there, and the startup
  * candidate keeps counting for admission while the wall clock holds it but waits for leadership to be
- * confirmed. Becoming the master starts the peer check from scratch.
+ * confirmed. Becoming the master starts the peer check from scratch, and the startup candidate's settling
+ * period with it.
  */
 public final class LicenseClock {
     public static final long MAX_MILLIS = 253402300799999L;
@@ -277,7 +278,8 @@ public final class LicenseClock {
     private static final class Pending {
         /** The smallest offset the wall clock implied since the candidate appeared: what has held throughout. */
         private long candidateOffsetMillis;
-        private final long sinceNanos;
+        /** When the candidate appeared; for the startup candidate, restarted when this FE becomes the master. */
+        private long sinceNanos;
         private final boolean startup;
 
         private Pending(long candidateOffsetMillis, long sinceNanos, boolean startup) {
@@ -353,12 +355,16 @@ public final class LicenseClock {
     /**
      * The serving master enforces its own suspicion; followers and observers only report it. A change of role
      * restarts the peer check: an in-process forward candidate tracked in the other role is dropped and an old
-     * verdict is forgotten. The startup candidate is kept, so restarting or failing over never buys time.
+     * verdict is forgotten. The startup candidate is kept, so restarting or failing over never buys time, but
+     * its settling period starts again when this FE becomes the master: its age as a follower would let the
+     * first observation confirm it before any peer was asked (recheck F1).
      */
     public synchronized void setEnforced(boolean enforced) {
         if (this.enforced != enforced) {
             if (pending != null && !pending.startup) {
                 pending = null;
+            } else if (pending != null && enforced) {
+                pending.sinceNanos = source.monotonicNanos();
             }
             peerVerdict = PeerVerdict.UNKNOWN;
         }
