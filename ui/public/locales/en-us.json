@@ -113,6 +113,7 @@
         "refreshRequired": "Refresh to load the current session’s license status.",
         "sessionChanged": "The session or its permissions changed. Previous details and input were cleared. Refresh or sign in again.",
         "appliedRefresh": "The submission is applied on this FE. Refresh to view its current license status.",
+        "receiptUnconfirmed": "The status cannot be confirmed right now. Refresh later and do not import the certificate again.",
         "requestFailed": "The license request could not be completed.",
         "retryAfter": "Wait {{seconds}} seconds before retrying.",
         "importHelp": "Choose a UTF-8 certificate file or paste its text (maximum 64 KiB). Validate first, then explicitly confirm the import.",

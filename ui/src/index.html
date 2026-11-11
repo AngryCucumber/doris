@@ -21,18 +21,29 @@ under the License.
 <!DOCTYPE html>
 <html lang="en">
 <script>
-var segments = location.pathname.split('/');
-var routes = ['login', 'legal-notices', 'home', 'Playground', 'System', 'QueryProfile', 'Session', 'Configuration', 'License'];
-var routeIndex = -1;
-for (var index = 1; index < segments.length; index++) {
-    if (routes.indexOf(segments[index]) !== -1) routeIndex = index;
-}
-var res = routeIndex !== -1 ? segments.slice(0, routeIndex).join('/') + '/' : '/';
-if (routeIndex === -1 && segments.length > 4) {
-    res = segments.slice(0, 5).join('/') + '/';
+// The application root is the shortest path prefix after which the rest of the path is one application route,
+// so a database named like a route (/Playground/structure/home) stays below the root and a proxy prefix that
+// contains route names (/System/home/team/home) still works. Not supported: a proxy prefix ending in Playground
+// or QueryProfile, or in Playground/<one segment>, because it reads as that route plus a page.
+function massdbAppRoot(pathname) {
+    var segments = pathname.split('/');
+    var pages = ['login', 'legal-notices', 'home', 'System', 'Session', 'Configuration', 'License'];
+    var last = -1;
+    for (var index = 1; index < segments.length; index++) {
+        var name = segments[index];
+        // Further segments a route takes: Playground/<view>/<database[-table]>, QueryProfile/<query id>.
+        var extra = name === 'Playground' ? 2 : name === 'QueryProfile' ? 1 : pages.indexOf(name) !== -1 ? 0 : -1;
+        if (extra === -1) continue;
+        last = index;
+        var rest = segments.length - index - 1;
+        if (rest > 0 && segments[segments.length - 1] === '') rest--;
+        if (rest <= extra) return segments.slice(0, index).join('/') + '/';
+    }
+    if (last !== -1) return segments.slice(0, last).join('/') + '/';
+    return segments.length > 4 ? segments.slice(0, 5).join('/') + '/' : '/';
 }
 var baseItem = document.createElement('base');
-baseItem.setAttribute('href', location.origin + res);
+baseItem.setAttribute('href', location.origin + massdbAppRoot(location.pathname));
 document.getElementsByTagName('head')[0].appendChild(baseItem);
 </script>
 <head>

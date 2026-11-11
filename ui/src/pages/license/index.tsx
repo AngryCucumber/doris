@@ -364,7 +364,9 @@ export default function LicensePage() {
         } catch (_) { networkFailure(run); }
     }
 
-    function receiptResult(result: LicenseResponse, expectedFingerprint: string): 'complete' | 'pending' | 'invalid' {
+    // query: the response answers a receipt query, not the import request itself.
+    function receiptResult(result: LicenseResponse, expectedFingerprint: string,
+        query = false): 'complete' | 'pending' | 'invalid' {
         const body = result.body;
         const acknowledged = body.submission_status === 'COMMITTED' || body.submission_status === 'APPLIED';
         if ((body.fingerprint !== undefined && body.fingerprint !== expectedFingerprint)
@@ -376,6 +378,13 @@ export default function LicensePage() {
             setError(invalid);
             setPollStatus('stopped');
             return 'invalid';
+        }
+        if (query && result.httpStatus >= 400 && body.fingerprint === undefined) {
+            // A failure that names no fingerprint (a follower without a reachable master answers 503 NOT_SUBMITTED)
+            // says nothing about this submission: keep the receipt and tell the operator not to import it again.
+            setError(result);
+            setNotice('receiptUnconfirmed');
+            return 'pending';
         }
         setReceipt(result);
         if (appliedReceipt(result.body) && result.httpStatus === 200) {
@@ -405,7 +414,7 @@ export default function LicensePage() {
             try {
                 const result = await request(`/imports/${id}`, run);
                 if (!result) return;
-                const outcome = receiptResult(result, id);
+                const outcome = receiptResult(result, id, true);
                 if (outcome !== 'pending') { stop(outcome === 'complete' ? 'complete' : 'stopped'); return; }
                 const state = result.body.submission_status;
                 if (state !== 'COMMITTED' && state !== 'UNKNOWN' && result.httpStatus !== 429) {
@@ -466,7 +475,7 @@ export default function LicensePage() {
         const run = generation.current;
         try {
             const result = await request(`/imports/${fingerprint}`, run);
-            if (result) receiptResult(result, fingerprint);
+            if (result) receiptResult(result, fingerprint, true);
         } catch (_) { networkFailure(run); }
     }
 

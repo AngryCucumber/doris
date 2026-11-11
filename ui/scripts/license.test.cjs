@@ -942,6 +942,41 @@ test('P2U License browser contracts (controlled API, not FE integration)', { tim
             });
         }
 
+        // Review U2: a follower that cannot reach a master answers a receipt query 503 LICENSE_NOT_READY with
+        // NOT_SUBMITTED and no fingerprint (LicenseController.forward). That says nothing about this submission.
+        for (const initial of ['COMMITTED', 'UNKNOWN', 'APPLIED']) {
+            await run('U03-receipt-error-without-fingerprint-keeps-' + initial, async f => {
+                f.model.imported = { status: { COMMITTED: 202, UNKNOWN: 503, APPLIED: 200 }[initial], body: receipt(initial) };
+                f.model.received = { status: 503, body: errorBody('LICENSE_NOT_READY', 'NOT_SUBMITTED',
+                    { committed_version: null, applied_version: null }) };
+                await f.enter(); await f.clock(); await f.open(); await f.validate(); await f.confirm();
+                const status = () => f.id('license-receipt').getAttribute('data-submission-status');
+                if (initial !== 'APPLIED') {
+                    await f.advance(2000);
+                    await eventually(() => f.receipts().length === 1, 'first receipt request must run');
+                    await eventually(async () => /LICENSE_NOT_READY · HTTP 503/.test(await f.id('license-error').innerText()),
+                        'the receipt failure is shown');
+                    assert.equal(await status(), initial, 'an error without this fingerprint must not replace the receipt');
+                    assert.match(await f.id('license-page').innerText(), /do not import the certificate again/);
+                    await f.advance(300000);
+                    assert.equal(f.receipts().length, 1, 'the failure still stops polling');
+                } else {
+                    await f.advance(300000);
+                }
+                await f.id('license-import-dialog').waitFor({ state: 'hidden' });
+                const before = f.receipts().length;
+                await f.id('license-receipt-query').click();
+                await eventually(() => f.receipts().length === before + 1, 'manual receipt query runs');
+                await eventually(async () => /LICENSE_NOT_READY · HTTP 503/.test(await f.id('license-error').innerText()),
+                    'the manual query failure is shown');
+                assert.notEqual(await status(), 'NOT_SUBMITTED', 'a manual query must not report NOT_SUBMITTED either');
+                assert.match(await f.id('license-page').innerText(), /do not import the certificate again/);
+                assert.equal(f.count('/import'), 1, 'nothing is submitted again');
+                await f.page.screenshot({ path: path.join(artifacts, `license-receipt-unconfirmed-${initial}.png`),
+                    fullPage: true });
+            });
+        }
+
         for (const status of [401, 403, 429, 503]) {
             await run('U03-http-' + status, async f => {
                 const reason = { 401: 'UNAUTHENTICATED', 403: 'ACCESS_DENIED',

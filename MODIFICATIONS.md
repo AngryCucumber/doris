@@ -4,6 +4,39 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License review 2026-11-10: Web UI fixes U1 to U3 (2026-11-10)
+
+Batch 3 of the 2026-11-10 License/UI review.
+
+- `ui/src/index.html` (U1): the inline script that sets `<base>` took the last path segment equal to a route name as
+  the application root, so refreshing `/Playground/structure/<database>` for a database named `home`, `login`,
+  `legal-notices`, `Playground`, `System`, `QueryProfile`, `Session`, `Configuration` or `License` loaded the
+  entry script from `/Playground/structure/` and left a blank page. `massdbAppRoot()` now takes the shortest prefix
+  after which the rest of the path is one application route (`Playground` takes up to two further segments,
+  `QueryProfile` one, the other pages none), so such databases stay below the root while proxy prefixes that contain
+  route names (`/System/home/team/`) keep working; other paths keep the previous rules. A proxy prefix ending in
+  `Playground`, `QueryProfile` or `Playground/<one segment>` is ambiguous and not supported.
+- `ui/src/pages/license/index.tsx` (U2): a receipt query (automatic polling or the manual query) that fails with an
+  HTTP error carrying no fingerprint, such as the 503 `LICENSE_NOT_READY` / `NOT_SUBMITTED` of a follower without a
+  reachable master, no longer replaces the receipt shown for the submission; the error is shown with the new notice
+  `license.receiptUnconfirmed` (en-us and zh-cn) and polling stops as before. The import response itself is still
+  shown as returned.
+- `ui/src/pages/playground/page-side/index.tsx`, `index.less` (U3): the sidebar's upper limit was 480 px in the
+  resize state but `max-width: 40%` in the stylesheet, so in a window where 40% is narrower the state grew past the
+  drawn width and the next drag back did nothing until it caught up. The limit is now computed once, as the smaller
+  of 480 px and 40% of the Playground row, follows the row's size and also clamps the current width; the stylesheet
+  sets no maximum.
+- Tests: `ui/scripts/legal-notices.test.cjs` evaluates the inline script of `src/index.html` and of the built
+  `index.html` for route-named databases under every deployment prefix, loads and reloads those Playground pages in a
+  browser, and drags the sidebar at 1000 and 1920 px and after narrowing the window; `ui/scripts/license.test.cjs`
+  adds the receipt cases for a committed, an unknown and an applied submission.
+- Validation with Node 22.23.2 after `npm ci`: the six new cases fail on a build of the unfixed sources and pass on the
+  fixed one; `test:legal` 4/4, `test:license` 51/51, `check:notices`, the source-header check pass. A real three-FE
+  cluster served the unfixed and then the fixed UI from the same FE jar (`.build-records/license-ui-batch3-20261110/`):
+  all three defects reproduced (blank refresh directly and behind `/proxy/` and `/System/home/team/`, a 387 px
+  sidebar that did not move back, an applied certificate shown as `NOT_SUBMITTED` by a follower without a master) and
+  were gone after the fix, with screenshots.
+
 ## License review 2026-11-10: L14 test gaps, clock role fixes, refused commits and licensed unit tests (2026-11-10)
 
 Fixes for L1, L2, L4 and L12 of the 2026-11-10 License/UI review, and the L14 tests that reproduce them.
