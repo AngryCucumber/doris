@@ -40,6 +40,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -137,6 +138,22 @@ public final class LicenseManager implements AutoCloseable {
     static final long SUSPECT_PERSIST_NANOS = TimeUnit.MINUTES.toNanos(5);
     private static final long PEER_CLOCK_CHECK_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(60);
     private static final long TRUST_CHECK_INTERVAL_NANOS = TimeUnit.HOURS.toNanos(1);
+    /**
+     * How long a management caller waits for its turn on the license executors (review L7). Work still queued after
+     * this is withdrawn and never runs, and the caller is answered NOT_SUBMITTED; work that has started is waited
+     * for, the journal bounds it. Two nested waits stay below the 15 s socket timeout of a follower's forward, so a
+     * forwarded request gets this definite answer instead of UNKNOWN. Not final so that tests can shorten it.
+     */
+    static volatile long queueWaitMillis = 5000;
+
+    /** Work withdrawn from a license executor's queue before it started. */
+    private static final class QueueWaitExceeded extends Exception {
+        private static final long serialVersionUID = 1L;
+
+        private QueueWaitExceeded() {
+            super(null, null, false, false);
+        }
+    }
 
     /**
      * A journal this FE did not apply. Every license record is a full snapshot, so the next record closes the gap;
@@ -302,7 +319,7 @@ public final class LicenseManager implements AutoCloseable {
             }
         }
         try {
-            return await(submit(verification, () -> manage(action, payload)), fingerprint);
+            return await(verification, submit(verification, () -> manage(action, payload)), fingerprint);
         } catch (LicenseManagementException failure) {
             if (action == Action.CLOCK_REPAIR && "UNKNOWN".equals(failure.getBody().get("submission_status"))) {
                 throw new LicenseManagementException(failure.getReason(), failure.getHttpStatus(), "UNKNOWN",
@@ -725,7 +742,24 @@ public final class LicenseManager implements AutoCloseable {
 
     private LicenseManagementResult mutate(Callable<LicenseManagementResult> work, String fingerprint)
             throws LicenseManagementException {
-        return await(submit(mutations, work), fingerprint);
+        return await(mutations, submit(mutations, work), fingerprint);
+    }
+
+    /**
+     * Waits for work submitted to {@code executor}. Work still queued after {@link #queueWaitMillis} is removed, so it
+     * never runs, and QueueWaitExceeded is thrown; work that has started is waited for until it finishes.
+     */
+    private static <T> T awaitTurn(ThreadPoolExecutor executor, Future<T> future)
+            throws InterruptedException, ExecutionException, QueueWaitExceeded {
+        try {
+            return future.get(queueWaitMillis, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            if (future instanceof Runnable && executor.remove((Runnable) future)) {
+                future.cancel(false);
+                throw new QueueWaitExceeded();
+            }
+            return future.get();
+        }
     }
 
     /**
@@ -763,7 +797,9 @@ public final class LicenseManager implements AutoCloseable {
             throw new DdlException("LICENSE_MANAGEMENT_BUSY", ErrorCode.ERR_LICENSE_NOT_READY);
         }
         try {
-            future.get();
+            awaitTurn(mutations, future);
+        } catch (QueueWaitExceeded e) {
+            throw new DdlException("LICENSE_MANAGEMENT_BUSY", ErrorCode.ERR_LICENSE_NOT_READY);
         } catch (InterruptedException e) {
             future.cancel(false);
             if (future instanceof Runnable) {
@@ -807,7 +843,9 @@ public final class LicenseManager implements AutoCloseable {
             throw new IOException("License image snapshot queue is unavailable");
         }
         try {
-            return future.get();
+            return awaitTurn(mutations, future);
+        } catch (QueueWaitExceeded e) {
+            throw new IOException("License image snapshot queue is busy");
         } catch (InterruptedException e) {
             future.cancel(false);
             if (future instanceof Runnable) {
@@ -865,10 +903,12 @@ public final class LicenseManager implements AutoCloseable {
         publish();
     }
 
-    private LicenseManagementResult await(Future<LicenseManagementResult> future, String fingerprint)
-            throws LicenseManagementException {
+    private LicenseManagementResult await(ThreadPoolExecutor executor, Future<LicenseManagementResult> future,
+            String fingerprint) throws LicenseManagementException {
         try {
-            return future.get();
+            return awaitTurn(executor, future);
+        } catch (QueueWaitExceeded e) {
+            throw failure("LICENSE_MANAGEMENT_BUSY", 429, "NOT_SUBMITTED", fingerprint);
         } catch (InterruptedException e) {
             // Interrupting the requester cannot prove that the journal did not commit.
             future.cancel(false);
@@ -962,10 +1002,7 @@ public final class LicenseManager implements AutoCloseable {
             LOG.warn("License deployment was re-initialized by the master; replacing the local license state: "
                     + "previous_version={}, record_version={}", appliedVersion, record.getVersion());
             recordReplayGap(-1, (short) -1, "DEPLOYMENT_RESET");
-            clock = null;
-            repair = null;
-            verifiedState = null;
-            apply(record);
+            apply(record, true);
             return;
         }
         if (record.getVersion() <= committed.getVersion()) {
@@ -1017,7 +1054,16 @@ public final class LicenseManager implements AutoCloseable {
     }
 
     private void apply(LicensePersistRecord record) throws IOException {
-        LicensePersistRecord.Restored restored = record.restore(verifier, verifiedState);
+        apply(record, false);
+    }
+
+    /**
+     * Applies a record. With {@code reset} the record starts another deployment, so the clock, the repair state and
+     * the verified state are built anew instead of carried over; the current ones stay in place until everything
+     * fallible has succeeded, so a failed reset leaves this FE as it was (review L6).
+     */
+    private void apply(LicensePersistRecord record, boolean reset) throws IOException {
+        LicensePersistRecord.Restored restored = record.restore(verifier, reset ? null : verifiedState);
         LicenseClockRepair.State clockState = record.clockState();
         // Prepare all fallible metadata/snapshot work before replacing any published facts.
         Membership members = host.membership();
@@ -1025,19 +1071,20 @@ public final class LicenseManager implements AutoCloseable {
                 && (uncertainCommit == null || record.sameAs(uncertainCommit))
                 && (committedPendingApply == null || record.sameAs(committedPendingApply));
         LicenseSnapshot replacement = snapshot(restored.imports, members, complete, restored.invalidSlots);
-        LicenseClock nextClock = clock;
+        LicenseClock currentClock = reset ? null : clock;
+        LicenseClock nextClock = currentClock;
         if (nextClock == null) {
             nextClock = new LicenseClock(clockState.getFacts(), time, clockSettings);
             nextClock.setEnforced(leader && host.isMaster());
         }
-        LicenseClockRepair nextRepair = repair;
+        LicenseClockRepair nextRepair = reset ? null : repair;
         if (!checkpoint && nextRepair == null) {
             nextRepair = new LicenseClockRepair(record.getDeploymentId(), nextClock, repairVerifier, new ClockStore());
             if (leader && host.isMaster()) {
                 nextRepair.beginLeadership();
             }
         }
-        if (clock != null && !nextClock.applyCommitted(clockState.getFacts())
+        if (currentClock != null && !nextClock.applyCommitted(clockState.getFacts())
                 && clockState.getFacts().getVersion() > nextClock.getCommittedFacts().getVersion()) {
             // A degraded master wrote facts behind this FE's clock; keep the local maximum, the next watermark
             // from a healthy master realigns the record.
@@ -1300,17 +1347,23 @@ public final class LicenseManager implements AutoCloseable {
             try {
                 // All-FE HTTP probes may take seconds. Never occupy the durable member/import queue with them.
                 verification.execute(() -> {
-                    InitializationProof proof;
+                    boolean handedOver = false;
                     try {
-                        proof = probeInitialization();
-                    } catch (RuntimeException e) {
+                        InitializationProof proof = probeInitialization();
+                        recordProbeOutcome(proof != null);
+                        handedOver = enqueueMaintenance(proof);
+                    } catch (RuntimeException | Error e) {
                         recordProbeOutcome(false);
                         warnMaintenance(e);
-                        maintenancePending.set(false);
-                        return;
+                        if (e instanceof Error) {
+                            throw e;
+                        }
+                    } finally {
+                        // An Error used to leave the flag set, so this master never initialized (review L5).
+                        if (!handedOver) {
+                            maintenancePending.set(false);
+                        }
                     }
-                    recordProbeOutcome(proof != null);
-                    enqueueMaintenance(proof);
                 });
             } catch (RejectedExecutionException e) {
                 maintenancePending.set(false);
@@ -1336,7 +1389,8 @@ public final class LicenseManager implements AutoCloseable {
         nextProbeNanos = now + Math.min(MAX_PROBE_BACKOFF_NANOS, TimeUnit.SECONDS.toNanos(1L << probeFailures));
     }
 
-    private void enqueueMaintenance(InitializationProof proof) {
+    /** Returns whether the round was queued; its task clears maintenancePending when it ends. */
+    private boolean enqueueMaintenance(InitializationProof proof) {
         try {
             mutations.execute(() -> {
                 try {
@@ -1345,8 +1399,10 @@ public final class LicenseManager implements AutoCloseable {
                     maintenancePending.set(false);
                 }
             });
+            return true;
         } catch (RejectedExecutionException e) {
             maintenancePending.set(false);
+            return false;
         }
     }
 
@@ -1417,9 +1473,14 @@ public final class LicenseManager implements AutoCloseable {
                 // stopping it would let a cluster that restarts every few minutes freeze its trusted time.
                 repair.checkpoint(watermarkIntervalMillis());
             }
-        } catch (LicenseManagementException | LicenseException | LicenseRepairException | IOException e) {
-            // Never log a certificate/provider message. Retry only from the current committed facts.
+        } catch (LicenseManagementException | LicenseException | LicenseRepairException | IOException
+                | RuntimeException e) {
+            // Never log a certificate/provider message. Retry only from the current committed facts. An unchecked
+            // failure used to escape to the executor, which printed a stack trace every second (review L5).
             warnMaintenance(e);
+        } catch (Error e) {
+            warnMaintenance(e);
+            throw e;
         }
     }
 
@@ -1583,14 +1644,34 @@ public final class LicenseManager implements AutoCloseable {
         lastReportedClockSuspect = suspect;
     }
 
-    private synchronized void warnMaintenance(Exception error) {
+    private synchronized void warnMaintenance(Throwable error) {
         long now = System.nanoTime();
         if (lastMaintenanceWarningNanos == Long.MIN_VALUE
                 || now - lastMaintenanceWarningNanos >= TimeUnit.MINUTES.toNanos(1)) {
             lastMaintenanceWarningNanos = now;
-            LOG.warn("License maintenance failed ({}); retrying from committed state",
-                    error.getClass().getSimpleName());
+            LOG.warn("License maintenance failed ({} at {}); retrying from committed state",
+                    error.getClass().getSimpleName(), origin(error));
         }
+    }
+
+    /**
+     * Where a failure was thrown, as Class.method:line of the first Doris frame (else the first frame). Never the
+     * message, which may carry certificate or provider text.
+     */
+    static String origin(Throwable error) {
+        StackTraceElement[] trace = error.getStackTrace();
+        if (trace.length == 0) {
+            return "unknown";
+        }
+        StackTraceElement frame = trace[0];
+        for (StackTraceElement candidate : trace) {
+            if (candidate.getClassName().startsWith("org.apache.doris.")) {
+                frame = candidate;
+                break;
+            }
+        }
+        String type = frame.getClassName();
+        return type.substring(type.lastIndexOf('.') + 1) + "." + frame.getMethodName() + ":" + frame.getLineNumber();
     }
 
     public long getAppliedVersion() {

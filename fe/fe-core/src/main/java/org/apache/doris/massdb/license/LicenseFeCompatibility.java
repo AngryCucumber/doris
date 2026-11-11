@@ -81,7 +81,8 @@ public final class LicenseFeCompatibility {
         result.put("trust_sha256", trustDigest);
         result.put("trust_ready", trustDigest != null);
         // For the master's peer clock check; earlier FEs do not report it and count as unavailable.
-        result.put("wall_time_millis", System.currentTimeMillis());
+        // The license time source, as the peer clock check below; it is the OS clock outside the clock drills.
+        result.put("wall_time_millis", LicenseClock.SYSTEM.wallTimeMillis());
         return Collections.unmodifiableMap(result);
     }
 
@@ -110,16 +111,19 @@ public final class LicenseFeCompatibility {
             }
             try {
                 int defaultPort = Config.enable_https ? Config.https_port : Config.http_port;
-                long before = System.currentTimeMillis();
+                long before = LicenseClock.SYSTEM.wallTimeMillis();
                 JsonNode capability = probe(frontend, env.getToken(), deadline, managementPort(frontend, defaultPort,
                         ports));
-                long after = System.currentTimeMillis();
+                long after = LicenseClock.SYSTEM.wallTimeMillis();
                 JsonNode wall = capability == null ? null : capability.get("wall_time_millis");
-                if (wall == null || !wall.isIntegralNumber() || !wall.canConvertToLong() || wall.longValue() < 0) {
+                if (wall == null || !wall.isIntegralNumber() || !wall.canConvertToLong() || wall.longValue() < 0
+                        || wall.longValue() > LicenseClock.MAX_MILLIS) {
                     continue;
                 }
-                // Shift the peer's sample to our time of comparison by the elapsed round trip.
-                peers.add(wall.longValue() + Math.max(0, selfWallMillis - after) + Math.max(0, (after - before) / 2));
+                // The peer read its clock during this round trip: compare it with ours at the round trip's midpoint
+                // and carry the difference to the moment selfWallMillis was read. Shifting by the elapsed time
+                // instead made every peer look ahead by the time spent on earlier probes (review L8).
+                peers.add(selfWallMillis + (wall.longValue() - (before + (after - before) / 2)));
             } catch (IOException | RuntimeException e) {
                 // An unreachable or older FE does not vote.
             }

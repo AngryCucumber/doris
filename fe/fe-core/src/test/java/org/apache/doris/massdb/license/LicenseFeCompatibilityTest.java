@@ -33,6 +33,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -40,6 +41,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 class LicenseFeCompatibilityTest {
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -501,6 +503,57 @@ class LicenseFeCompatibilityTest {
             fixture.respond(500, "{}");
             Assertions.assertEquals(LicenseClock.PeerVerdict.UNKNOWN,
                     LicenseFeCompatibility.peerClockVerdict(fixture.env, self, 10_000));
+        }
+    }
+
+    @Test
+    void peerClockVerdictDoesNotCountTheTimeSpentProbingEarlierFrontends() throws Exception {
+        // Review L8: two FEs that answer late with an error are probed first, then two FEs report exactly our clock.
+        // Their readings must be compared at the time they were taken, not shifted by the earlier probes.
+        String[] originalPorts = Config.massdb_license_fe_management_ports;
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        AtomicInteger requests = new AtomicInteger();
+        server.createContext("/api/license/capability", exchange -> {
+            try {
+                int status = 200;
+                String body = "{\"wall_time_millis\":" + System.currentTimeMillis() + "}";
+                if (requests.getAndIncrement() < 2) {
+                    Thread.sleep(1500);
+                    status = 503;
+                    body = "{}";
+                }
+                byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(status, bytes.length);
+                exchange.getResponseBody().write(bytes);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                exchange.close();
+            }
+        });
+        server.start();
+        try {
+            int port = server.getAddress().getPort();
+            Env env = Mockito.mock(Env.class);
+            Mockito.when(env.getNodeName()).thenReturn("fe-member");
+            Mockito.when(env.getToken()).thenReturn("cluster-secret-material");
+            List<Frontend> frontends = new ArrayList<>();
+            List<String> ports = new ArrayList<>();
+            frontends.add(member());
+            for (int index = 1; index <= 4; index++) {
+                frontends.add(new Frontend(FrontendNodeType.FOLLOWER, "peer-" + index, "127.0.0.1", 9100 + index));
+                ports.add("127.0.0.1:" + (9100 + index) + "=" + port);
+            }
+            Mockito.when(env.getFrontends(null)).thenReturn(frontends);
+            Config.massdb_license_fe_management_ports = ports.toArray(new String[0]);
+            long self = System.currentTimeMillis();
+            Assertions.assertEquals(LicenseClock.PeerVerdict.AGREE,
+                    LicenseFeCompatibility.peerClockVerdict(env, self, 1000),
+                    "Two FEs reporting our own clock must agree however long the earlier probes took");
+            Assertions.assertEquals(4, requests.get());
+        } finally {
+            server.stop(0);
+            Config.massdb_license_fe_management_ports = originalPorts;
         }
     }
 

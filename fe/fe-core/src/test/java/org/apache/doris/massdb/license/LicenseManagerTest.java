@@ -12,6 +12,10 @@ import org.apache.doris.common.DdlException;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Property;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -39,7 +43,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -928,6 +934,155 @@ class LicenseManagerTest {
     }
 
     @Test
+    void failedDeploymentResetKeepsTheCurrentLicenseState() throws Exception {
+        // Review L6: the reset cleared clock, repair and verifiedState before applying the INITIALIZE record. When
+        // the apply failed and the operation was skipped on replay, the FE kept running without a clock.
+        start();
+        run(LicenseManager.Action.IMPORT, certificate(1, 900, 2000));
+        String original = imageJson(image(manager)).get("deployment_id").textValue();
+        LicensePersistRecord foreign = LicensePersistRecord.initial(UUID.randomUUID(), true, 1000000);
+        host.publicationFailure.set(true);
+        Assertions.assertThrows(IllegalStateException.class, () -> manager.replay(foreign));
+        Assertions.assertEquals(LicenseQueryStatus.EXPIRING, manager.queryStatus());
+        Assertions.assertTrue(manager.isActivated());
+        Assertions.assertEquals(2, manager.getAppliedVersion());
+        Assertions.assertEquals(original, imageJson(image(manager)).get("deployment_id").textValue());
+        Assertions.assertDoesNotThrow(() -> manager.maintenance(), "The master's maintenance needs its clock");
+        // The same reset applies once nothing fails.
+        manager.replay(foreign);
+        Assertions.assertEquals(foreign.getDeploymentId().toString(),
+                imageJson(image(manager)).get("deployment_id").textValue());
+        Assertions.assertEquals(LicenseQueryStatus.MISSING, manager.queryStatus());
+    }
+
+    @Test
+    void errorInTheInitializationProbeDoesNotStopMaintenance() throws Exception {
+        // Review L5: the probe caught only RuntimeException, so an Error left maintenancePending set for good and
+        // this master never initialized the deployment.
+        host.probeError = true;
+        manager.onMasterStart(true);
+        awaitBackgroundMaintenance();
+        Assertions.assertEquals(0, manager.getAppliedVersion());
+        host.probeError = false;
+        time.advance(TimeUnit.MINUTES.toMillis(2));
+        start();
+    }
+
+    @Test
+    void runtimeFailureInsideMaintenanceIsLoggedAndRetried() throws Exception {
+        // Review L5: an unchecked exception escaped the maintenance body to the executor, which printed a stack
+        // trace on every round instead of the rate-limited warning.
+        start();
+        List<String> warnings = new CopyOnWriteArrayList<>();
+        org.apache.logging.log4j.core.Logger logger =
+                (org.apache.logging.log4j.core.Logger) LogManager.getLogger(LicenseManager.class);
+        AbstractAppender appender = new AbstractAppender("license-maintenance-test", null, null, false,
+                Property.EMPTY_ARRAY) {
+            @Override
+            public void append(LogEvent event) {
+                warnings.add(event.getMessage().getFormattedMessage());
+            }
+        };
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            host.publicationFailure.set(true);
+            Assertions.assertDoesNotThrow(() -> manager.maintenance());
+            Assertions.assertTrue(warnings.stream().anyMatch(message -> message.startsWith(
+                    "License maintenance failed (IllegalStateException")), warnings::toString);
+            Assertions.assertDoesNotThrow(() -> manager.maintenance());
+            Assertions.assertEquals(LicenseQueryStatus.MISSING, manager.queryStatus());
+        } finally {
+            logger.removeAppender(appender);
+            appender.stop();
+        }
+    }
+
+    @Test
+    void callerQueuedBehindALongCommitIsTurnedAwayAndItsWorkNeverRuns() throws Exception {
+        // Review L7: while the single commit thread is held (by a long image dump in practice), callers waited
+        // without a bound. A caller still queued after the wait limit must get a definite NOT_SUBMITTED answer,
+        // and its work must not run later.
+        start();
+        String certificate = certificate(1, 900, 2000);
+        long previousWait = queueWait(200);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicBoolean ran = new AtomicBoolean();
+        ExecutorService callers = Executors.newFixedThreadPool(4);
+        try {
+            Future<?> holder = callers.submit(() -> {
+                manager.runMembershipMutation(0, 0, () -> {
+                    entered.countDown();
+                    try {
+                        release.await(30, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+                return null;
+            });
+            Assertions.assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+            Future<?> member = callers.submit(() -> {
+                manager.runMembershipMutation(0, 0, () -> ran.set(true));
+                return null;
+            });
+            ExecutionException busyMember = Assertions.assertThrows(ExecutionException.class,
+                    () -> member.get(3, TimeUnit.SECONDS));
+            Assertions.assertTrue(busyMember.getCause() instanceof DdlException, busyMember::toString);
+            Assertions.assertTrue(busyMember.getCause().getMessage().contains("LICENSE_MANAGEMENT_BUSY"),
+                    busyMember.getCause()::getMessage);
+
+            Future<LicenseManagementResult> imported = callers.submit(
+                    () -> run(LicenseManager.Action.IMPORT, certificate));
+            ExecutionException busyImport = Assertions.assertThrows(ExecutionException.class,
+                    () -> imported.get(3, TimeUnit.SECONDS));
+            LicenseManagementException failure = (LicenseManagementException) busyImport.getCause();
+            Assertions.assertEquals("LICENSE_MANAGEMENT_BUSY", failure.getReason());
+            Assertions.assertEquals("NOT_SUBMITTED", failure.getBody().get("submission_status"));
+            Assertions.assertEquals(true, failure.getBody().get("retryable"));
+            Assertions.assertEquals(LicenseVerifier.fingerprint(certificate), failure.getBody().get("fingerprint"));
+
+            Future<String> dump = callers.submit(() -> manager.runImageSnapshot(() -> "dumped"));
+            ExecutionException busyDump = Assertions.assertThrows(ExecutionException.class,
+                    () -> dump.get(3, TimeUnit.SECONDS));
+            Assertions.assertTrue(busyDump.getCause() instanceof IOException, busyDump::toString);
+            Assertions.assertEquals(0, mutationQueue().size(), "A turned-away caller leaves nothing in the queue");
+
+            release.countDown();
+            holder.get(5, TimeUnit.SECONDS);
+            Assertions.assertFalse(ran.get(), "Work of a turned-away caller never runs");
+            Assertions.assertEquals(1, manager.getAppliedVersion());
+            run(LicenseManager.Action.IMPORT, certificate);
+            Assertions.assertEquals(2, manager.getAppliedVersion());
+        } finally {
+            release.countDown();
+            queueWait(previousWait);
+            callers.shutdownNow();
+        }
+    }
+
+    /** Shortens the bounded queue wait of the L7 fix; code without it waits without a bound. */
+    private static long queueWait(long millis) throws Exception {
+        try {
+            java.lang.reflect.Field field = LicenseManager.class.getDeclaredField("queueWaitMillis");
+            field.setAccessible(true);
+            long previous = field.getLong(null);
+            field.setLong(null, millis);
+            return previous;
+        } catch (NoSuchFieldException e) {
+            return millis;
+        }
+    }
+
+    private java.util.concurrent.BlockingQueue<Runnable> mutationQueue() throws Exception {
+        java.lang.reflect.Field field = LicenseManager.class.getDeclaredField("mutations");
+        field.setAccessible(true);
+        return ((ThreadPoolExecutor) field.get(manager)).getQueue();
+    }
+
+    @Test
     void corruptPendingIsIsolatedAndExpiredActiveRestoresWithoutFailure() throws Exception {
         start();
         run(LicenseManager.Action.IMPORT, certificate(1, 900, 2000));
@@ -1598,6 +1753,8 @@ class LicenseManagerTest {
         CountDownLatch release = new CountDownLatch(1);
         holdVerification(entered, release);
         List<AsyncImport> calls = new ArrayList<>();
+        // This case is about queue slots, not the wait bound of review L7: keep the queued calls queued.
+        long previousWait = queueWait(TimeUnit.MINUTES.toMillis(1));
         try {
             for (int i = 0; i < 2; i++) {
                 calls.add(new AsyncImport(manager, candidate, "busy-" + i));
@@ -1635,6 +1792,7 @@ class LicenseManagerTest {
             Assertions.assertEquals(2, host.records.size());
         } finally {
             release.countDown();
+            queueWait(previousWait);
             for (AsyncImport call : calls) {
                 call.thread.interrupt();
             }
@@ -2103,13 +2261,19 @@ class LicenseManagerTest {
     private static void awaitWaiting(List<AsyncImport> calls) throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
         for (AsyncImport call : calls) {
-            while (call.thread.getState() != Thread.State.WAITING && call.result == null
-                    && System.nanoTime() < deadline) {
+            // A queued call waits with the bounded wait of review L7 (TIMED_WAITING), a started one without it.
+            while (!waiting(call.thread) && call.result == null && System.nanoTime() < deadline) {
                 Thread.sleep(2);
             }
-            Assertions.assertEquals(Thread.State.WAITING, call.thread.getState(),
-                    "An accepted request must be waiting for a worker, not rejected or completed");
+            Assertions.assertTrue(waiting(call.thread),
+                    "An accepted request must be waiting for a worker, not rejected or completed: "
+                            + call.thread.getState());
         }
+    }
+
+    private static boolean waiting(Thread thread) {
+        Thread.State state = thread.getState();
+        return state == Thread.State.WAITING || state == Thread.State.TIMED_WAITING;
     }
 
     private static void awaitInitialized(LicenseManager target) throws InterruptedException {
@@ -2321,6 +2485,12 @@ class LicenseManagerTest {
         }
     }
 
+    private static final class InjectedProbeError extends Error {
+        InjectedProbeError() {
+            super("Injected probe error");
+        }
+    }
+
     private static final class Host implements LicenseManager.Host {
         private final String path;
         private final List<LicensePersistRecord> records = Collections.synchronizedList(new ArrayList<>());
@@ -2338,6 +2508,8 @@ class LicenseManagerTest {
         private volatile long membershipVersion = 1;
         private volatile CountDownLatch probeEntered;
         private volatile CountDownLatch probeRelease;
+        /** The all-FE probe fails with an Error such as NoClassDefFoundError (review L5). */
+        private volatile boolean probeError;
         private final AtomicInteger membershipReads = new AtomicInteger();
         private final AtomicInteger activationProbes = new AtomicInteger();
 
@@ -2404,6 +2576,9 @@ class LicenseManagerTest {
         @Override
         public boolean activationReady() {
             activationProbes.incrementAndGet();
+            if (probeError) {
+                throw new InjectedProbeError();
+            }
             if (probeEntered != null) {
                 probeEntered.countDown();
                 try {

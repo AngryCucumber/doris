@@ -38,7 +38,9 @@ import org.mockito.Mockito;
 import org.springframework.http.ResponseEntity;
 
 import java.io.ByteArrayInputStream;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Base64;
@@ -315,6 +317,51 @@ class LicenseControllerTest {
             wire.setLevel(oldWire);
             headers.setLevel(oldHeaders);
             appender.stop();
+        }
+    }
+
+    @Test
+    void forwardingThatNeverReachesTheMasterIsNotSubmittedExceptForReceiptQueries() throws Exception {
+        // Review L11: a refused connection proves the request never reached the master, so a state-changing request
+        // is NOT_SUBMITTED and may be retried. A receipt query stays UNKNOWN: its submission_status describes the
+        // queried certificate, which this failure says nothing about.
+        int closedPort;
+        try (ServerSocket socket = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
+            closedPort = socket.getLocalPort();
+        }
+        StubController controller = new StubController();
+        Mockito.when(controller.env.isMaster()).thenReturn(false);
+        Mockito.when(controller.env.isReady()).thenReturn(true);
+        Mockito.when(controller.env.getMasterHost()).thenReturn("127.0.0.1");
+        Mockito.when(controller.env.getMasterHttpPort()).thenReturn(closedPort);
+        Mockito.when(controller.env.getToken()).thenReturn("cluster-token");
+        ResponseEntity<?> imported = controller.importCertificate(
+                request("POST", bytes("{\"certificate\":\"signed\"}")), servletResponse);
+        Assertions.assertEquals(503, imported.getStatusCode().value());
+        Assertions.assertEquals("LICENSE_NOT_READY", body(imported).get("reason"));
+        Assertions.assertEquals("NOT_SUBMITTED", body(imported).get("submission_status"));
+        Assertions.assertEquals(true, body(imported).get("retryable"));
+        String fingerprint = repeat('a', 64);
+        ResponseEntity<?> receipt = controller.importReceipt(fingerprint, request("GET", new byte[0]),
+                servletResponse);
+        Assertions.assertEquals(503, receipt.getStatusCode().value());
+        Assertions.assertEquals("UNKNOWN", body(receipt).get("submission_status"));
+        Assertions.assertEquals(fingerprint, body(receipt).get("fingerprint"));
+        Assertions.assertEquals(0, controller.executions, "Nothing ran locally");
+
+        // A master that accepted the connection may have received the request, so the import stays UNKNOWN.
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/license/import", exchange -> exchange.close());
+        server.start();
+        try {
+            Mockito.when(controller.env.getMasterHttpPort()).thenReturn(server.getAddress().getPort());
+            ResponseEntity<?> dropped = controller.importCertificate(
+                    request("POST", bytes("{\"certificate\":\"signed\"}")), servletResponse);
+            Assertions.assertEquals(503, dropped.getStatusCode().value());
+            Assertions.assertEquals("LICENSE_SUBMISSION_UNKNOWN", body(dropped).get("reason"));
+            Assertions.assertEquals("UNKNOWN", body(dropped).get("submission_status"));
+        } finally {
+            server.stop(0);
         }
     }
 

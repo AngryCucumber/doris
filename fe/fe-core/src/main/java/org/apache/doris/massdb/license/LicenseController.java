@@ -28,6 +28,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.apache.http.Header;
+import org.apache.http.HttpHost;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpRequestBase;
@@ -41,6 +42,7 @@ import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClients;
 import org.apache.http.impl.conn.BasicHttpClientConnectionManager;
 import org.apache.http.impl.conn.DefaultManagedHttpClientConnection;
+import org.apache.http.protocol.HttpContext;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -54,6 +56,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.CodingErrorAction;
@@ -63,6 +67,7 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Bounded management adapter. Certificate bodies and credentials are never included in diagnostic messages. */
 @RestController
@@ -414,6 +419,9 @@ public class LicenseController extends RestBaseController {
 
     protected ResponseEntity<?> forward(Action action, String payload, byte[] body,
             ActionAuthorizationInfo credentials, HttpServletRequest request) {
+        // Set once the connection to the master is up (TCP and, for HTTPS, the handshake); the request is written only
+        // after that, so a failure before it proves nothing reached the master (review L11).
+        AtomicBoolean connected = new AtomicBoolean();
         try {
             Env env = environment();
             if (!env.isReady() || env.getMasterHttpPort() <= 0 || env.getToken() == null || env.getToken().isEmpty()) {
@@ -439,8 +447,10 @@ public class LicenseController extends RestBaseController {
             // implementation here so certificate bodies and authentication headers never reach those loggers.
             BasicHttpClientConnectionManager connections = new BasicHttpClientConnectionManager(
                     RegistryBuilder.<ConnectionSocketFactory>create()
-                            .register("http", PlainConnectionSocketFactory.getSocketFactory())
-                            .register("https", SSLConnectionSocketFactory.getSystemSocketFactory()).build(),
+                            .register("http", new ConnectTracking(PlainConnectionSocketFactory.getSocketFactory(),
+                                    connected))
+                            .register("https", new ConnectTracking(SSLConnectionSocketFactory.getSystemSocketFactory(),
+                                    connected)).build(),
                     (route, configuration) -> new DefaultManagedHttpClientConnection("license-management", 8192));
             try (CloseableHttpClient client = HttpClients.custom().disableAutomaticRetries().disableRedirectHandling()
                     .disableCookieManagement().disableAuthCaching().setDefaultRequestConfig(config)
@@ -468,7 +478,36 @@ public class LicenseController extends RestBaseController {
                 }
             }
         } catch (Exception e) {
+            if (!connected.get() && action != Action.IMPORT_RECEIPT && action != Action.CLOCK_REPAIR_RECEIPT) {
+                // Never sent, so nothing was submitted and the request may be retried. A receipt query keeps UNKNOWN:
+                // its submission_status describes the queried submission, which this failure says nothing about.
+                return failure(503, "LICENSE_NOT_READY", "Master is unavailable", true, false);
+            }
             return submissionUnknown(action, payload);
+        }
+    }
+
+    /** Marks the forward as connected once the delegate has connected the socket. */
+    private static final class ConnectTracking implements ConnectionSocketFactory {
+        private final ConnectionSocketFactory delegate;
+        private final AtomicBoolean connected;
+
+        private ConnectTracking(ConnectionSocketFactory delegate, AtomicBoolean connected) {
+            this.delegate = delegate;
+            this.connected = connected;
+        }
+
+        @Override
+        public Socket createSocket(HttpContext context) throws IOException {
+            return delegate.createSocket(context);
+        }
+
+        @Override
+        public Socket connectSocket(int connectTimeout, Socket socket, HttpHost host, InetSocketAddress remoteAddress,
+                InetSocketAddress localAddress, HttpContext context) throws IOException {
+            Socket result = delegate.connectSocket(connectTimeout, socket, host, remoteAddress, localAddress, context);
+            connected.set(true);
+            return result;
         }
     }
 

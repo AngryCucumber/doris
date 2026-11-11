@@ -4,6 +4,46 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License review 2026-11-10: hardening L5, L6, L7, L8, L10 and L11 (2026-11-11)
+
+The part of batch 4 of the 2026-11-10 License/UI review that needs no product decision. L3, L9 and the manifest
+freshness part of L10 are not changed.
+
+- `LicenseManager` (L5): the all-FE initialization probe caught only `RuntimeException`, so an `Error` left
+  `maintenancePending` set and that master never queued maintenance again, nor initialized the deployment. The probe
+  now resets the flag in `finally`. An unchecked exception in the maintenance body escaped to the executor and was
+  printed through `System.err` every round; it now gets the rate-limited maintenance warning, which names the throwing
+  frame (`Class.method:line`, never the message). An `Error` is logged and rethrown.
+- `LicenseManager` (L6): replaying another deployment's `INITIALIZE` cleared the clock, the clock repair state and
+  the verified state before applying the record. If the apply failed and the operation was skipped on replay, the FE
+  ran without a clock (queries `LICENSE_NOT_READY`, a null pointer per maintenance round on a master). The new state
+  is now built first and replaces the current one only after everything fallible has succeeded.
+- `LicenseManager` (L7): member changes, the image dump and management calls waited without a bound for the single
+  license commit thread. A caller whose work is still queued after 5 seconds now has it removed, so it never runs,
+  and gets `LICENSE_MANAGEMENT_BUSY` (`NOT_SUBMITTED`, retryable; HTTP 429, the image dump an I/O error). Work that has
+  started is waited for, since the journal bounds it, so no new `UNKNOWN` outcome is introduced.
+- `LicenseFeCompatibility` (L8): the master's peer clock check added half a round trip to each peer's reading but
+  compared it with its own clock read before all probes, so every peer looked ahead by the time spent on earlier
+  probes, up to the 10 second probe budget. Each reading is now compared at the midpoint of its own round trip;
+  readings beyond `LicenseClock.MAX_MILLIS` are ignored. The wall-clock reads of the check and of the capability
+  response go through `LicenseClock.SYSTEM`, which outside the clock drills is the OS clock.
+- `LicenseTrustStore` (L10): the `schema_version` of a signed trust manifest was compared with `intValue()`, so
+  4294967297 read as 1; it is compared as a long.
+- `LicenseController` (L11): a follower answered every failed forward with `LICENSE_SUBMISSION_UNKNOWN` / `UNKNOWN`,
+  also when the connection to the master was refused or timed out and nothing was sent. The forward now records when
+  the connection (including the TLS handshake) is up; a failure before that is 503 `LICENSE_NOT_READY` /
+  `NOT_SUBMITTED` (retryable). The import and repair receipt queries keep `UNKNOWN`, because their
+  `submission_status` describes the queried submission. The trust store used for HTTPS between FEs is unchanged.
+- Tests: `LicenseManagerTest`, `LicenseFeCompatibilityTest`, `LicenseTrustStoreTest` and `LicenseControllerTest` add one
+  case per change (two for L5); an existing queue-slot case keeps its queued calls queued with a longer wait.
+- Validation (`.build-records/license-batch4a-20261111/`): the seven new cases fail on the unfixed product code and
+  pass on the fixed one; `License*Test` 35 classes, 393 tests pass; the full FE unit test run fails exactly the 36
+  cases of the batch 2 baseline (fe-core: the three that also fail on upstream 4.0.5); Checkstyle and the source-header
+  check pass. On a real four-FE cluster the unfixed jar called a healthy master the outlier for a cluster-wide clock
+  correction while one peer's HTTP port dropped connections, and answered `UNKNOWN` to an import that never left the
+  follower; the fixed jar confirmed the correction within 4 seconds and answered `NOT_SUBMITTED`, with screenshots. The
+  2026-10-23 clock drills D1 to D3 pass again on the fixed jar (35 checks).
+
 ## License review 2026-11-10: Web UI fixes U1 to U3 (2026-11-10)
 
 Batch 3 of the 2026-11-10 License/UI review.

@@ -226,6 +226,22 @@ class LicenseTrustStoreTest {
         rejectSigned(LicenseTrustStore.parse(bytes(manifest())), compact, LicenseErrorCode.UNTRUSTED_KEY);
     }
 
+    @Test
+    void signedManifestSchemaVersionIsComparedAsAWholeNumber() throws Exception {
+        // Review L10: 4294967297 is 2^32 + 1; read as an int it would be 1 and pass as the supported version.
+        KeyPair trustKey = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+        ObjectNode root = JSON.createObjectNode().put("schema_version", 1);
+        root.putArray("keys").add(entry("trust-1", "trust", trustKey));
+        LicenseTrustStore signers = LicenseTrustStore.parse(bytes(root));
+        for (long version : new long[] {4294967297L, 8589934593L}) {
+            ObjectNode payload = JSON.createObjectNode().put("schema_version", version)
+                    .put("issued_at", 1_700_000_000L).put("sequence", 3);
+            payload.set("keys", manifest().get("keys"));
+            rejectSigned(signers, signed(payload, "trust-1", LicenseTrustStore.SIGNED_MANIFEST_TYPE, trustKey),
+                    LicenseErrorCode.INVALID_TRUST_STORE);
+        }
+    }
+
     private void rejectSigned(LicenseTrustStore signers, String compact, LicenseErrorCode expected) {
         LicenseException error = Assertions.assertThrows(LicenseException.class,
                 () -> signers.verifySigned(compact.getBytes(StandardCharsets.UTF_8)));

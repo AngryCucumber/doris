@@ -223,7 +223,8 @@ public final class LicenseTrustStore {
                     throw invalid();
                 }
             }
-            if (claims.get("schema_version").intValue() != 1 || claims.get("sequence").longValue() < 1) {
+            // longValue: intValue() would read 4294967297 as 1 (review L10).
+            if (claims.get("schema_version").longValue() != 1 || claims.get("sequence").longValue() < 1) {
                 throw invalid();
             }
             ObjectNode manifest = JSON.createObjectNode();
