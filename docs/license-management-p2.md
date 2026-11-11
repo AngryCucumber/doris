@@ -43,6 +43,8 @@ massdb_license_fe_management_ports = fe-a:9010=8030,fe-b:9010=8130
 
 IPv6 键使用方括号，例如 `[2001:db8::1]:9010=8030`。协议跟随现有 `enable_https`，未配置映射时能力检查使用本 FE 的 `http_port` 或 `https_port` 作为对端默认端口。映射也用于 HTTPS 下的 Follower 管理转发；HTTP 转发使用当前 Master 发布的 HTTP 端口。它不改变原 FE helper/心跳的端口假设，也不能改写目标主机或协议。
 
+**启用 HTTPS 时的证书要求（2026-11-11）。** `enable_https = true` 时，FE 之间的许可调用都走 HTTPS，包括初始化前的能力检查、时钟比对、公钥一致性检查和 Follower 转发。这些调用信任两类证书：本 FE 自己的 key store（`key_store_path`）里密钥条目的证书链和受信证书条目，以及 JVM 默认信任库。对端证书还必须写明它注册时用的主机名或 IP：看 SAN，没有 SAN 时看 CN。推荐做法是每台 FE 的证书由同一个 CA 签发，SAN 写上该 FE 注册的地址和用户访问它用的地址，再把这个 CA 证书作为受信条目导入每台 FE 的 key store。也可以用一张 SAN 列出所有 FE 地址的证书，复制到每台 FE。Doris 文档里用 `keytool -genkey` 生成、只有 CN 的证书不能用：Jetty 12 对证书没有写明的主机名一律返回 `400 Invalid SNI`，浏览器和 FE 之间都访问不了。key store 文件改动后，下一次调用会重新读取，所以新增受信条目不用重启；Jetty 自己仍使用启动时加载的证书。调用失败时，fe.log 写明原因，取值为 `TLS_UNTRUSTED_CERTIFICATE`、`TLS_HOSTNAME_MISMATCH`、`TLS_HANDSHAKE_FAILED` 或 `TLS_TRUST_UNAVAILABLE`（key store 读不出来）。能力检查失败记在 `License FE compatibility proof failed ... reason=...`，转发失败记在 `License forward to the master failed: reason=...`，后者每分钟最多一条。此前版本 `enable_https = true` 会让 FE 启动失败（`WebSocketComponents has not been created`），本版本已修复。HTTP 端口仍然监听，FE 之间拉取元数据镜像照旧走 HTTP 端口；该端口上的 `GET /api/*` 等请求会重定向到 HTTPS 端口。
+
 Master 在恢复完成、且确认全部已注册 FE 都带有许可模块后，持久生成部署 UUID（每个集群只发生一次）。这项检查不比较各 FE 的 JAR 和公钥清单，只防止从不带许可模块的旧版滚动升级时，旧 FE 回放到不认识的初始化记录。普通 GET 或 Follower 不生成 UUID。未就绪时先核对各 FE 是否都已升级、管理端口能否访问和恢复日志；不能自行填入一个 UUID 代替集群申请。
 
 管理员通过以下任一入口取得申请：
@@ -145,7 +147,7 @@ SQL 使用结果行表达提交/应用状态，错误保留独立 errno 与 SQLS
 
 内置页面在导入返回 `UNKNOWN` 或 `COMMITTED` 后，仅对原指纹执行只读回执查询，最多持续 120 秒，按 2/4/8/16/30 秒退避；不会自动重发导入请求。历史已经淘汰时，轮询不能重建回执，超时后需要人工确认。自建 Java 服务或代理也应区分“查询提交结果”和“再次提交证书”，不要只因 HTTP 503 就自动重发 POST。
 
-Follower 把管理请求转发给 Master。2026-11-11 起，若连不上 Master（连接被拒、连接超时或 TLS 握手失败），请求没有发出，返回 503 `LICENSE_NOT_READY` / `NOT_SUBMITTED`，可以退避后重试；连上之后才失败的仍返回 `LICENSE_SUBMISSION_UNKNOWN` / `UNKNOWN`，先按指纹查回执。按指纹查回执本身连不上 Master 时仍返回 `UNKNOWN`：这只说明这次查询没有结果，不代表那次提交的状态。
+Follower 把管理请求转发给 Master。2026-11-11 起，若连不上 Master（连接被拒、连接超时或 TLS 握手失败），请求没有发出，返回 503 `LICENSE_NOT_READY` / `NOT_SUBMITTED`，可以退避后重试；连上之后才失败的仍返回 `LICENSE_SUBMISSION_UNKNOWN` / `UNKNOWN`，先按指纹查回执。按指纹查回执本身连不上 Master 时仍返回 `UNKNOWN`：这只说明这次查询没有结果，不代表那次提交的状态。HTTPS 下 Follower 不信任 Master 的证书，也属于连不上，fe.log 记录原因，证书要求见第 1 节。
 
 当前协议将 6202 的 SQLSTATE 统一为 `45000`。旧验收记录中的 `40001` 是当时版本的真实返回，保留作为历史证据，不代表新版本协议。
 

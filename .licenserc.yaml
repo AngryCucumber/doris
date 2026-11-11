@@ -210,6 +210,9 @@ header:
     - "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseManagerDiagnosticsTest.java"
     - "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseRealAdmissionTest.java"
     - "fe/fe-core/src/test/java/org/apache/doris/http/LicenseQueryPlanHttpAdmissionTest.java"
+    - "fe/fe-core/src/main/java/org/apache/doris/massdb/license/LicenseFeTls.java"
+    - "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseTlsTestKeyStores.java"
+    - "fe/fe-core/src/test/java/org/apache/doris/massdb/httpv2/HttpsStartupTest.java"
     # END MassDB separately checked headers
     # License texts; their contents and npm references are checked separately.
     - "LICENSE-MASSDB.txt"

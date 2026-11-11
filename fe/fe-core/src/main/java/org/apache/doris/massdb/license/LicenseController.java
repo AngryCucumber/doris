@@ -43,6 +43,8 @@ import org.apache.http.impl.client.HttpClients;
 import org.apache.http.impl.conn.BasicHttpClientConnectionManager;
 import org.apache.http.impl.conn.DefaultManagedHttpClientConnection;
 import org.apache.http.protocol.HttpContext;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -79,6 +81,9 @@ public class LicenseController extends RestBaseController {
     static final String CSRF_HEADER = "X-MassDB-License-CSRF";
     static final int MAX_BODY_BYTES = 96 * 1024;
     private static final int MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+    private static final Logger LOG = LogManager.getLogger(LicenseController.class);
+    private static final LicenseFeCompatibility.DiagnosticLimiter TLS_DIAGNOSTICS =
+            new LicenseFeCompatibility.DiagnosticLimiter();
     private static final ObjectMapper JSON = new ObjectMapper(JsonFactory.builder()
             .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
             .streamReadConstraints(StreamReadConstraints.builder().maxNestingDepth(16)
@@ -422,6 +427,7 @@ public class LicenseController extends RestBaseController {
         // Set once the connection to the master is up (TCP and, for HTTPS, the handshake); the request is written only
         // after that, so a failure before it proves nothing reached the master (review L11).
         AtomicBoolean connected = new AtomicBoolean();
+        LicenseFeTls.Call tls = null;
         try {
             Env env = environment();
             if (!env.isReady() || env.getMasterHttpPort() <= 0 || env.getToken() == null || env.getToken().isEmpty()) {
@@ -445,12 +451,15 @@ public class LicenseController extends RestBaseController {
             // and a dropped response cannot silently submit a management operation a second time.
             // The ordinary HttpClient factory also enables wire/header dumps at DEBUG. Use its non-logging connection
             // implementation here so certificate bodies and authentication headers never reach those loggers.
-            BasicHttpClientConnectionManager connections = new BasicHttpClientConnectionManager(
-                    RegistryBuilder.<ConnectionSocketFactory>create()
-                            .register("http", new ConnectTracking(PlainConnectionSocketFactory.getSocketFactory(),
-                                    connected))
-                            .register("https", new ConnectTracking(SSLConnectionSocketFactory.getSystemSocketFactory(),
-                                    connected)).build(),
+            RegistryBuilder<ConnectionSocketFactory> schemes = RegistryBuilder.<ConnectionSocketFactory>create()
+                    .register("http", new ConnectTracking(PlainConnectionSocketFactory.getSocketFactory(), connected));
+            if (Config.enable_https) {
+                // Trust this FE's key store, not only the JVM default trust store (review L11).
+                tls = LicenseFeTls.call();
+                schemes.register("https", new ConnectTracking(new SSLConnectionSocketFactory(tls.context, tls.verifier),
+                        connected));
+            }
+            BasicHttpClientConnectionManager connections = new BasicHttpClientConnectionManager(schemes.build(),
                     (route, configuration) -> new DefaultManagedHttpClientConnection("license-management", 8192));
             try (CloseableHttpClient client = HttpClients.custom().disableAutomaticRetries().disableRedirectHandling()
                     .disableCookieManagement().disableAuthCaching().setDefaultRequestConfig(config)
@@ -478,6 +487,10 @@ public class LicenseController extends RestBaseController {
                 }
             }
         } catch (Exception e) {
+            String tlsReason = LicenseFeTls.failureReason(e, tls);
+            if (tlsReason != null && TLS_DIAGNOSTICS.acquire(System.nanoTime())) {
+                LOG.warn("License forward to the master failed: reason={}", tlsReason);
+            }
             if (!connected.get() && action != Action.IMPORT_RECEIPT && action != Action.CLOCK_REPAIR_RECEIPT) {
                 // Never sent, so nothing was submitted and the request may be retried. A receipt query keeps UNKNOWN:
                 // its submission_status describes the queried submission, which this failure says nothing about.

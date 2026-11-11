@@ -200,7 +200,10 @@
     "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicensePersistRecordTest.java",
     "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseManagerDiagnosticsTest.java",
     "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseRealAdmissionTest.java",
-    "fe/fe-core/src/test/java/org/apache/doris/http/LicenseQueryPlanHttpAdmissionTest.java"
+    "fe/fe-core/src/test/java/org/apache/doris/http/LicenseQueryPlanHttpAdmissionTest.java",
+    "fe/fe-core/src/main/java/org/apache/doris/massdb/license/LicenseFeTls.java",
+    "fe/fe-core/src/test/java/org/apache/doris/massdb/license/LicenseTlsTestKeyStores.java",
+    "fe/fe-core/src/test/java/org/apache/doris/massdb/httpv2/HttpsStartupTest.java"
   ],
   "apache": [
     "docker-compose/docker-compose.be-host.yml",
@@ -662,6 +665,10 @@
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
     },
     "fe/fe-core/src/main/java/org/apache/doris/httpv2/HttpServer.java": {
+      "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
+      "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
+    },
+    "fe/fe-core/src/main/java/org/apache/doris/httpv2/config/WebServerFactoryCustomizerConfig.java": {
       "originalHeaderSha256": "aa064bcb8731f4e87d25b5d2754dcfcbc8f0584d0d5cf35fe6316e25f0951dad",
       "notice": "Modified for MassDB SQL. See MODIFICATIONS.md for details."
     }

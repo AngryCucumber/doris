@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Modified for MassDB SQL. See MODIFICATIONS.md for details.
 
 package org.apache.doris.httpv2.config;
 
@@ -27,16 +28,15 @@ import org.springframework.boot.web.embedded.jetty.JettyServletWebServerFactory;
 import org.springframework.boot.web.server.WebServerFactoryCustomizer;
 import org.springframework.context.annotation.Configuration;
 
-import java.util.Collections;
-
 @Configuration
 public class WebServerFactoryCustomizerConfig implements WebServerFactoryCustomizer<ConfigurableJettyWebServerFactory> {
     @Override
     public void customize(ConfigurableJettyWebServerFactory factory) {
         if (Config.enable_https) {
-            ((JettyServletWebServerFactory) factory).setConfigurations(
-                    Collections.singletonList(new HttpToHttpsJettyConfig())
-            );
+            // Add, do not replace: Spring Boot's WebSocket customizer (order 0, so it runs first) has already added the
+            // configuration that creates the WebSocket components. Without it the FE exits at startup with
+            // "WebSocketComponents has not been created".
+            ((JettyServletWebServerFactory) factory).addConfigurations(new HttpToHttpsJettyConfig());
 
             factory.addServerCustomizers(
                     server -> {

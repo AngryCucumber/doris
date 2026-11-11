@@ -20,6 +20,8 @@ import org.apache.doris.system.Frontend;
 
 import com.google.common.io.ByteStreams;
 import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpsConfigurator;
+import com.sun.net.httpserver.HttpsServer;
 import jakarta.servlet.ReadListener;
 import jakarta.servlet.ServletInputStream;
 import jakarta.servlet.http.HttpServletRequest;
@@ -362,6 +364,103 @@ class LicenseControllerTest {
             Assertions.assertEquals("UNKNOWN", body(dropped).get("submission_status"));
         } finally {
             server.stop(0);
+        }
+    }
+
+    @Test
+    void httpsForwardTrustsThisFrontendsKeyStoreAndChecksTheMastersName() throws Exception {
+        // Review L11: the forward used only the JVM default trust store, so with the usual private-CA or self-signed
+        // FE certificates no follower could reach the master.
+        boolean oldHttps = Config.enable_https;
+        String[] oldPorts = Config.massdb_license_fe_management_ports;
+        String oldKeyStore = Config.key_store_path;
+        String oldPassword = Config.key_store_password;
+        String oldType = Config.key_store_type;
+        LicenseTlsTestKeyStores stores = LicenseTlsTestKeyStores.get();
+        AtomicInteger requests = new AtomicInteger();
+        Logger logger = (Logger) LogManager.getLogger(LicenseController.class);
+        CopyOnWriteArrayList<String> warnings = new CopyOnWriteArrayList<>();
+        AbstractAppender appender = new AbstractAppender("license-forward-tls", null, null, false,
+                Property.EMPTY_ARRAY) {
+            @Override
+            public void append(LogEvent event) {
+                warnings.add(event.getMessage().getFormattedMessage());
+            }
+        };
+        Level oldLevel = logger.getLevel();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.WARN);
+        Map<String, HttpsServer> masters = new HashMap<>();
+        try {
+            for (String name : new String[] {"peer", "rogue", "wrong-name"}) {
+                HttpsServer server = HttpsServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+                server.setHttpsConfigurator(new HttpsConfigurator(LicenseTlsTestKeyStores.serverContext(
+                        name.equals("peer") ? stores.peer : name.equals("rogue") ? stores.rogue : stores.wrongName)));
+                server.createContext("/api/license/import", exchange -> {
+                    requests.incrementAndGet();
+                    byte[] result = bytes("{\"reason\":\"LICENSE_IMPORT_SUPERSEDED\","
+                            + "\"submission_status\":\"NOT_SUBMITTED\",\"retryable\":false}");
+                    exchange.sendResponseHeaders(409, result.length);
+                    exchange.getResponseBody().write(result);
+                    exchange.close();
+                });
+                server.start();
+                masters.put(name, server);
+            }
+            Config.enable_https = true;
+            Config.key_store_path = stores.local.toString();
+            Config.key_store_password = LicenseTlsTestKeyStores.PASSWORD;
+            Config.key_store_type = "JKS";
+            StubController controller = new StubController();
+            Frontend master = Mockito.mock(Frontend.class);
+            Mockito.when(master.getHost()).thenReturn("127.0.0.1");
+            Mockito.when(master.getEditLogPort()).thenReturn(9011);
+            Mockito.when(master.getRpcPort()).thenReturn(9021);
+            Mockito.when(controller.env.getFrontends(null)).thenReturn(Collections.singletonList(master));
+            Mockito.when(controller.env.isMaster()).thenReturn(false);
+            Mockito.when(controller.env.isReady()).thenReturn(true);
+            Mockito.when(controller.env.getMasterHost()).thenReturn("127.0.0.1");
+            Mockito.when(controller.env.getMasterRpcPort()).thenReturn(9021);
+            Mockito.when(controller.env.getMasterHttpPort()).thenReturn(8030);
+            Mockito.when(controller.env.getToken()).thenReturn("cluster-token");
+
+            // Signed by the CA in this FE's key store, for the master's registered address: the master answers.
+            Config.massdb_license_fe_management_ports = new String[] {
+                    "127.0.0.1:9011=" + masters.get("peer").getAddress().getPort()};
+            ResponseEntity<?> answered = controller.importCertificate(
+                    request("POST", bytes("{\"certificate\":\"signed\"}")), servletResponse);
+            Assertions.assertEquals(409, answered.getStatusCode().value());
+            Assertions.assertEquals("LICENSE_IMPORT_SUPERSEDED", body(answered).get("reason"));
+            Assertions.assertEquals(1, requests.get());
+
+            // An untrusted certificate or one naming another address: nothing is sent, so NOT_SUBMITTED.
+            for (String name : new String[] {"rogue", "wrong-name"}) {
+                Config.massdb_license_fe_management_ports = new String[] {
+                        "127.0.0.1:9011=" + masters.get(name).getAddress().getPort()};
+                ResponseEntity<?> refused = controller.importCertificate(
+                        request("POST", bytes("{\"certificate\":\"signed\"}")), servletResponse);
+                Assertions.assertEquals(503, refused.getStatusCode().value(), name);
+                Assertions.assertEquals("LICENSE_NOT_READY", body(refused).get("reason"), name);
+                Assertions.assertEquals("NOT_SUBMITTED", body(refused).get("submission_status"), name);
+                Assertions.assertEquals(1, requests.get(), name);
+            }
+            // One rate-limited warning names the TLS reason without the provider's message.
+            Assertions.assertEquals(Collections.singletonList(
+                    "License forward to the master failed: reason=TLS_UNTRUSTED_CERTIFICATE"), warnings);
+            Assertions.assertEquals(0, controller.executions, "Nothing ran locally");
+        } finally {
+            for (HttpsServer server : masters.values()) {
+                server.stop(0);
+            }
+            logger.removeAppender(appender);
+            logger.setLevel(oldLevel);
+            appender.stop();
+            Config.enable_https = oldHttps;
+            Config.massdb_license_fe_management_ports = oldPorts;
+            Config.key_store_path = oldKeyStore;
+            Config.key_store_password = oldPassword;
+            Config.key_store_type = oldType;
         }
     }
 

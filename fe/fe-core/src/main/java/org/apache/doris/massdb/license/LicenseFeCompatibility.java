@@ -45,6 +45,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import javax.net.ssl.HttpsURLConnection;
 
 /**
  * FE-only proof, before the one-time deployment initialization, that every registered FE carries the license
@@ -522,13 +523,33 @@ public final class LicenseFeCompatibility {
         URL url = new URL(scheme + "://" + NetUtils.getHostPortInAccessibleFormat(frontend.getHost(), port)
                 + "/api/license/capability");
         HttpURLConnection connection = (HttpURLConnection) url.openConnection(Proxy.NO_PROXY);
+        LicenseFeTls.Call tls = null;
         try {
+            if (connection instanceof HttpsURLConnection) {
+                // Trust this FE's key store, not only the JVM default trust store (review L11).
+                try {
+                    tls = LicenseFeTls.call();
+                } catch (LicenseFeTls.TrustUnavailable e) {
+                    throw new ProbeFailure(LicenseFeTls.TRUST_UNAVAILABLE, 0);
+                }
+                ((HttpsURLConnection) connection).setSSLSocketFactory(tls.context.getSocketFactory());
+                ((HttpsURLConnection) connection).setHostnameVerifier(tls.verifier);
+            }
             connection.setInstanceFollowRedirects(false);
             connection.setConnectTimeout((int) Math.min(2000, remainingMillis));
             connection.setReadTimeout((int) Math.min(2000, remainingMillis));
             connection.setRequestProperty(CLUSTER_TOKEN_HEADER, token);
             connection.setRequestProperty("Accept", "application/json");
-            int status = connection.getResponseCode();
+            int status;
+            try {
+                status = connection.getResponseCode();
+            } catch (IOException e) {
+                String reason = LicenseFeTls.failureReason(e, tls);
+                if (reason != null) {
+                    throw new ProbeFailure(reason, 0);
+                }
+                throw e;
+            }
             if (status != HttpURLConnection.HTTP_OK) {
                 throw new ProbeFailure("HTTP_STATUS", status);
             }

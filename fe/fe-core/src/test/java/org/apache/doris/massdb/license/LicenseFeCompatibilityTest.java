@@ -19,6 +19,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.base.Strings;
 import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpsConfigurator;
+import com.sun.net.httpserver.HttpsServer;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.core.LogEvent;
@@ -42,6 +44,7 @@ import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import javax.net.ssl.SSLContext;
 
 class LicenseFeCompatibilityTest {
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -269,6 +272,73 @@ class LicenseFeCompatibilityTest {
     }
 
     @Test
+    void httpsProbeTrustsTheCertificatesOfThisFrontendsKeyStore() throws Exception {
+        // Review L11: the probe used only the JVM default trust store, so FEs with self-signed or private-CA
+        // certificates could never prove compatibility and License never initialized.
+        LicenseTlsTestKeyStores stores = LicenseTlsTestKeyStores.get();
+        String password = LicenseTlsTestKeyStores.PASSWORD;
+        try (ProbeFixture probe = new ProbeFixture(LicenseTlsTestKeyStores.serverContext(stores.peer));
+                LogCapture logs = new LogCapture()) {
+            // This FE's key store holds the CA that signed the peer's certificate, which names 127.0.0.1.
+            probe.localKeyStore(stores.local, password);
+            Assertions.assertTrue(probe.check(new LicenseFeCompatibility.DiagnosticLimiter()));
+            // The JVM default trust store alone does not know that CA.
+            probe.localKeyStore(stores.shared, password);
+            Assertions.assertFalse(probe.check(new LicenseFeCompatibility.DiagnosticLimiter()));
+            Assertions.assertTrue(logs.nextMessage().contains("reason=TLS_UNTRUSTED_CERTIFICATE, field=probe"));
+            // A key store that cannot be read is named as such, without the provider's message.
+            probe.localKeyStore(stores.local, "wrong-password");
+            Assertions.assertFalse(probe.check(new LicenseFeCompatibility.DiagnosticLimiter()));
+            String unreadable = logs.nextMessage();
+            Assertions.assertTrue(unreadable.contains("reason=TLS_TRUST_UNAVAILABLE, field=probe"));
+            Assertions.assertFalse(unreadable.contains("password"));
+        }
+    }
+
+    @Test
+    void httpsProbeAcceptsOnlyACertificateNamingTheRegisteredAddress() throws Exception {
+        LicenseTlsTestKeyStores stores = LicenseTlsTestKeyStores.get();
+        try (ProbeFixture probe = new ProbeFixture(LicenseTlsTestKeyStores.serverContext(stores.wrongName));
+                LogCapture logs = new LogCapture()) {
+            // Signed by a trusted CA, but for 127.0.0.9 while the peer is registered as 127.0.0.1.
+            probe.localKeyStore(stores.local, LicenseTlsTestKeyStores.PASSWORD);
+            Assertions.assertFalse(probe.check(new LicenseFeCompatibility.DiagnosticLimiter()));
+            Assertions.assertTrue(logs.nextMessage().contains("reason=TLS_HOSTNAME_MISMATCH, field=probe"));
+        }
+        try (ProbeFixture probe = new ProbeFixture(LicenseTlsTestKeyStores.serverContext(stores.rogue));
+                LogCapture logs = new LogCapture()) {
+            // Names 127.0.0.1, but is self-signed and in no key store.
+            probe.localKeyStore(stores.local, LicenseTlsTestKeyStores.PASSWORD);
+            Assertions.assertFalse(probe.check(new LicenseFeCompatibility.DiagnosticLimiter()));
+            Assertions.assertTrue(logs.nextMessage().contains("reason=TLS_UNTRUSTED_CERTIFICATE, field=probe"));
+        }
+    }
+
+    @Test
+    void httpsPeerClockIsReadThroughTheSameTrust() throws Exception {
+        LicenseTlsTestKeyStores stores = LicenseTlsTestKeyStores.get();
+        try (ProbeFixture probe = new ProbeFixture(LicenseTlsTestKeyStores.serverContext(stores.peer))) {
+            probe.localKeyStore(stores.local, LicenseTlsTestKeyStores.PASSWORD);
+            int port = probe.server.getAddress().getPort();
+            Mockito.when(probe.env.getFrontends(null)).thenReturn(Arrays.asList(member(),
+                    new Frontend(FrontendNodeType.FOLLOWER, "remote-fe", "127.0.0.1", 9110),
+                    new Frontend(FrontendNodeType.OBSERVER, "third-fe", "127.0.0.1", 9210)));
+            Config.massdb_license_fe_management_ports = new String[] {
+                    "127.0.0.1:9110=" + port, "127.0.0.1:9210=" + port};
+            long self = System.currentTimeMillis();
+            probe.capability.put("wall_time_millis", self + TimeUnit.HOURS.toMillis(1));
+            probe.respond(200, probe.capability.toString());
+            // Both peers report a clock an hour ahead: the verdict needs their readings, so both were reached.
+            Assertions.assertEquals(LicenseClock.PeerVerdict.OUTLIER,
+                    LicenseFeCompatibility.peerClockVerdict(probe.env, self, 10_000));
+            probe.localKeyStore(stores.shared, LicenseTlsTestKeyStores.PASSWORD);
+            Assertions.assertEquals(LicenseClock.PeerVerdict.UNKNOWN,
+                    LicenseFeCompatibility.peerClockVerdict(probe.env, self, 10_000),
+                    "Peers whose certificate this FE does not trust do not vote");
+        }
+    }
+
+    @Test
     void repeatingFailedChecksShareOneBoundedWarningStream() throws Exception {
         try (ProbeFixture probe = new ProbeFixture(); LogCapture logs = new LogCapture()) {
             LicenseFeCompatibility.DiagnosticLimiter limiter = new LicenseFeCompatibility.DiagnosticLimiter();
@@ -311,6 +381,9 @@ class LicenseFeCompatibilityTest {
     private static final class ProbeFixture implements AutoCloseable {
         private final boolean originalHttps = Config.enable_https;
         private final String[] originalPorts = Config.massdb_license_fe_management_ports;
+        private final String originalKeyStore = Config.key_store_path;
+        private final String originalKeyStorePassword = Config.key_store_password;
+        private final String originalKeyStoreType = Config.key_store_type;
         private final HttpServer server;
         private final Env env = Mockito.mock(Env.class);
         private final Map<String, Object> local = capability(TRUST);
@@ -319,11 +392,22 @@ class LicenseFeCompatibilityTest {
         private volatile byte[] body;
 
         private ProbeFixture() throws IOException {
+            this(null);
+        }
+
+        /** With a server context, the peer answers over HTTPS and enable_https is on. */
+        private ProbeFixture(SSLContext tls) throws IOException {
             capability.put("fe_node_name", "remote-fe");
             capability.put("fe_host", "127.0.0.1");
             capability.put("edit_log_port", 9110);
             respond(200, capability.toString());
-            server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            if (tls == null) {
+                server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            } else {
+                HttpsServer https = HttpsServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+                https.setHttpsConfigurator(new HttpsConfigurator(tls));
+                server = https;
+            }
             server.createContext("/api/license/capability", exchange -> {
                 byte[] response = body;
                 try {
@@ -334,7 +418,7 @@ class LicenseFeCompatibilityTest {
                 }
             });
             server.start();
-            Config.enable_https = false;
+            Config.enable_https = tls != null;
             Config.massdb_license_fe_management_ports = new String[] {
                     "127.0.0.1:9110=" + server.getAddress().getPort()};
             Mockito.when(env.getNodeName()).thenReturn("fe-member");
@@ -352,11 +436,21 @@ class LicenseFeCompatibilityTest {
             return LicenseFeCompatibility.checkAll(env, local, limiter);
         }
 
+        /** This FE's own key store, the trust anchor of its HTTPS calls. */
+        private void localKeyStore(java.nio.file.Path path, String password) {
+            Config.key_store_path = path.toString();
+            Config.key_store_password = password;
+            Config.key_store_type = "JKS";
+        }
+
         @Override
         public void close() {
             server.stop(0);
             Config.enable_https = originalHttps;
             Config.massdb_license_fe_management_ports = originalPorts;
+            Config.key_store_path = originalKeyStore;
+            Config.key_store_password = originalKeyStorePassword;
+            Config.key_store_type = originalKeyStoreType;
         }
     }
 

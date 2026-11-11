@@ -4,6 +4,49 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `59de8c4c5240
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
+## License review 2026-11-10: L11, FE-to-FE HTTPS trust and FE startup with enable_https (2026-11-11)
+
+The rest of L11, done on 2026-11-11 ("L11 先解决"). It needed the FE to start with `enable_https = true` first.
+
+- `httpv2/config/WebServerFactoryCustomizerConfig.java` (upstream): the HTTPS customizer adds its
+  `HttpToHttpsJettyConfig` with `addConfigurations` instead of replacing the list with `setConfigurations`. The
+  replacement dropped the WebSocket configuration that Spring Boot's customizer had added, so since the Spring Boot 3 /
+  Jetty 12 port (`ff742c44eb1`) every FE with `enable_https = true` exited at startup with
+  `WebSocketComponents has not been created`. The extra HTTP connector on `http_port` is kept: FEs fetch metadata
+  images from each other over it. Upstream fixed the startup differently (#60369, not picked) and also dropped that
+  connector.
+- New `massdb/license/LicenseFeTls.java`: the TLS settings of the license module's calls to other FEs. A peer is
+  trusted through PKIX over the certificates of this FE's key store (`key_store_path`: key entry chains and trusted
+  certificate entries) plus the JVM default trust store, and its certificate must name the registered host or IP
+  (Apache `DefaultHostnameVerifier`). The key store is read again when its file changes. Failures are reported as
+  `TLS_UNTRUSTED_CERTIFICATE`, `TLS_HOSTNAME_MISMATCH`, `TLS_HANDSHAKE_FAILED` or `TLS_TRUST_UNAVAILABLE`, never with
+  the provider's message. Before, only the JVM default trust store was used, so with the usual self-signed or
+  private-CA FE certificates every probe and forward failed.
+- `LicenseFeCompatibility.probe` (capability proof before initialization, peer clock check, trust digest check) and
+  `LicenseController.forward` (follower to master) use it. A probe's TLS failure is diagnosed with one of those
+  reasons instead of `PROBE_UNAVAILABLE`. A forward that fails in TLS is still "not connected" (503
+  `LICENSE_NOT_READY` / `NOT_SUBMITTED`, retryable) and is now logged at most once a minute with its reason.
+- Not done: trusting a peer that presents exactly this FE's own certificate without the name check, for the
+  `keytool -genkey` key store of the Doris HTTPS guide copied to every FE. Jetty 12 answers `400 Invalid SNI` to every
+  HTTPS request whose host the server certificate does not name, so such a certificate cannot serve the web UI or these
+  calls anyway, and Jetty's check was left on.
+- `docs/license-management-p2.md`: section 1 gives the certificate requirements with HTTPS; section 3 says a follower
+  that does not trust the master's certificate cannot connect.
+- Tests: new `massdb/httpv2/HttpsStartupTest` (the real `HttpServer` with HTTPS: HTTPS answers, `http_port` still
+  redirects `GET /api/*`), `LicenseFeCompatibilityTest` +3 (key store CA trusted, JVM default alone not, unreadable
+  key store, wrong name, untrusted self-signed peer, peer clock over HTTPS), `LicenseControllerTest` +1 (forward to an
+  HTTPS master: answered, untrusted, wrong name, one warning). Key stores are made at test time with keytool
+  (`LicenseTlsTestKeyStores`). All 5 fail on the unfixed code.
+- Validation (`.build-records/license-l11-https-20261111/`): `License*Test` 35 classes and `HttpsStartupTest`, 401
+  tests, 0 failures; Checkstyle 0; source headers and `git diff --check` clean. Full FE unit tests: the failing set is
+  exactly the 36 cases of the batch 2 baseline (fe-core 5855 tests). Real cluster, three FEs with HTTPS and
+  certificates signed by a private CA: with the startup fix alone (`run-2-before`) imports through a follower fail with
+  `LICENSE_NOT_READY`, in the API and in the browser, and three 4.0.5-rc01 FEs upgraded to HTTPS never initialize
+  License (`PROBE_UNAVAILABLE`); with both fixes (`run-3-after`) both imports are applied on every FE and the upgraded
+  cluster initializes in 17 seconds. Controls in both runs: the master's HTTPS port rejecting connections gives
+  `NOT_SUBMITTED`; an FE whose key store lacks the CA gives `NOT_SUBMITTED`, and with the fix logs
+  `TLS_UNTRUSTED_CERTIFICATE`. On the HEAD jar the FE exits at startup with HTTPS on (`run-0-startup-head`).
+
 ## License review 2026-11-10: recheck F2 to F5, the four low-severity leftovers (2026-11-11)
 
 The remaining findings of the recheck at b73dcff7ab2 (`.build-records/license-ui-recheck-20261111/`).
