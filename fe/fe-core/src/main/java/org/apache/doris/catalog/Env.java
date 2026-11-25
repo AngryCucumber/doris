@@ -5134,39 +5134,20 @@ public class Env {
         final long buildTimeMs;
         final long metadataVersion;
         final long nextCooldownTimeMs;
-        // False when a table was skipped because its lock was busy, or an expired partition could not
-        // be moved to HDD. Such a snapshot is only reused for the shorter retry interval.
-        final boolean complete;
 
         StorageMediumMapCache(HashMap<Long, TStorageMedium> map, long buildTimeMs,
-                long metadataVersion, long nextCooldownTimeMs, boolean complete) {
+                long metadataVersion, long nextCooldownTimeMs) {
             this.map = map;
             this.buildTimeMs = buildTimeMs;
             this.metadataVersion = metadataVersion;
             this.nextCooldownTimeMs = nextCooldownTimeMs;
-            this.complete = complete;
         }
 
-        boolean isValid(long cacheValidMs, long retryMs) {
+        boolean isValid(long cacheValidMs) {
             long now = System.currentTimeMillis();
-            long validMs = complete ? cacheValidMs : Math.min(cacheValidMs, retryMs);
-            return validMs > 0 && now >= buildTimeMs && now - buildTimeMs < validMs
+            return cacheValidMs > 0 && now >= buildTimeMs && now - buildTimeMs < cacheValidMs
                     && now < nextCooldownTimeMs
                     && metadataVersion == PartitionInfo.getStorageMediumMapVersion();
-        }
-    }
-
-    // Total time one rebuild phase may spend waiting for busy table locks. Report workers queue on
-    // storageMediumMapBuildLock meanwhile, so each busy table must not add another full try-lock timeout.
-    private static final class LockWaitBudget {
-        private long remainingNs = TimeUnit.MILLISECONDS.toNanos(Table.TRY_LOCK_TIMEOUT_MS);
-
-        long timeoutMs() {
-            return TimeUnit.NANOSECONDS.toMillis(Math.max(0, remainingNs));
-        }
-
-        void spentSince(long startNs) {
-            remainingNs -= System.nanoTime() - startNs;
         }
     }
 
@@ -5175,19 +5156,16 @@ public class Env {
 
     public HashMap<Long, TStorageMedium> getPartitionIdToStorageMediumMap() {
         long cacheValidMs = Config.storage_medium_map_cache_second * 1000L;
-        long retryMs = Config.storage_medium_map_retry_second * 1000L;
         StorageMediumMapCache cache = storageMediumMapCache;
-        if (cache != null && cache.isValid(cacheValidMs, retryMs)) {
+        if (cache != null && cache.isValid(cacheValidMs)) {
             return cache.map;
         }
 
         // Multiple report workers may reach here together when the cache expires. Let one of them
         // rebuild and the others reuse the result instead of scanning the whole catalog concurrently.
-        // The other workers are queued here, so a rebuild waits for busy table locks at most one
-        // LockWaitBudget per phase in total, however many tables are busy.
         synchronized (storageMediumMapBuildLock) {
             cache = storageMediumMapCache;
-            if (cache != null && cache.isValid(cacheValidMs, retryMs)) {
+            if (cache != null && cache.isValid(cacheValidMs)) {
                 return cache.map;
             }
 
@@ -5203,10 +5181,6 @@ public class Env {
         long metadataVersion = PartitionInfo.getStorageMediumMapVersion();
         long nextCooldownTimeMs = Long.MAX_VALUE;
         HashMap<Long, TStorageMedium> storageMediumMap = new HashMap<Long, TStorageMedium>();
-        // Tables missing from the map or still holding expired SSD partitions; both make it incomplete.
-        List<String> readLockBusyTables = new ArrayList<>();
-        List<String> cooldownFailedTables = new ArrayList<>();
-        LockWaitBudget readLockBudget = new LockWaitBudget();
 
         // record partition which need to change storage medium
         // dbId -> (tableId -> partitionId)
@@ -5228,15 +5202,7 @@ public class Env {
 
                 long tableId = table.getId();
                 OlapTable olapTable = (OlapTable) table;
-                // A table write lock may be held for a long time. Skip the table instead of blocking
-                // every report worker queued on storageMediumMapBuildLock; it is retried soon.
-                long lockStartNs = System.nanoTime();
-                boolean locked = olapTable.tryReadLock(readLockBudget.timeoutMs(), TimeUnit.MILLISECONDS);
-                readLockBudget.spentSince(lockStartNs);
-                if (!locked) {
-                    readLockBusyTables.add(dbId + "." + table.getName() + "(" + tableId + ")");
-                    continue;
-                }
+                olapTable.readLock();
                 try {
                     PartitionInfo partitionInfo = olapTable.getPartitionInfo();
                     for (Partition partition : olapTable.getAllPartitions()) {
@@ -5244,6 +5210,12 @@ public class Env {
                         DataProperty dataProperty = partitionInfo.getDataProperty(partition.getId());
                         Preconditions.checkNotNull(dataProperty,
                                 partition.getName() + ", pId:" + partitionId + ", db: " + dbId + ", tbl: " + tableId);
+                        if (dataProperty.getStorageMedium() == TStorageMedium.SSD
+                                && dataProperty.getCooldownTimeMs() < Long.MAX_VALUE) {
+                            // Expired entries also prevent reuse when the write lock cannot be acquired.
+                            nextCooldownTimeMs = Math.min(nextCooldownTimeMs,
+                                    dataProperty.getCooldownTimeMs() + 1);
+                        }
                         if (dataProperty.getStorageMedium() == TStorageMedium.SSD
                                 && dataProperty.getCooldownTimeMs() < currentTimeMs) {
                             // expire. change to HDD.
@@ -5255,12 +5227,6 @@ public class Env {
                             }
                             multimap.put(tableId, partitionId);
                         } else {
-                            if (dataProperty.getStorageMedium() == TStorageMedium.SSD
-                                    && dataProperty.getCooldownTimeMs() < Long.MAX_VALUE) {
-                                // The snapshot must be rebuilt once this partition reaches its cooldown time.
-                                nextCooldownTimeMs = Math.min(nextCooldownTimeMs,
-                                        dataProperty.getCooldownTimeMs() + 1);
-                            }
                             storageMediumMap.put(partitionId, dataProperty.getStorageMedium());
                         }
                     } // end for partitions
@@ -5271,7 +5237,6 @@ public class Env {
         } // end for dbs
 
         // handle data property changed
-        LockWaitBudget writeLockBudget = new LockWaitBudget();
         for (Long dbId : changedPartitionsMap.keySet()) {
             Database db = getInternalCatalog().getDbNullable(dbId);
             if (db == null) {
@@ -5288,13 +5253,9 @@ public class Env {
                 OlapTable olapTable = (OlapTable) table;
                 // use try lock to avoid blocking a long time.
                 // if block too long, backend report rpc will timeout.
-                long lockStartNs = System.nanoTime();
-                boolean locked = olapTable.tryWriteLockIfExist(writeLockBudget.timeoutMs(), TimeUnit.MILLISECONDS);
-                writeLockBudget.spentSince(lockStartNs);
-                if (!locked) {
+                if (!olapTable.tryWriteLockIfExist(Table.TRY_LOCK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
                     LOG.warn("try get table {} writelock but failed" + " when checking backend storage medium",
                             table.getName());
-                    cooldownFailedTables.add(dbId + "." + table.getName() + "(" + tableId + ")");
                     continue;
                 }
                 Preconditions.checkState(olapTable.isWriteLockHeldByCurrentThread());
@@ -5333,23 +5294,8 @@ public class Env {
                 }
             } // end for tables
         } // end for dbs
-        boolean complete = readLockBusyTables.isEmpty() && cooldownFailedTables.isEmpty();
-        if (!complete) {
-            LOG.warn("storage medium map is incomplete and will be rebuilt after {} seconds. "
-                            + "tables skipped for a busy read lock: {}, tables with expired SSD partitions "
-                            + "not moved to HDD: {}", Config.storage_medium_map_retry_second,
-                    summarizeTableNames(readLockBusyTables), summarizeTableNames(cooldownFailedTables));
-        }
         return new StorageMediumMapCache(storageMediumMap, System.currentTimeMillis(),
-                metadataVersion, nextCooldownTimeMs, complete);
-    }
-
-    private static String summarizeTableNames(List<String> tables) {
-        int limit = 50;
-        if (tables.size() <= limit) {
-            return tables.toString();
-        }
-        return tables.subList(0, limit) + " and " + (tables.size() - limit) + " more";
+                metadataVersion, nextCooldownTimeMs);
     }
 
     public ConsistencyChecker getConsistencyChecker() {

@@ -4,56 +4,75 @@ MassDB SQL is derived from Apache Doris. Upstream source baseline: `917b20be8387
 
 This inventory describes distribution changes, not a claim that all changes are owned by the company. Original Apache and third-party notices remain applicable. It supplements modification notices within editable files; it does not replace those notices.
 
-## Complex-input and performance retest after the stream fixes (2026-11-04/05, R3)
+## Follow upstream 4.1.5: roll back changes that 2.0.5 does not carry (2026-11-25)
 
-- Add `docs/massdb-sql-comparison-test-20261104-r3.md` for the confirmed
-  `49f67bdbb94` baseline and merged `ea1b8daffa9` candidate. Rebuild the
-  candidate core, verify the matching sanitizer source, and preserve R1/R2
-  evidence. This report changes no product implementation.
-- Record changing HTTP, binary, Unicode, nested-type and compressed-file
-  inputs; actual WAL recovery, upgrades and node failures; selected unit and
-  SQL regression results; paired query measurements and file throughput.
-  Confirm repaired chunked file sizing, tested compressed-stream rejection,
-  and short-timeout recovery while retaining nested JSON and LZO integrity
-  findings, blocked-RPC deadlines, HTTP observations and gzip performance risk.
-- Preserve original failures and controls, including both versions' global
-  WAL-counter interference, unsupported nested Stream Load expectations, and
-  the external Arrow 20 writer defect verified against Arrow 26 with identical
-  logical data. Keep scripts, changing inputs, source snapshots, raw results
-  and the sealed report in
-  `.build-records/codex-http-complex-retest-20261104-r3/`.
-
-## Complex-input comparison after the WAL fixes (2026-11-04, R2)
-
-- Add `docs/massdb-sql-comparison-test-20261104-r2.md` for the confirmed
-  `49f67bdbb94` baseline and the `2f21ee39070` candidate. Preserve the earlier
-  comparison and distinguish new executions from reused, unchanged-module
-  evidence. This report changes no product implementation.
-- Record changing byte-exact IPv4/IPv6, Unicode, binary-file and HTTP inputs,
-  nested WAL recovery, concurrency, upgrades, selected unit/regression tests,
-  query measurements and repeated file-throughput comparisons. Retain shared
-  data-integrity defects, the short-timeout recovery regression, protocol
-  observations and the unresolved gzip performance signal.
-- Keep original failures and their controls, including the regression suite's
-  global WAL-count interference and its isolated rerun, under
-  `.build-records/codex-http-complex-retest-20261104-r2/`. Seal the report,
-  changing inputs, tool snapshots, raw measurements and provenance together.
-
-## Independent version comparison (2026-11-04)
-
-- Add `docs/massdb-sql-comparison-test-20261104.md` for the user-confirmed
-  same-branch comparison of `49f67bdbb94` and `b31b5da06ac`. Withdraw the earlier
-  comparison against a package from the `2.0.5-license` branch; its upgrade,
-  performance and defect-attribution conclusions do not apply to this scope.
-- Record changing independent data oracles, failure recovery, node loss,
-  upgrade compatibility, unit/regression results, and paired performance runs.
-  Distinguish inherited defects, regressions, repaired behavior, test-fixture
-  failures and unexecuted scenarios; this report changes no product code.
-- Retain the corrected comparison's probes, captured WAL fixtures, source and
-  binary identities, and raw results under
-  `.build-records/codex-same-branch-retest-20261104/`. Preserve the earlier
-  campaign separately under `.build-records/codex-independent-retest-20261104/`
-  so the withdrawn report and original measurements remain auditable.
+- Requested on 2026-11-25: `2.1.5` follows upstream `4.1.5-release` and keeps
+  only the 2.0.5 branding, fixes and optimizations migrated by `aeac698d918`
+  and `8649f5f332e`, the bundled Python runtime and the 4.1.5 migration
+  adaptation. Everything else added after `49f67bdbb94` is rolled back on the
+  branch itself. FE, BE and Cloud sources are again those of the validated
+  `49f67bdbb94`, apart from the review cleanup kept below.
+- Rolled back with their tests, documents and registrations:
+  - The rc415 code review fixes of `117926dd608`, `a53fb0e13fb` and
+    `9e3ffd66da6`: the lock-wait budget of a storage-medium map rebuild and
+    `storage_medium_map_retry_second`; the cooldown replica check over a copy
+    of the replicas; the strict parsing of Doris type arguments in
+    `JdbcMySQLClient`; the deployment-prefix rule of `ui/src/index.html` for
+    databases named like a route; the prepared Group Commit insert RPC limit
+    `group_commit_insert_rpc_timeout_second`; quoted and scp local fixture
+    copies in `Suite.groovy`. Review document `b042c5a9791`.
+  - The load-job leak, label index, `/metrics` and Jetty fixes ported from
+    `4.0.5-fix-group-commit` (`0cdabad71dd` through `fa1093f5be4`, registered
+    by `93a533c4b26`), their FE settings `metrics_result_cache_ms` and
+    `metrics_lock_wait_ms`, and their defaults of `jetty_server_acceptors`
+    and `jetty_server_selectors`, which return to the upstream 2 and 4.
+  - The BE load fixes `387c6d76183` (WAL replay back-off overflow),
+    `fcea19125bb` and `047ec5a4dd2` (WAL blocks that disagree on a column
+    type), `2f21ee39070` and `69c1dc307f0` (VARIANT and STRUCT WAL replay,
+    labels of chunked stream loads, plan-creation back-off, chunked Parquet
+    and ORC loads, truncated compressed files), and the comparison reports
+    `44523d1fe62` and `a1cbdaee8f5`.
+  - Files that return to the upstream 4.1.5 text leave
+    `dist/source-headers.json` and `.licenserc.yaml`; their sections of this
+    inventory and of `dist/RELEASE-NOTES.txt` are removed.
+- Kept from `117926dd608`: the upstream text of `AgentTaskCleanupDaemon.java`,
+  `PublishVersionTask.java`, `TabletInvertedIndex.java`,
+  `GroupCommitManager.java`, `Coordinator.java`,
+  `CloudGlobalTransactionMgr.java` and `multi_segment_util.h`, without the
+  unreachable null `succTablets` branch, and `HardwareInfoController.java`
+  without its unused process listing method.
+- Behavior that returns with the rollback (upstream 4.1.5 defects, and limits
+  of the migrated 2.0.5 features):
+  - A group commit WAL that keeps failing is replayed every 5 s from about
+    25 days after it was registered (int32 back-off overflow), each attempt
+    aborting the previous transaction and broadcasting a clear-transaction
+    task to every BE.
+  - A WAL whose blocks disagree on a column type fails every replay, and a
+    string block before numeric or date blocks crashes the BE on every start.
+    STRUCT children of WALs replayed by FileScannerV2 load as NULL.
+  - Plan-only http stream loads register insert load jobs that are never
+    finished, and slow `/metrics` requests queue on the `MetricRepo` lock and
+    can exhaust the Jetty threads.
+  - Chunked stream loads of Parquet and ORC (and SNAPPY_BLOCK CSV) succeed
+    with no rows; a truncated compressed file loads its complete prefix with
+    Success; a chunked load drops its label, so a retry can load twice; a
+    failed group commit plan creation is retried without back-off.
+  - A storage-medium map rebuild waits for busy table locks while report
+    workers queue on it; a replica deleted during the cooldown check can
+    abort a report; a prepared Group Commit insert waits up to the insert
+    timeout for a hung BE RPC.
+- Validation (2026-11-25, local evidence in
+  `.build-records/follow-415-rollback-20261125/`): a `git merge-tree` dry run
+  reverted every product file cleanly; only this inventory, the release notes
+  and `dist/source-headers.json` needed hand edits, and outside the kept
+  sections they equal those of `49f67bdbb94`. Source headers verified,
+  Checkstyle reports no violations, 257 FE tests in 45 affected classes pass
+  (2 skipped), BE and Cloud build in Release against the 4.1.5 third-party set,
+  and the UI install, build, notice check and browser checks, 36 product
+  notice tests, 17 Python runtime tests and 39 regression framework tests
+  pass. BE unit tests were not rerun: the BE source equals that of
+  `49f67bdbb94` apart from one removed notice line. Live cluster, SQL
+  regression and Cloud runtime tests were not run.
 
 ## Doris 4.1.5 baseline and MassDB 2.0.5-rc415 (2026-10-28)
 
@@ -192,73 +211,6 @@ Detailed machine-local evidence is under `.build-records/rc415-full-validation/`
 `performance-comparison.json`, `performance-slim-comparison.json`, and
 `final-performance-summary.json`. Original failures are preserved alongside
 successful retries; the two performance series are never pooled together.
-
-## rc415 code review fixes (2026-10-28)
-
-Fixes for findings 1-9 of `docs/massdb-sql-rc415-code-review-20261028.md` that
-belong to this branch. Findings P1-P8 are inherited from 4.1.5 and unchanged.
-
-- `Env.java`, `Config.java`: the storage-medium map rebuild no longer waits for
-  busy table locks while every report worker is queued on the build lock. The
-  scan and the cooldown phase each share one 100 ms lock-wait budget across all
-  tables, so many busy tables cannot add 100 ms each; once a phase's budget is
-  spent, later busy tables are tried without waiting. A skipped table, or an
-  expired SSD partition whose write lock is unavailable, marks the map
-  incomplete; it is logged and reused only for `storage_medium_map_retry_second`
-  (default 5, 0 rebuilds on the next report). Expired partitions no longer set
-  the next cooldown deadline, so a failed cooldown no longer rebuilds on every
-  report. The scan still records the metadata version before it starts; a
-  completed cooldown changes metadata and causes one more scan.
-- `LocalTabletInvertedIndex.java`: the cooldown replica check iterates a copy of
-  the tablet's replicas taken under the index lock, because it runs after the
-  report releases that lock while another report worker may delete a replica.
-- `JdbcMySQLClient.java`: Doris type arguments are read up to the first closing
-  parenthesis. `DECIMAL(p)` maps to scale 0. Empty, overflowing or extra
-  arguments and a scale above the precision are malformed. A malformed top-level
-  declaration uses the column's JDBC metadata as before this branch; a malformed
-  array element maps to an unsupported element instead of the outer metadata.
-- `ui/src/index.html`: the deployment prefix ends before the first route segment
-  from which the remaining path is a complete route, so database or table names
-  equal to route names (`/Playground/result/home`) no longer become the prefix.
-  Prefixes containing route names keep working. Paths without a known route keep
-  the upstream four-segment rule. A path that is both a valid route and a prefix
-  plus a route, such as `/QueryProfile/home`, is read as the route.
-- `GroupCommitPlanner.java`, `Config.java`: the prepared group-commit insert RPC
-  waits at most the internal group-commit load timeout
-  (`max(group_commit_interval_ms * group_commit_timeout_multipler, 600 s)`) plus
-  `group_commit_insert_rpc_timeout_second` (default 300), capped by the insert
-  timeout, instead of up to `insert_timeout`. The BE request is not cancelled
-  (P3): rows of a timed-out insert can still be written after the error, so
-  clients must not retry such an insert blindly.
-- `Suite.groovy`: local fixture copies quote both paths, and a host name that
-  only the SSH client can resolve is copied with scp instead of failing.
-- `AgentTaskCleanupDaemon.java`: remove the unreachable null `succTablets`
-  branch; 4.1.5 `PublishVersionTask` already defaults and normalizes the map.
-- `HardwareInfoController.java`: remove the unused process listing method and
-  its imports; the process row stays hidden.
-- Restore the upstream text of `AgentTaskCleanupDaemon.java`,
-  `PublishVersionTask.java`, `TabletInvertedIndex.java`, `GroupCommitManager.java`,
-  `Coordinator.java`, `CloudGlobalTransactionMgr.java` and
-  `multi_segment_util.h`, whose only difference from 4.1.5 was the modification
-  or backport notice, and remove them from `dist/source-headers.json`.
-
-Validation (2026-10-28, local evidence in `.build-records/rc415-review-fixes-20261028/`):
-new FE tests fail on the previous code and pass now; 172 affected FE test classes
-(1005 tests) pass with 4 skipped; Checkstyle, source headers, 35 notice tests, 41
-regression-framework tests and the UI build, notice and browser tests pass. A
-live FE built from this tree with the upstream 4.1.5 release BE cooled SSD
-partitions to HDD, mapped JDBC catalog types and data exactly, rendered Playground
-pages for databases named `home` and `Session` with and without a prefix (blank
-with the previous script), and released a hung prepared group-commit insert after
-605 s. BE, Cloud meta-service, `meta_tool` and the BE Java extensions of this tree
-also build on this host against a locally built 4.1.5 third-party set; with that
-BE the live checks pass again, the `meta_tool` round trip passes, and vertical and
-horizontal compaction keep row and inverted-index counts. Concurrency follow-up:
-two-thread stress tests for the storage-medium map and the cooldown replica check
-(the latter fails with ConcurrentModificationException on the previous code),
-three BEs reporting in parallel through three report workers during concurrent
-DDL, and eight prepared group-commit inserts hung together, all released at 605 s
-while the FE kept serving queries. Cloud mode runtime was not exercised.
 
 ## rc415 regression hardening (2026-10-28)
 
@@ -430,182 +382,6 @@ while the FE kept serving queries. Cloud mode runtime was not exercised.
   proxy-from-env, https-proxy-agent and their dependencies); resolved URLs
   stay on registry.npmjs.org. The UI source does not import axios, so the
   bundled component inventory and legal pages are unchanged.
-
-## Group commit WAL replay storm (2026-11-03)
-
-- Production logs showed WALs that can never be replayed retried every 5 s,
-  each attempt aborting the previous attempt's txn, the FE broadcasting a
-  clear transaction task to every BE and logging a WARN for each report
-  (about 1000 lines/s in fe.warn.log).
-- `WalTable::replay_interval_ms` computes the replay back-off in 64 bits.
-  In int32, `(retry_num - group_commit_replay_wal_retry_num) *
-  group_commit_replay_wal_retry_interval_max_seconds * 1000` overflowed at
-  retry 1204, about 25 days after a WAL was registered, and from then on a
-  failing WAL was replayed on every 5 s tick. It now keeps being retried every
-  `group_commit_replay_wal_retry_interval_max_seconds` (1800 by default); WAL
-  give-up rules are unchanged.
-- `WalTable::_handle_stream_load` rolls a replay txn back when its execution
-  fails, with the failure (without its stack trace, which the FE would keep
-  with the txn) as the abort reason. Before, `RETURN_IF_ERROR` on the
-  execution future skipped the rollback, and the txn stayed open until the next
-  replay aborted it or it timed out.
-- `MasterImpl` logs finish reports of clear transaction tasks at debug level:
-  like drop tasks they are never put into `AgentTaskQueue`, so every report
-  took the "got null task" WARN path.
-- Add `WalTableReplayIntervalTest` to `wal_manager_test.cpp` and
-  `master.massdb.MasterImplClearTransactionTaskTest`.
-
-## Group commit WALs whose blocks disagree on a column type (2026-11-03)
-
-- WALs from a 4.1.0 environment hold blocks that disagree on a column's type:
-  an all-NULL IPV6 block before INT blocks, a VARCHAR block before DOUBLE
-  blocks. 4.1.0 and 4.0.5 fail every replay of such a WAL with a Bad cast. 2.1.5
-  reads WALs with the FileScannerV2 reader, which took the file schema and the
-  file-to-table cast from the first block only: a later block went through a
-  cast for another type, and a string block before numeric or date blocks
-  crashed the BE (SIGSEGV) on every start.
-- `format_v2::wal::WalReader` declares the table type for a scalar table column
-  whose first block differs from it, also when that block is of a nested type
-  (the WAL's column ids are the table's), and keeps the first block's schema
-  otherwise; ARRAY, MAP, STRUCT and VARIANT table columns keep the first block's
-  shape (all-NULL first blocks and the rule for nested columns changed on 2026-11-04, see below).
-  Every block's column whose type differs from the declared one, up to
-  nullability, is converted before it is handed on, so a scalar block is cast to
-  the table type itself and never twice.
-- `convert_wal_column` (in the legacy `load/group_commit/wal/wal_reader`, which
-  `enable_file_scanner_v2 = false` uses and which converts the same way) turns
-  an all-NULL column into NULLs of the target type, which is also the only way
-  for a type no CAST accepts, and casts any other column with the CAST function
-  and the strictness the file scan uses for its file-to-table cast, if the target
-  type is scalar. Nothing else is converted to a nested type: the file scan maps no
-  scalar to a nested type and maps nested types element by element, which a CAST
-  need not match. A failed or refused cast
-  fails the replay with the WAL, block, column and both types named; it never
-  writes NULLs in place of values, and it is an INTERNAL_ERROR, not a
-  DATA_QUALITY_ERROR, for which `WalTable` would delete the WAL with the rows
-  of its other blocks: the WAL is kept and retried. Blocks whose types agree are
-  handed on as before, without a copy.
-- Add mixed-type cases to `format_v2/wal/wal_reader_test.cpp`. A differential
-  test (WALs written by a BE, spliced block by block, against the unmodified BE
-  replaying each type's blocks alone) found the nested cases: a CAST through a
-  first block of ARRAY<INT> turned later STRING and ARRAY<BIGINT> blocks into
-  NULLs, and refusing every nested block failed ARRAY-to-STRING WALs the file
-  scan replays.
-
-## Group commit load-job leak and /metrics fixes from 4.0.5 (2026-11-03)
-
-- Port the FE fixes released on `4.0.5-fix-group-commit` (`2f7475f6009` through
-  `9841d01d1e6`, package `massdb-sql-4.0.5-rc01`). Upstream #62889, which that
-  branch also carries, is already part of the 4.1.5 baseline.
-- Do not register insert load jobs for plan-only http stream loads (BE commits
-  them) or for empty inserts, and let the label cleaner drop `InsertLoadJob`s
-  that stayed PENDING longer than `label_keep_max_second`. An executor finishing
-  a job and the cleaner dropping it decide by a CAS on the job: finishing an
-  insert takes only that job's lock, and the cleaner never waits for one.
-- Keep the per-database label index consistent under concurrent registration
-  and removal: a job is in its label before it can be found by id, label lists
-  are `ConcurrentLinkedQueue`s updated inside `compute`/`computeIfPresent` of
-  the database, and long histories of one label are trimmed in batches. CLEAN
-  LABEL, SHOW LOAD, SHOW PROC and the cloud copy-job cleanup use the same rules.
-- `/metrics` no longer serializes every request on the `MetricRepo` class
-  monitor: one request computes at a time, results are reused for
-  `metrics_result_cache_ms` (5000), requests with an earlier result get it at
-  once, and a cold request waits at most `metrics_lock_wait_ms` (3000) before
-  answering 503. Load-job gauges are only computed on the master.
-- Bind the Jetty thread settings with the Spring Boot 3 names
-  (`server.jetty.threads.*`); fe.conf values Jetty cannot run with fall back to
-  the defaults with a warning instead of stopping the FE.
-- Keep the 4.1.5 `recordFinishedLoadJob` diagnostics and the persisted
-  `jobDetailsJson` snapshot of `InsertLoadJob`. The new tests use the company
-  header under `massdb/` packages (`httpv2.massdb.HttpServerTest`,
-  `cloud.load.massdb.CloudLoadManagerTest`), so
-  `HttpServer.addJettyProperties(Map, int)` is public for testing.
-
-## Fixes from the same-branch comparison test (2026-11-04)
-
-- Fix the four defects that the independent comparison of `49f67bdbb94` and
-  `b31b5da06ac` (`docs/massdb-sql-comparison-test-20261104.md`) reports as
-  P1-1, P1-2, P1-3 and P2-3. All are BE changes.
-- WAL replay into a VARIANT column, a regression of `fcea19125bb` and
-  `047ec5a4dd2`: before VARIANT blocks, an all-NULL block of another type made
-  `format_v2::wal::WalReader` declare that type and cast the VARIANT values to
-  it; the replay's casts are not strict, so the values became NULLs, and the
-  replay succeeded and deleted the WAL. Whether a block other than an all-NULL
-  one may be converted for an ARRAY, MAP, STRUCT or VARIANT table column is now
-  decided by the table type, no longer by the declared one (`convert_wal_column`
-  takes the table type): such blocks are never cast, also not to the scalar type
-  of a first block. A nested column whose first block is all NULL is declared
-  with the type of its first block that holds a value (the WAL is read a second
-  time, one block at a time, until there is one), or with the table type if no
-  block holds one; the mapper then maps it as it maps a WAL of that type only.
-  Casting other blocks to VARIANT was tried and rejected: a differential test
-  found DATETIME blocks cast after VARIANT blocks loaded as packed integers,
-  DATE and DECIMAL blocks failing, and MAP WALs failing for a VARIANT column.
-- STRUCT values of every group commit WAL replayed by FileScannerV2, in upstream
-  4.1.5: the mapper matches WAL columns by field id down to STRUCT children, and
-  the WAL reader gave the children none, so every child was loaded as its
-  default, NULL, and the replay succeeded and deleted the WAL. WAL children now
-  carry their positions as field ids, as the table column's children do without
-  an external schema. The legacy reader was not affected.
-- Labels of chunked stream loads, in upstream 4.1.5: since loads without a
-  `group_commit` header reach `StreamLoadAction::_can_group_commit` (for the
-  table's `group_commit_mode`), it dropped the label of every chunked load, also
-  of a two-phase commit, and a retry with the same label loaded the data twice.
-  As in 4.0.5, only a load that asks for group commit by the header, and can
-  take it, drops the label that Flink sends with every chunked load.
-  `HttpStreamAction` likewise keeps the label of a load that cannot take group
-  commit.
-- Retries of group commit plan creation, in upstream 4.1.5: after a failed
-  attempt, e.g. while the FE rejects new transactions, the BE retried at once
-  until `group_commit_create_plan_timeout_ms` (120 s by default), about 1,900
-  FE plan requests a second for one table. It now waits 50 ms, doubled per
-  failure up to 1 s, also for loads that arrive meanwhile; the timeout is
-  unchanged. The create-plan worker keeps a due time per table. Add the BE debug
-  point `GroupCommitTable._create_group_commit_load.error`.
-- Tests: `format_v2/wal/wal_reader_test.cpp` (VARIANT, all-NULL first blocks
-  before blocks with values, columns NULL in every block, the table-type rule,
-  STRUCT child mapping), `service/http/stream_load_test.cpp`
-  (labels of chunked loads) and the new `load/group_commit/group_commit_mgr_test.cpp`
-  (company header).
-
-## Fixes from the second comparison test (2026-11-04)
-
-- Fix three defects that the second comparison, of `49f67bdbb94` and
-  `2f21ee39070` (`docs/massdb-sql-comparison-test-20261104-r2.md`), reports:
-  P2-1, a regression of `2f21ee39070`, and P1-2 and P1-3, which are in upstream
-  4.1.5 and in the same code of 4.0.5. All are BE changes. P1-1, string escapes
-  inside nested JSON values, is not fixed here.
-- Back-off of group commit plan creation (P2-1): a timeout ended the waiting
-  loads but not the back-off, so the loads that came next first waited for the
-  rest of it, up to 1 s, and failed without an attempt when
-  `group_commit_create_plan_timeout_ms` was shorter; and the timeout was only
-  noticed at the next attempt, up to 1 s late. Loads that start waiting when no
-  load waits now try at once (the failure count and the retry time are reset),
-  and the create-plan worker submits again no later than the timeout of the
-  waiting loads.
-- Chunked stream loads of Parquet and ORC (P1-2): such a load is saved to a
-  local file, and its plan is made before the body arrives, with the file size
-  from Content-Length. A chunked request has none, so the scan range had size
-  0, nothing was read, and the load succeeded with no rows.
-  `StreamLoadAction::_handle` now gives the scan range of the saved file the
-  size of the received body before the plan runs. CSV with
-  `compress_type: SNAPPY_BLOCK` is saved to a local file too and is fixed alike.
-- Truncated compressed files (P1-3): `NewPlainTextLineReader` forgot at every
-  `read_line()` call whether the decompressor was at the end of a stream, so
-  after a call that returned lines of an unfinished stream, the end of the file
-  ended the data: a gzip file cut after complete lines (after `Z_SYNC_FLUSH`)
-  or without its trailer loaded its prefix with Success, also with
-  `strict_mode` and `max_filter_ratio` 0. The state is now kept across calls,
-  and such a file fails as truncated, for gzip, deflate, bzip2, zstd, LZ4 frame
-  and the Hadoop LZ4 and Snappy block codecs. `LzopDecompressor` no longer
-  leaves the end of stream set while a header or block is incomplete. A file cut
-  exactly at a block boundary of a Hadoop block codec or of LZOP still loads its
-  complete blocks: Doris checks no end marker of these formats.
-- Tests: `load/group_commit/group_commit_mgr_test.cpp` (timeouts on time, loads
-  after a timeout try at once), `service/http/stream_load_test.cpp` (size of the
-  received file) and the new
-  `format/file_reader/compressed_line_reader_truncation_test.cpp` (company
-  header).
 
 ## Complete rc02 release builds (2026-09-09)
 

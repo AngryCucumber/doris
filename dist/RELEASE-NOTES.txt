@@ -90,74 +90,6 @@ In same-host validation, deploying these symbols added approximately 300-400 MiB
 of RSS per BE. RSS includes shareable file mappings. Slim deployment without the
 separate symbols did not exhibit this fixed increase.
 
-Code review fixes: rebuilding the storage-medium map no longer waits for tables
-whose locks are held. Each rebuild waits at most about 100 ms per phase in total,
-however many tables are busy. Busy tables are skipped, the incomplete map is
-reused for at most storage_medium_map_retry_second (default 5) and then rebuilt,
-and an expired SSD partition whose table cannot be locked no longer forces a
-rebuild on every report.
-Tablet reports no longer abort when a replica of a cooling-down tablet is deleted
-concurrently. JDBC catalogs accept Doris DECIMAL(p) and type declarations followed
-by attributes. Reloading a Playground page for a database or table named like a
-page, such as home or Session, loads the UI again. A prepared Group Commit insert
-waits for its BE at most the internal Group Commit load timeout plus
-group_commit_insert_rpc_timeout_second (default 300) instead of the whole insert
-timeout. The BE request is not cancelled, so rows of a timed-out insert may still be
-written; do not retry such an insert blindly.
-
-Group commit WAL replay: a WAL that keeps failing to replay is retried every
-group_commit_replay_wal_retry_interval_max_seconds (default 1800) for good. Before,
-an integer overflow made it replay every 5 seconds from about 25 days after the BE
-registered it, and each attempt made the FE send clear transaction tasks to all BEs.
-A failed replay now aborts its transaction at once instead of leaving it open until
-the next attempt. Reports of clear transaction tasks are no longer logged as
-warnings in fe.warn.log.
-
-Group commit WAL replay: a WAL whose blocks disagree on a column's type, such as WALs
-written by 4.1.0 with a VARCHAR block before DOUBLE blocks or an all-NULL IPV6 block
-before INT blocks, is replayed with every block converted to the table column's type.
-Before, a string block before numeric or date blocks crashed the BE on every start, and
-other combinations failed every replay. A block that cannot be converted fails the
-replay with the block, the column and both types in the error, and the WAL is kept for
-the operator to set aside or repair. Before upgrading a BE
-that holds WALs from an older version, check its WAL directory for such files.
-
-Group commit load-job leak fixes from 4.0.5-rc01: the master FE no longer keeps a
-PENDING insert load job for every BE group commit http_stream load or empty
-INSERT. Those jobs were never finished, so memory grew with uptime and /metrics
-slowed down. PENDING insert jobs older than label_keep_max_second are dropped.
-Failed INSERTs show as CANCELLED in SHOW LOAD. /metrics computes one request at a
-time and reuses the result for metrics_result_cache_ms (default 5000), so values
-can be a few seconds old. While a computation runs, other requests get the last
-result at once; without one they wait at most metrics_lock_wait_ms (default 3000)
-and then get 503. The jetty_* thread settings in fe.conf now take effect; values
-Jetty cannot run with are logged as a warning and the defaults are used. Before,
-the FE always ran 200 Jetty threads; now it runs jetty_threadPool_maxThreads
-(default 400). Check fe.conf before upgrading: after redirecting a stream load,
-the FE keeps the Jetty thread for up to stream_load_redirect_bounded_drain_max_idle_time_ms
-(default 1000) when the client waits for 100-continue, as Flink does, so stream
-loads redirected per second are bounded by roughly the number of Jetty threads.
-
-Group commit fixes from the 2026-11-04 comparison test: a WAL replayed into a STRUCT
-column no longer loads every STRUCT field as NULL, and a WAL with an all-NULL block of
-another type before VARIANT blocks no longer loads the VARIANT values as NULL. Both
-replays succeeded and deleted the WAL. A chunked stream load (such as Flink's) keeps
-its label unless it asks for group commit with the group_commit header, also with
-two_phase_commit; before, a retry with the same label loaded the data twice. When a
-group commit load cannot get a plan, for example while the FE rejects new
-transactions, the BE retries after 50 ms, doubling up to 1 second, instead of
-sending the FE thousands of requests a second until group_commit_create_plan_timeout_ms.
-
-Fixes from the second 2026-11-04 comparison test: after group commit loads time out
-waiting for a plan, the next load tries at once; before, it waited for the back-off of
-the earlier loads and failed when group_commit_create_plan_timeout_ms was short. Waiting
-loads time out on time. A chunked stream load of Parquet or ORC, or of CSV with
-compress_type SNAPPY_BLOCK, loads its data; before, it succeeded with no rows. A
-compressed file that ends inside its compressed stream, such as a gzip file without its
-trailer, fails as truncated; before, the rows read so far were loaded with Success. A
-file of LZOP or of a Hadoop LZ4 or Snappy block format cut exactly at a block boundary
-still loads its complete blocks.
-
 rc415 更新：源码基线升级至 Apache Doris 4.1.5-release；保留 MassDB 品牌、
 JDBC 数组精度、报告去重与并行处理、存储介质缓存、compaction 防护、
 Group Commit 超时与元数据工具初始化修复。已有上游修复使用 4.1.5 的实现。
@@ -168,43 +100,4 @@ Group Commit 超时与元数据工具初始化修复。已有上游修复使用 
 lib/debug_info/<binary>.dbg。只部署精简包时，部分地址仍可能无法解析为函数名。
 本次同机验证中，部署完整符号使每个 BE 的 RSS 增加约 300-400 MiB（含可共享文件映射）；
 不部署分离符号的精简配置未出现这部分固定增量。
-代码审查修复：重建存储介质映射时不再等待被长时间加锁的表，每轮扫描与冷却阶段各自总共最多
-等待约 100 毫秒，与忙表数量无关；忙表本轮跳过，不完整的映射
-最多复用 storage_medium_map_retry_second（默认 5 秒）后重建；已到期 SSD 分区拿不到写锁时
-不再导致每次上报都重建。冷却中 tablet 的副本被并发删除时，tablet 上报不再中断。
-JDBC catalog 支持 Doris 的 DECIMAL(p) 以及后接属性的类型声明。库名或表名与页面同名
-（如 home、Session）时，刷新 Playground 页面可正常加载。预编译 Group Commit 插入等待
-BE 的时间不超过内部攒批导入超时加 group_commit_insert_rpc_timeout_second（默认 300 秒），
-不再等满整个导入超时；BE 端请求不会被取消，超时报错的插入仍可能写入，不应直接重试。
-Group Commit WAL 重放：一直无法重放的 WAL 始终按 group_commit_replay_wal_retry_interval_max_seconds
-（默认 1800 秒）重试。此前整数溢出使其在 BE 登记约 25 天后变为每 5 秒重放一次，每次都让 FE
-向所有 BE 发送清理事务任务。重放失败时立即中止本次事务，不再留到下一次重放时才中止。
-清理事务任务的回报不再以 WARN 写入 fe.warn.log。
-Group Commit WAL 重放：同一个 WAL 中各块的列类型不一致时（如 4.1.0 写出的、字符串块在前 DOUBLE
-块在后，或全空的 IPV6 块在前 INT 块在后），重放时把每一块转换为表列的类型。此前字符串块在前、
-数值或日期块在后的 WAL 会使 BE 每次启动都崩溃，其他组合每次重放都失败。无法转换的块使重放失败，
-报错中写明块序号、列和两种类型，WAL 保留，由运维隔离或修复。升级仍留有旧版本 WAL 的 BE 之前，
-请检查其 WAL 目录。
-合入 4.0.5-rc01 的 group commit 导入任务泄漏修复：BE 侧 group commit 的 http_stream 导入
-和空 INSERT 不再在 Master FE 留下永不结束的 PENDING 导入任务（此前内存随运行时间增长、
-/metrics 变慢）；超过 label_keep_max_second 仍为 PENDING 的 INSERT 任务会被清理；
-失败的 INSERT 在 SHOW LOAD 中显示为 CANCELLED。/metrics 同时只计算一次，结果复用
-metrics_result_cache_ms（默认 5000 毫秒），数值可能滞后几秒；计算期间其他请求直接取上次结果，
-尚无结果时最多等待 metrics_lock_wait_ms（默认 3000 毫秒）后返回 503。fe.conf 中的 jetty_*
-线程配置开始生效，Jetty 无法使用的值只记 WARN 并回退默认值。此前 FE 固定使用 200 个 Jetty 线程，
-现在使用 jetty_threadPool_maxThreads（默认 400），升级前请检查 fe.conf：FE 转发 stream load 后，
-若客户端在等待 100-continue（如 Flink），该线程最多再占用 stream_load_redirect_bounded_drain_max_idle_time_ms
-（默认 1000 毫秒），因此经 FE 转发的 stream load 每秒数量大致受 Jetty 线程数限制。
-2026-11-04 对比测试发现问题的修复：重放 WAL 写入 STRUCT 列时不再把所有子字段写成 NULL；
-VARIANT 列的 WAL 中别的类型的全空块在前时，不再把后面的 VARIANT 值写成 NULL（两种情况此前
-都重放“成功”并删除 WAL）。chunked 方式的 stream load（如 Flink）只有通过 group_commit 头
-请求 group commit 时才忽略 label，两阶段提交也保留 label；此前带同一 label 重试会导入两次。
-group commit 导入拿不到计划时（如 FE 拒绝新事务），BE 先等 50 毫秒、每次加倍、最多 1 秒
-再重试，不再在 group_commit_create_plan_timeout_ms 内每秒向 FE 发送上千次请求。
-2026-11-04 第二轮对比测试发现问题的修复：group commit 导入等待计划超时后，下一个导入立即尝试；
-此前它要等完前面导入的退避时间，group_commit_create_plan_timeout_ms 较短时一次未试就失败。等待中的
-导入按时超时。chunked 方式的 Parquet、ORC stream load，以及 compress_type 为 SNAPPY_BLOCK 的 CSV，
-正常导入数据；此前返回成功但导入 0 行。压缩流尚未结束文件就结束的压缩文件（如缺少尾部的 gzip）
-报截断错误；此前把已读出的行作为成功导入。LZOP 和 Hadoop LZ4/Snappy 块格式的文件恰好在块边界
-截断时，仍会导入其中完整的块。
 历史二进制审查记录仅适用于原审查包，不代表 rc415 已完成构建或验证。
